@@ -1,11 +1,10 @@
-import { HttpApiClient } from "@effect/platform"
 import type { TodoId } from "@template/domain/TodosApi"
 import { TodosApi } from "@template/domain/TodosApi"
-import { Effect } from "effect"
+import { Effect, Layer, ServiceMap } from "effect"
+import { HttpApiClient } from "effect/unstable/httpapi"
 
-export class TodosClient extends Effect.Service<TodosClient>()("cli/TodosClient", {
-  accessors: true,
-  effect: Effect.gen(function*() {
+export class TodosClient extends ServiceMap.Service<TodosClient>()("cli/TodosClient", {
+  make: Effect.gen(function*() {
     const client = yield* HttpApiClient.make(TodosApi, {
       baseUrl: "http://localhost:3000"
     })
@@ -16,19 +15,19 @@ export class TodosClient extends Effect.Service<TodosClient>()("cli/TodosClient"
       )
     }
 
-    const list = client.todos.getAllTodos().pipe(
+    const list = client.todos.getAllTodos({}).pipe(
       Effect.flatMap((todos) => Effect.logInfo(todos))
     )
 
     function complete(id: TodoId) {
-      return client.todos.completeTodo({ path: { id } }).pipe(
+      return client.todos.completeTodo({ params: { id } }).pipe(
         Effect.flatMap((todo) => Effect.logInfo("Marked todo completed: ", todo)),
         Effect.catchTag("TodoNotFound", () => Effect.logError(`Failed to find todo with id: ${id}`))
       )
     }
 
     function remove(id: TodoId) {
-      return client.todos.removeTodo({ path: { id } }).pipe(
+      return client.todos.removeTodo({ params: { id } }).pipe(
         Effect.flatMap(() => Effect.logInfo(`Deleted todo with id: ${id}`)),
         Effect.catchTag("TodoNotFound", () => Effect.logError(`Failed to find todo with id: ${id}`))
       )
@@ -41,4 +40,6 @@ export class TodosClient extends Effect.Service<TodosClient>()("cli/TodosClient"
       remove
     } as const
   })
-}) {}
+}) {
+  static layer = Layer.effect(this, this.make)
+}

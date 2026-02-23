@@ -1,6 +1,6 @@
-import { HttpApiBuilder } from "@effect/platform"
 import { TodosApi } from "@template/domain/TodosApi"
 import { Effect, Layer } from "effect"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { TodosRepository } from "./TodosRepository.js"
 
 const TodosApiLive = HttpApiBuilder.group(TodosApi, "todos", (handlers) =>
@@ -8,12 +8,12 @@ const TodosApiLive = HttpApiBuilder.group(TodosApi, "todos", (handlers) =>
     const todos = yield* TodosRepository
     return handlers
       .handle("getAllTodos", () => todos.getAll)
-      .handle("getTodoById", ({ path: { id } }) => todos.getById(id))
-      .handle("createTodo", ({ payload: { text } }) => todos.create(text))
-      .handle("completeTodo", ({ path: { id } }) => todos.complete(id))
-      .handle("removeTodo", ({ path: { id } }) => todos.remove(id))
+      .handle("getTodoById", (_) => todos.getById(_.params.id))
+      .handle("createTodo", (_) => todos.create(_.payload.text))
+      .handle("completeTodo", (_) => todos.complete(_.params.id))
+      .handle("removeTodo", (_) => todos.remove(_.params.id))
   }))
 
-export const ApiLive = HttpApiBuilder.api(TodosApi).pipe(
+export const ApiLive = HttpApiBuilder.layer(TodosApi).pipe(
   Layer.provide(TodosApiLive)
 )

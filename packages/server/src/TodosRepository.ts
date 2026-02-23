@@ -1,8 +1,8 @@
-import { Todo, TodoId, TodoNotFound } from "@template/domain/TodosApi"
-import { Effect, HashMap, Ref } from "effect"
+import { Todo, type TodoId, TodoNotFound } from "@template/domain/TodosApi"
+import { Effect, HashMap, Layer, Ref, ServiceMap } from "effect"
 
-export class TodosRepository extends Effect.Service<TodosRepository>()("api/TodosRepository", {
-  effect: Effect.gen(function*() {
+export class TodosRepository extends ServiceMap.Service<TodosRepository>()("api/TodosRepository", {
+  make: Effect.gen(function*() {
     const todos = yield* Ref.make(HashMap.empty<TodoId, Todo>())
 
     const getAll = Ref.get(todos).pipe(
@@ -11,14 +11,15 @@ export class TodosRepository extends Effect.Service<TodosRepository>()("api/Todo
 
     function getById(id: TodoId): Effect.Effect<Todo, TodoNotFound> {
       return Ref.get(todos).pipe(
-        Effect.flatMap(HashMap.get(id)),
-        Effect.catchTag("NoSuchElementException", () => new TodoNotFound({ id }))
+        Effect.map(HashMap.get(id)),
+        Effect.flatMap(Effect.fromOption),
+        Effect.catchTag("NoSuchElementError", () => Effect.fail(new TodoNotFound({ id })))
       )
     }
 
     function create(text: string): Effect.Effect<Todo> {
       return Ref.modify(todos, (map) => {
-        const id = TodoId.make(HashMap.reduce(map, -1, (max, todo) => todo.id > max ? todo.id : max) + 1)
+        const id = (HashMap.reduce(map, -1, (max, todo) => todo.id > max ? todo.id : max) + 1) as TodoId
         const todo = new Todo({ id, text, done: false })
         return [todo, HashMap.set(map, id, todo)]
       })
@@ -45,4 +46,6 @@ export class TodosRepository extends Effect.Service<TodosRepository>()("api/Todo
       remove
     } as const
   })
-}) {}
+}) {
+  static layer = Layer.effect(this, this.make)
+}

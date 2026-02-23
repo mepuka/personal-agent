@@ -1,16 +1,16 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
-import { NodeContext, NodeHttpClient, NodeRuntime } from "@effect/platform-node"
+import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { cli } from "./Cli.js"
 import { TodosClient } from "./TodosClient.js"
 
-const MainLive = TodosClient.Default.pipe(
-  Layer.provide(NodeHttpClient.layerUndici),
-  Layer.merge(NodeContext.layer)
+const MainLive = TodosClient.layer.pipe(
+  Layer.provide(BunHttpClient.layer),
+  Layer.merge(BunServices.layer)
 )
 
-cli(process.argv).pipe(
+cli.pipe(
   Effect.provide(MainLive),
-  NodeRuntime.runMain
+  BunRuntime.runMain
 )
