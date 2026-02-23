@@ -1,10 +1,10 @@
 # Personal Agent Architecture Specification
 
-**Version**: 0.1.0-draft
-**Date**: 2026-02-20
-**Status**: Initial draft — pending review
-**Ontology Version**: PAO v0.7.0
-**Runtime**: Effect TypeScript (pure Effect)
+**Version**: 0.2.0-draft
+**Date**: 2026-02-23
+**Status**: v4-aligned audit pass — package consolidation, API verification, gap analysis (2026-02-23)
+**Ontology Version**: PAO v0.8.0
+**Runtime**: Effect TypeScript v4 (4.0.0-beta.11, `effect-smol`)
 
 ---
 
@@ -27,12 +27,13 @@
 15. [Package Structure](#15-package-structure)
 16. [Deployment Topology](#16-deployment-topology)
 17. [Open Questions](#17-open-questions)
+18. [Architecture Refinement Addendum (2026-02-20)](#18-architecture-refinement-addendum-2026-02-20)
 
 ---
 
 ## 1. Executive Summary
 
-This document specifies the architecture for a personal AI agent system implemented in pure Effect TypeScript. The architecture is derived from the Personal Agent Ontology (PAO v0.7.0), a formal OWL 2 DL vocabulary defining 105 classes across 8 semantic modules.
+This document specifies the architecture for a personal AI agent system implemented in pure Effect TypeScript. The architecture is derived from the Personal Agent Ontology (PAO v0.8.0), a formal OWL 2 DL vocabulary defining 115 classes across 9 semantic modules.
 
 The system uses **Effect Cluster** as its computational backbone — modeling agents, sessions, and memory as **durable entities** (stateful, addressable actors), and modeling reasoning, planning, and recovery as **durable workflows** with retriable **activities**. This is not a traditional layered service architecture; it is an **event-driven, actor-based system with durable execution guarantees**.
 
@@ -51,7 +52,7 @@ The system targets local-first deployment (single runner, SQLite persistence) wi
 
 ## 2. Domain Model Overview
 
-The PAO defines 8 semantic modules. Each module maps to specific architectural components:
+The PAO defines 9 semantic modules. Each module maps to specific architectural components:
 
 | Ontology Module | Classes | Architectural Role |
 |---|---|---|
@@ -63,14 +64,15 @@ The PAO defines 8 semantic modules. Each module maps to specific architectural c
 | **Governance & Safety** | PermissionPolicy, SafetyConstraint, Hook, AuditEntry, SandboxPolicy, ConsentRecord | Middleware, policy enforcement |
 | **Dialog Pragmatics** | DialogAct, CommunicativeFunction, CommonGround, GroundingAct | Turn classification, grounding logic |
 | **External Services** | ExternalService, Integration, ServiceCapability, ServiceConnection | Integration entity, capability discovery |
+| **Scheduling & Automation** | Schedule, RecurrencePattern, Trigger, ScheduledExecution, ScheduleStatus, ExecutionOutcome, ConcurrencyPolicy | Scheduler entity/workflow, recurring and event-driven automation |
 
 ### Key Metrics
 
-- **105 OWL classes** to be represented as Effect Schema types
-- **128 object properties** defining relationships (many become entity message protocols)
-- **32 data properties** defining attributes (become Schema fields)
-- **65 named individuals** defining value partitions (become `Schema.Literal` unions)
-- **17 disjoint value partition types** (become discriminated unions)
+- **115 OWL classes** to be represented as Effect Schema types
+- **68 object properties** defining relationships (many become entity message protocols)
+- **35 data properties** defining attributes (become Schema fields)
+- **75 named individuals** defining value partitions (become `Schema.Literal` unions)
+- **20 disjoint value partition types** (become discriminated unions)
 - **4 identity keys** (Agent, Session, Conversation, FoundationModel — become branded ID types)
 
 ---
@@ -79,17 +81,28 @@ The PAO defines 8 semantic modules. Each module maps to specific architectural c
 
 ### Package Dependencies
 
-| Effect Package | Role in Architecture | Ontology Alignment |
+> **Note (v4 consolidation)**: In Effect v4, most formerly-separate `@effect/*` packages have been consolidated into the core `effect` package under `effect/unstable/*` subpaths. Platform-specific packages (`@effect/platform-bun`, `@effect/platform-node`) and SQL driver packages (`@effect/sql-sqlite-bun`) remain separate.
+
+| Effect Package / Module | Role in Architecture | Ontology Alignment |
 |---|---|---|
-| `effect` | Core runtime, Schema, Context, Layer, Ref, Stream, Schedule | Foundation for everything |
-| `@effect/cluster` | Durable entities, sharding, workflows, activities | Agent/Session/Memory entities, Plan workflows |
-| `@effect/ai` | LanguageModel service, Tool/Toolkit, Chat, streaming | ModelInvocation, ToolInvocation, Turn generation |
-| `@effect/platform` | HttpApi, KeyValueStore, FileSystem | Gateway API, procedural memory storage |
-| `@effect/platform-bun` | Bun runtime bindings | Local execution environment |
-| `@effect/sql` | Abstract SQL client, transactions, reactive queries | Domain state persistence |
-| `@effect/sql-sqlite-bun` | SQLite via Bun | Local persistence backend |
-| `@effect/cli` | CLI commands, args, options | CLI interface to agent |
-| `@effect/rpc` | RPC protocol definitions | Entity message schemas |
+| `effect` | Core runtime, Schema, Context, Layer, Ref, Stream, Schedule, ServiceMap | Foundation for everything |
+| `effect/unstable/cluster` | Durable entities, sharding, workflows, activities, message storage | Agent/Session/Memory entities, Plan workflows |
+| `effect/unstable/ai` | LanguageModel service, Tool/Toolkit, Chat, streaming, MCP | ModelInvocation, ToolInvocation, Turn generation |
+| `effect/unstable/http` | HttpClient, HttpServer, HttpRouter, Middleware | Gateway HTTP infrastructure |
+| `effect/unstable/httpapi` | HttpApi, HttpApiBuilder, HttpApiClient, OpenApi, Security | Gateway API, typed endpoint contracts |
+| `effect/unstable/sql` | Abstract SqlClient, SqlModel, Migrator, transactions | Domain state persistence |
+| `effect/unstable/workflow` | Workflow, Activity, DurableClock, DurableDeferred | Durable multi-step processes |
+| `effect/unstable/rpc` | Rpc, RpcGroup, RpcClient, RpcServer | Entity message schemas |
+| `effect/unstable/persistence` | KeyValueStore, PersistedCache, RateLimiter | Procedural memory, file-based KV |
+| `effect/unstable/eventlog` | EventLog, EventJournal, SqlEventLogServer, encryption | Episodic memory event persistence |
+| `effect/unstable/reactivity` | Atom, AtomRegistry, AtomRpc, AtomHttpApi | Real-time entity state subscriptions |
+| `effect/unstable/observability` | Otlp, OtlpTracer, OtlpMetrics, OtlpLogger, PrometheusMetrics | Metrics, tracing, logging export |
+| `effect/unstable/encoding` | Ndjson, Sse, Msgpack | Streaming response encoding |
+| `effect/unstable/cli` | Command, Argument, Flag, Prompt | CLI interface to agent |
+| `effect/unstable/socket` | Socket, SocketServer | WebSocket support |
+| `effect/unstable/devtools` | DevTools, DevToolsServer | Development tooling |
+| `@effect/platform-bun` | BunHttpServer, BunHttpClient, BunRuntime, BunServices | Bun runtime bindings |
+| `@effect/sql-sqlite-bun` | SQLite driver via Bun | Local persistence backend |
 
 ### Construct Mapping
 
@@ -103,7 +116,7 @@ The PAO defines 8 semantic modules. Each module maps to specific architectural c
 | `owl:disjointUnionOf` | `Schema.Union` with discriminator | `const MemoryTier = Schema.Union(WorkingMemory, EpisodicMemory, ...)` |
 | `owl:FunctionalProperty` | Required single-value field | `hasStatus: TaskStatus` (not an array) |
 | `owl:someValuesFrom` | Required field (non-optional) | `hasPersona: Persona` (mandatory on AIAgent) |
-| `owl:minQualifiedCardinality` | Branded collection with min constraint | `sharedAcrossAgents: Schema.Array(AgentId).pipe(Schema.minItems(2))` |
+| `owl:minQualifiedCardinality` | Branded collection with min constraint | `sharedAcrossAgents: Schema.Array(AgentId).check(Schema.minLength(2))` |
 | `rdfs:subClassOf` | Schema `extend` or class hierarchy | `class AIAgent extends Agent.extend<AIAgent>("AIAgent")({...})` |
 | `owl:TransitiveProperty` | Graph traversal in query layer | `blocks/blockedBy` resolved transitively |
 | `owl:inverseOf` | Bidirectional references in storage | Both sides maintained by repository |
@@ -122,7 +135,7 @@ The architecture rests on three Effect Cluster primitives:
 An **Entity** is a long-lived, addressable, stateful unit that processes typed RPC messages. Entities are the primary organizational unit of the system.
 
 **Properties:**
-- **Addressable**: Every entity has a unique address (`EntityAddress = shardId + entityType + entityId`)
+- **Addressable**: Every entity has a unique address (`EntityAddress` — a `Schema.Class` with three typed fields: `shardId: ShardId`, `entityType: EntityType`, `entityId: EntityId`)
 - **Stateful**: Maintains internal state across messages (via Ref or external storage)
 - **Durable**: Messages marked `Persisted` survive runner crashes and are replayed on recovery
 - **Sharded**: Entities are distributed across runners via consistent hashing on entityId
@@ -137,6 +150,45 @@ An **Entity** is a long-lived, addressable, stateful unit that processes typed R
 | `ConversationEntity` | Conversation | Session chain, common ground | StartSession, ContinueSession, GetGround |
 | `MemoryEntity` | MemoryTier(s) | Memory items per tier | Encode, Retrieve, Consolidate, Forget |
 | `IntegrationEntity` | Integration | Connection state, capabilities | Connect, Disconnect, DiscoverCapabilities |
+| `SchedulerEntity` | Schedule | Schedule definitions, trigger bindings, status, last/next execution metadata | CreateSchedule, Pause, Resume, Cancel, ListDue, RecordExecution |
+
+**Entity Definition Pattern (Effect v4)**:
+
+Entities are defined using `Entity` from `effect/unstable/cluster` with typed RPC protocols defined via `Rpc.make()` from `effect/unstable/rpc`:
+
+```typescript
+import { Entity, ClusterSchema } from "effect/unstable/cluster"
+import { Rpc, RpcGroup, RpcSchema } from "effect/unstable/rpc"
+import { Schema } from "effect"
+
+// Define typed RPC messages
+class GetStatus extends Rpc.make("GetStatus", {
+  success: AgentStatus
+}) {}
+
+class Configure extends Rpc.make("Configure", {
+  success: Schema.Void,
+  payload: { config: AgentConfig }
+}).annotate(ClusterSchema.Persisted, true) {}
+
+// For streaming responses:
+class ProcessTurn extends Rpc.make("ProcessTurn", {
+  success: RpcSchema.Stream(TurnOutput, TurnError),
+  payload: { input: TurnInput }
+}).annotate(ClusterSchema.Persisted, true) {}
+
+// Group into entity protocol
+const AgentRpcs = RpcGroup.make(
+  GetStatus,
+  Configure
+)
+
+// Define entity with shard group
+const AgentEntity = Entity.make("Agent", AgentRpcs)
+  .annotateRpcs(ClusterSchema.ShardGroup, () => "agent")
+```
+
+**Shard Groups**: Each entity type is assigned to a shard group via `.annotateRpcs(ClusterSchema.ShardGroup, (entityId) => groupName)`. The default group is `"default"`. Shard groups control how entities are distributed across runners.
 
 #### 4.2 Workflows (Durable Multi-Step Processes)
 
@@ -146,8 +198,40 @@ A **Workflow** is a durable, multi-step computation that survives crashes. Workf
 - **Durable**: Execution state is persisted; workflows resume after crashes
 - **Composed of Activities**: Each step is an individually retriable activity
 - **Checkpointed**: Progress is saved after each activity completes
-- **Cancellable**: Can be interrupted and rolled back
-- **Triggered by entities**: An entity can spawn a workflow in response to a message
+- **Cancellable**: Can be interrupted via `workflow.interrupt()` and resumed via `workflow.resume()`
+- **Pollable**: Execution status can be checked via `workflow.poll(executionId)`
+- **Triggered by entities**: An entity can spawn a workflow by calling `workflow.execute(payload)` inside an RPC handler
+
+**Workflow Definition Pattern (Effect v4)**:
+
+```typescript
+import { Workflow, Activity } from "effect/unstable/workflow"
+import { Effect, Schema } from "effect"
+
+// Define activities as retriable units
+const ClassifyDialogAct = Activity.make("ClassifyDialogAct", {
+  successSchema: DialogAct,
+  errorSchema: AiError,
+  execute: (message: Message) => Effect.gen(function*() {
+    // LLM classification call
+    return yield* languageModel.generateObject({ ... })
+  })
+})
+
+// Define workflow composing activities
+const TurnProcessingWorkflow = Workflow.make("TurnProcessing", {
+  payloadSchema: TurnInput,
+  successSchema: Turn,
+  errorSchema: TurnError,
+  execute: (payload, executionId) => Effect.gen(function*() {
+    const dialogAct = yield* ClassifyDialogAct(payload.message)
+    const memories = yield* RetrieveMemory(payload)
+    const response = yield* InvokeModel(payload, memories)
+    yield* EncodeMemory(response)
+    return new Turn({ ... })
+  })
+})
+```
 
 **Workflow types in this system:**
 
@@ -160,16 +244,18 @@ A **Workflow** is a durable, multi-step computation that survives crashes. Workf
 | `CompactionWorkflow` | CompactionEvent | SelectItems, Summarize, UpdateTiers, RecordDispositions | Context window approaching capacity |
 | `CapabilityDiscoveryWorkflow` | CapabilityDiscoveryEvent | QueryService, ParseCapabilities, RegisterTools | Integration connected |
 | `ConsolidationWorkflow` | Consolidation (MemoryOp) | SelectEpisodes, ExtractFacts, StoreSemantic, DecayEpisodic | Periodic or triggered |
+| `ScheduleExecutionWorkflow` | Schedule + ScheduledExecution | EvaluateDueSchedules, EnforceConcurrencyPolicy, ExecuteScheduledAction, RecordExecutionOutcome | Scheduler tick or EventTrigger |
 
 #### 4.3 Activities (Retriable Units of Work)
 
 An **Activity** is a single unit of work within a workflow. Activities are the boundary of retry — if an activity fails, it can be retried without re-executing previous activities.
 
 **Properties:**
-- **Retriable**: Failed activities can be retried with configurable schedules
+- **Retriable**: Failed activities can be retried with configurable `interruptRetryPolicy` (a `Schedule`). Default: exponential backoff with 10 max retries.
 - **Idempotent** (ideally): Activities should produce the same result on replay
 - **Side-effecting**: Activities are where real work happens (LLM calls, DB writes, tool execution)
-- **Typed**: Input and output schemas are defined, enabling durable serialization
+- **Typed**: Input and output schemas are defined via `successSchema` and `errorSchema`, enabling durable serialization
+- **Yieldable**: Activities implement `Effect.Yieldable` and can be yielded directly inside workflow generators
 
 **Key activities:**
 
@@ -183,6 +269,8 @@ An **Activity** is a single unit of work within a workflow. Activities are the b
 | `WriteAuditEntry` | AuditEntry | SQLite append | Retry until success |
 | `SendMessage` | Message via Channel | Network I/O | Exponential backoff |
 | `ClassifyDialogAct` | DialogAct | LLM call (fast) | Exponential backoff, 2 attempts |
+| `EvaluateDueSchedules` | Schedule + Trigger | SQLite read + trigger evaluation | Immediate retry, 2 attempts |
+| `RecordScheduledExecution` | ScheduledExecution | SQLite write | Retry until success |
 
 ### How They Compose
 
@@ -435,6 +523,48 @@ ErrorRecoveryWorkflow
 
 **Shard group**: `"integration"` — medium-lived, tied to agent lifecycle.
 
+### 5.6 SchedulerEntity
+
+**Ontology source**: `pao:Schedule`, `pao:RecurrencePattern`, `pao:Trigger`, `pao:ScheduledExecution`
+
+**Identity**: `ScheduleId` (branded string)
+
+**State**:
+```
+- ownerAgentId: AgentId                      # pao:ownedByAgent (functional)
+- recurrencePattern: RecurrencePattern       # pao:hasRecurrencePattern (functional)
+  - label: string                            # rdfs:label (required by SHACL)
+  - cronExpression?: string                  # pao:hasCronExpression
+  - intervalSeconds?: number                 # pao:hasIntervalSeconds
+- trigger: Trigger                           # pao:activatedBy (functional)
+  - type: CronTrigger | IntervalTrigger | EventTrigger
+- action: ActionDescriptor                   # pao:schedulesAction (functional)
+- scheduleStatus: ScheduleStatus             # pao:hasScheduleStatus (functional)
+- concurrencyPolicy: ConcurrencyPolicy       # pao:hasConcurrencyPolicy (functional)
+- allowsCatchUp: boolean                     # pao:allowsCatchUp (functional)
+- lastExecutionAt: Option<DateTime>
+- nextExecutionAt: Option<DateTime>
+```
+
+**RPC Protocol**:
+```
+- CreateSchedule(input: CreateScheduleInput) → ScheduleId
+- UpdateSchedule(scheduleId: ScheduleId, patch: SchedulePatch) → void
+- PauseSchedule(scheduleId: ScheduleId) → void
+- ResumeSchedule(scheduleId: ScheduleId) → void
+- DisableSchedule(scheduleId: ScheduleId) → void
+- TriggerNow(scheduleId: ScheduleId) → ScheduledExecutionId
+- ListDue(now: DateTime) → Array<ScheduleId>
+- RecordExecution(event: ScheduledExecutionRecord) → void
+```
+
+**Validation constraints (from SHACL)**:
+- `Schedule` must include exactly one owner, trigger, recurrence pattern, action, schedule status, and concurrency policy.
+- `RecurrencePattern` must include at least one of `hasCronExpression` or `hasIntervalSeconds`.
+- `ScheduledExecution` must include `executionOf`, `hasTemporalExtent`, and `hasExecutionOutcome`.
+
+**Shard group**: `"schedule"` — medium-lived, high-read, low-write.
+
 ---
 
 ## 6. Workflow Definitions
@@ -486,7 +616,7 @@ ErrorRecoveryWorkflow
 5. **InvokeModel**
    - Input: assembled Prompt, GenerationConfiguration, ToolDefinitions
    - Output: `GenerateTextResponse` (text + tool calls + reasoning + usage)
-   - Side effects: LLM API call via `@effect/ai` LanguageModel service
+   - Side effects: LLM API call via `effect/unstable/ai` LanguageModel service
    - Retry: 3 attempts, exponential backoff (respects FailureType)
    - Ontology: `pao:ModelInvocation`, `pao:GenerationConfiguration`, `pao:FoundationModel`
 
@@ -515,7 +645,7 @@ ErrorRecoveryWorkflow
 
 **Output**: `Turn` with `ContentBlocks`, `DialogAct`, token usage, and metadata.
 
-**Streaming**: The `InvokeModel` activity streams `TextDeltaPart` chunks back through the workflow to the SessionEntity, which streams them to the client. Tool executions and memory encoding happen after the model response completes.
+**Streaming**: The `ProcessTurn` RPC must be defined with `RpcSchema.Stream(TurnOutput, TurnError)` to support streaming. The entity's reply uses `Reply.Chunk` (with sequence numbers) rather than `Reply.WithExit`. The `InvokeModel` activity streams `TextDeltaPart` chunks back through the workflow to the SessionEntity, which streams them to the client via the RPC chunked reply protocol. Tool executions and memory encoding happen after the model response completes.
 
 ### 6.2 DeliberationWorkflow
 
@@ -624,7 +754,7 @@ For each task in topological order (respecting `blockedBy` dependencies):
 
 **Ontology source**: `pao:ErrorRecoveryEvent`, `pao:FailureType`
 
-**Trigger**: Activity failure in any workflow
+**Trigger**: Manually spawned from workflow code when activity retries are exhausted. The workflow engine does not automatically spawn recovery workflows — the parent workflow must explicitly call `ErrorRecoveryWorkflow.execute(...)` in its error handling path.
 
 **Input**:
 ```
@@ -675,6 +805,41 @@ For each task in topological order (respecting `blockedBy` dependencies):
    - Marks consolidated episodes for eventual `Forgetting`
    - Respects `RetentionPolicy` constraints
 
+### 6.7 ScheduleExecutionWorkflow
+
+**Ontology source**: `pao:Schedule`, `pao:ScheduledExecution`, `pao:ExecutionOutcome`
+
+**Trigger**: periodic scheduler tick, explicit `TriggerNow`, or `EventTrigger` arrival
+
+**Input**:
+```
+- now: DateTime
+- candidateSchedules: Array<ScheduleId>
+```
+
+**Activities**:
+
+1. **EvaluateDueSchedules**
+   - Reads active schedules and evaluates recurrence pattern + trigger
+   - Supports cron and interval recurrence patterns
+   - Applies `allowsCatchUp` policy for missed windows after downtime
+
+2. **EnforceConcurrencyPolicy**
+   - Applies `ConcurrencyAllow` | `ConcurrencyForbid` | `ConcurrencyReplace`
+   - Decides run/skip/replace for overlapping executions
+
+3. **ExecuteScheduledAction**
+   - Executes target action (e.g., plan execution, compaction, memory consolidation, or custom automation action)
+   - Optionally initiates a session (`pao:initiatedSession`) when action starts a conversation flow
+
+4. **RecordExecutionOutcome**
+   - Persists `ScheduledExecution` with:
+     - `executionOf` (schedule link)
+     - `hasTemporalExtent` (start/end interval)
+     - `hasExecutionOutcome` (`ExecutionSucceeded` | `ExecutionFailed` | `ExecutionSkipped`)
+
+**Output**: `Array<ScheduledExecutionSummary>` for observability and audit surfaces.
+
 ---
 
 ## 7. Persistence Strategy
@@ -686,6 +851,7 @@ For each task in topological order (respecting `blockedBy` dependencies):
 | **Cluster MessageStorage** | SQLite | Durable message delivery, workflow checkpoints | Required for crash recovery |
 | **Cluster RunnerStorage** | SQLite | Shard coordination, runner health | Required for cluster operation |
 | **Domain State** | SQLite | Entity state, turn history, memory items, audit log | Structured, queryable, transactional |
+| **Scheduler State** | SQLite | Schedules, triggers, recurrence patterns, execution outcomes | Required for durable automation and replay-safe scheduling |
 | **Procedural Memory** | KeyValueStore (file) | System prompts, learned behaviors, config | Fast reads, simple key-value |
 | **Memory Blocks** | KeyValueStore (file) | Letta-style core memory blocks | Fast key-value access |
 
@@ -730,6 +896,19 @@ goals (goal_id PK, agent_id FK, status, description, created_at)
 plans (plan_id PK, goal_id FK, created_at)
 tasks (task_id PK, plan_id FK, status, description, created_at)
 task_dependencies (task_id FK, blocked_by_task_id FK)
+
+-- Scheduling and automation
+schedules (schedule_id PK, agent_id FK, recurrence_pattern_id FK, trigger_type,
+           action_definition JSON,
+           schedule_status CHECK(schedule_status IN ('ScheduleActive','SchedulePaused','ScheduleExpired','ScheduleDisabled')),
+           concurrency_policy CHECK(concurrency_policy IN ('ConcurrencyAllow','ConcurrencyForbid','ConcurrencyReplace')),
+           allows_catch_up BOOLEAN, created_at, updated_at)
+recurrence_patterns (pattern_id PK, label NOT NULL,
+                     cron_expression, interval_seconds,
+                     CHECK(cron_expression IS NOT NULL OR interval_seconds IS NOT NULL))
+scheduled_executions (execution_id PK, schedule_id FK,
+                      outcome CHECK(outcome IN ('ExecutionSucceeded','ExecutionFailed','ExecutionSkipped')),
+                      started_at, ended_at, initiated_session_id FK, created_at)
 
 -- Governance
 permission_policies (policy_id PK, agent_id FK, grants JSON, restricts JSON)
@@ -778,11 +957,11 @@ The persistence layer is designed for easy migration:
 
 | Local | Cloud | Migration Path |
 |---|---|---|
-| SQLite (bun:sqlite) | PostgreSQL | Change `@effect/sql-sqlite-bun` → `@effect/sql-pg`. Same SqlClient interface. |
-| KeyValueStore (file) | Redis or S3 | Change Layer providing KeyValueStore. Same KV interface. |
-| Single runner | Multi-runner | Add RunnerAddress config, use SQL advisory locks for shard coordination |
+| SQLite (bun:sqlite) | PostgreSQL | Swap the `Connection.Acquirer` (connection pool) and `Compiler` (SQL dialect) at Layer construction. The `SqlClient` interface from `effect/unstable/sql` remains unchanged. |
+| KeyValueStore (file) | Redis or S3 | Change Layer providing KeyValueStore. Same KV interface from `effect/unstable/persistence`. |
+| Single runner | Multi-runner | Replace `SingleRunner.layer` with `HttpRunner` or `SocketRunner`. Use `SqlRunnerStorage` for shard coordination. |
 
-The key insight is that **all persistence goes through Effect abstractions** (SqlClient, KeyValueStore, MessageStorage, RunnerStorage). The concrete implementations are provided via Layers and can be swapped without changing any business logic.
+The key insight is that **all persistence goes through Effect abstractions** (`SqlClient`, `KeyValueStore`, `MessageStorage`, `RunnerStorage`). The concrete implementations are provided via Layers and can be swapped without changing any business logic. In v4, the SQL abstraction layer lives in `effect/unstable/sql` with driver-specific packages like `@effect/sql-sqlite-bun` providing the concrete `Connection.Acquirer`.
 
 ---
 
@@ -798,6 +977,8 @@ The ontology defines a precise 4-tier memory model (`owl:disjointUnionOf`). Each
 | **Episodic** | `pao:EpisodicMemory` | Medium | SQLite (time-indexed) | Write per turn, read on retrieval |
 | **Semantic** | `pao:SemanticMemory` | Low | SQLite (topic-indexed) | Write on consolidation, read on retrieval |
 | **Procedural** | `pao:ProceduralMemory` | Lowest | KeyValueStore (file) | Write rarely, read on session start |
+
+> **Implementation note**: The `effect/unstable/eventlog` module (`EventLog`, `EventJournal`, `SqlEventLogServer`) is a strong candidate for episodic memory persistence. `EventJournal.write()` can persist per-turn episode events, `EventJournal.entries` supports historical retrieval, and `EventJournal.changes` provides a `PubSub.Subscription` for streaming memory changes. The module also includes `EventLogEncryption` for AES-GCM encryption of sensitive memory items.
 
 ### 8.2 Memory Operations
 
@@ -845,7 +1026,7 @@ The ontology supports shared memory (`pao:SharedMemoryArtifact`):
 
 ### 9.1 Language Model Service
 
-The `@effect/ai` package provides a `LanguageModel` service tag. The architecture wraps this with ontology-aligned abstractions:
+The `effect/unstable/ai` module provides a `LanguageModel` service with `generateText`, `generateObject`, and `streamText` methods. The architecture wraps this with ontology-aligned abstractions:
 
 **FoundationModel** (ontology: `pao:FoundationModel`):
 ```
@@ -872,11 +1053,11 @@ The `@effect/ai` package provides a `LanguageModel` service tag. The architectur
 
 ### 9.2 Tool System
 
-Tools are defined using `@effect/ai`'s `Tool.make()` and composed via `Toolkit`:
+Tools are defined using `Tool.make()` from `effect/unstable/ai` and composed via `Toolkit`:
 
 ```
 OntologyToolDefinition (pao:ToolDefinition)
-  → @effect/ai Tool<Name, Config, Requirements>
+  → `effect/unstable/ai` Tool<Name, Config, Requirements>
     - parametersSchema: Schema (validated input)
     - successSchema: Schema (typed result)
     - failureSchema: Schema (typed error)
@@ -891,7 +1072,9 @@ Each tool invocation creates an audit trail:
 
 ### 9.3 Model Invocation Tracking
 
-Every LLM call is tracked as a `ModelInvocation` event:
+Every LLM call is automatically tracked via **OpenTelemetry spans** using the `Telemetry` module from `effect/unstable/ai`. The `LanguageModel.generateText()` and `streamText()` methods emit spans with GenAI semantic convention attributes (model name, provider, token usage, finish reason). For persistent domain-level audit trails, the application layer creates explicit `ModelInvocation` records from the span data:
+
+> **Note**: Model invocation tracking is automatic at the observability layer. Domain-level `ModelInvocation` entities should be created by the application if persistent audit trails beyond OpenTelemetry are required.
 
 ```
 ModelInvocation:
@@ -904,6 +1087,18 @@ ModelInvocation:
   finishReason: FinishReason
   temporalExtent: TemporalInterval        # Start/end time
 ```
+
+### 9.4 MCP Integration
+
+The `effect/unstable/ai` module includes `McpServer` for serving tools and resources via the Model Context Protocol. This directly addresses the integration protocol question (Open Question #7):
+
+- **`McpServer.addTool()`** — Register tools accessible via MCP
+- **`McpServer.addResource()` / `addResourceTemplate()`** — Expose resources to MCP clients
+- **`McpServer.callTool()`** — Invoke registered tools
+
+MCP is the recommended primary integration protocol for external services (`pao:ExternalService`). The `IntegrationEntity` should use MCP where the external service supports it, falling back to direct HTTP/RPC for services that don't.
+
+> **Note**: The `McpServer` module provides the server side (exposing agent capabilities to external clients). MCP client support for consuming external MCP servers may be available in provider-specific packages (e.g., `@effect/ai-anthropic`).
 
 ---
 
@@ -931,6 +1126,8 @@ Action requested
 ```
 
 ### 10.2 Hook System
+
+> **Implementation note**: The `effect/unstable/ai` module does not provide a built-in middleware/interceptor pattern for tool invocations. The hook system described below is an **application-level concern** that must be implemented as a wrapper around the `Toolkit` tool execution path. This can be done by wrapping `Tool.make()` handlers or by inserting hook evaluation logic in the `ExecuteTool` activity.
 
 Hooks (ontology: `pao:Hook`) intercept tool invocations:
 
@@ -986,7 +1183,7 @@ No HTTP server needed. Single process, single runner.
 
 ### 11.2 Gateway Mode (HTTP API)
 
-For network access (web clients, other services, future cloud deployment), the system exposes an HTTP API gateway using `@effect/platform`'s `HttpApi`:
+For network access (web clients, other services, future cloud deployment), the system exposes an HTTP API gateway using `HttpApi` from `effect/unstable/httpapi`:
 
 **Gateway API structure**:
 ```
@@ -1011,7 +1208,7 @@ DELETE /agents/:id/integrations/:iid     # Remove integration
 GET    /audit                             # Query audit log
 ```
 
-**Implementation**: The gateway uses `EntityProxy` from `@effect/cluster` to bridge entity RPC protocols to HTTP endpoints. This means the HTTP API is **derived from the entity protocols**, not hand-coded — the entity RPC schemas become the API contract automatically.
+**Implementation**: The gateway uses `EntityProxy` from `effect/unstable/cluster` to bridge entity RPC protocols to HTTP endpoints via `EntityProxy.toRpcGroup()`, which derives HTTP-compatible RPC schemas from entity protocols. `EntityProxyServer.layerHttpApi()` then mounts these as HTTP API endpoints. This means the HTTP API is **derived from the entity protocols**, not hand-coded — the entity RPC schemas become the API contract automatically.
 
 **Middleware stack**:
 ```
@@ -1028,7 +1225,7 @@ Request
 
 ### 11.3 Streaming
 
-The `ProcessTurn` endpoint supports streaming via Server-Sent Events (SSE) or WebSocket:
+The `ProcessTurn` endpoint supports streaming via Server-Sent Events (SSE) or WebSocket. Effect v4 provides `Sse` from `effect/unstable/encoding` for SSE encoding/decoding, and `Socket`/`SocketServer` from `effect/unstable/socket` for WebSocket support:
 
 ```
 POST /sessions/:id/turns
@@ -1172,7 +1369,7 @@ ReliabilityIncident:
 
 ### 13.4 Telemetry
 
-`@effect/ai` supports OpenTelemetry GenAI semantic conventions. All LLM calls produce spans with:
+The `Telemetry` module from `effect/unstable/ai` supports OpenTelemetry GenAI semantic conventions. All LLM calls automatically produce spans with:
 - Model name, provider, operation type
 - Request parameters (temperature, max_tokens, etc.)
 - Response metadata (finish reason, token usage)
@@ -1194,7 +1391,7 @@ This section provides a detailed mapping of every ontology module to specific Ef
 | `pao:SubAgent` | `AgentEntity` with `spawnedBy` field | Same entity type, linked to parent |
 | `pao:Organization` | `Schema.TaggedClass("Organization")` | Data type with `hasMember` relation |
 | `pao:Persona` | `Schema.Class("Persona")` | Value object in AgentEntity state |
-| `pao:ToolDefinition` | `@effect/ai Tool<Name, Config, R>` | Direct mapping to Effect's tool system |
+| `pao:ToolDefinition` | `Tool<Name, Config, Requirements>` from `effect/unstable/ai` | Direct mapping; Config = `{ parameters, success, failure, failureMode }` |
 | `pao:AgentRole` | `Schema.Literal("AssistantRole", "UserRole")` | Value partition |
 | `pao:FoundationModel` | `Schema.Class("FoundationModel")` | Config type with `ModelId` branded key |
 | `pao:ModelProvider` | `Schema.Class("ModelProvider")` | Identifies provider (OpenAI, Anthropic, etc.) |
@@ -1315,6 +1512,21 @@ This section provides a detailed mapping of every ontology module to specific Ef
 | `pao:IntegrationStatus` | `Schema.Literal("Connected", "Disconnected", "Error", "Initializing")` | Connection state |
 | `pao:ConnectionStatus` | `Schema.Literal("Open", "Closed", "Reconnecting", "Failed")` | Transport state |
 
+### Module 9: Scheduling & Automation
+
+| Ontology Class | Effect Construct | Notes |
+|---|---|---|
+| `pao:Schedule` | `SchedulerEntity` state record | Owns trigger + recurrence + action + lifecycle |
+| `pao:RecurrencePattern` | `Schema.Class("RecurrencePattern")` | Cron or interval recurrence specification |
+| `pao:Trigger` | `Schema.Union(CronTrigger, IntervalTrigger, EventTrigger)` | Disjoint trigger taxonomy |
+| `pao:CronTrigger` | Trigger subtype | Cron-driven activation |
+| `pao:IntervalTrigger` | Trigger subtype | Fixed-interval activation |
+| `pao:EventTrigger` | Trigger subtype | External event activation |
+| `pao:ScheduledExecution` | `Schema.Class("ScheduledExecution")` + table | Per-run execution record |
+| `pao:ScheduleStatus` | `Schema.Literal("ScheduleActive", "SchedulePaused", "ScheduleExpired", "ScheduleDisabled")` | Schedule lifecycle |
+| `pao:ExecutionOutcome` | `Schema.Literal("ExecutionSucceeded", "ExecutionFailed", "ExecutionSkipped")` | Execution result |
+| `pao:ConcurrencyPolicy` | `Schema.Literal("ConcurrencyAllow", "ConcurrencyForbid", "ConcurrencyReplace")` | Overlap behavior |
+
 ---
 
 ## 15. Package Structure
@@ -1334,6 +1546,7 @@ packages/
 │       ├── governance.ts      # Policy, Audit, Consent schemas
 │       ├── dialog.ts          # DialogAct, CommonGround schemas
 │       ├── services.ts        # ExternalService, Integration schemas
+│       ├── scheduling.ts      # Schedule, Trigger, Recurrence, ScheduledExecution schemas
 │       ├── errors.ts          # All tagged error types
 │       └── index.ts           # Re-exports
 │
@@ -1344,6 +1557,7 @@ packages/
 │       ├── ConversationEntity.ts
 │       ├── MemoryEntity.ts
 │       ├── IntegrationEntity.ts
+│       ├── SchedulerEntity.ts
 │       └── index.ts
 │
 ├── workflows/                 # Durable workflow definitions
@@ -1355,13 +1569,16 @@ packages/
 │       ├── ErrorRecoveryWorkflow.ts
 │       ├── ConsolidationWorkflow.ts
 │       ├── CapabilityDiscoveryWorkflow.ts
+│       ├── ScheduleExecutionWorkflow.ts
 │       ├── activities/        # Shared activities
 │       │   ├── InvokeModel.ts
 │       │   ├── ExecuteTool.ts
 │       │   ├── EncodeMemory.ts
 │       │   ├── RetrieveMemory.ts
 │       │   ├── EvaluatePolicy.ts
-│       │   └── WriteAuditEntry.ts
+│       │   ├── WriteAuditEntry.ts
+│       │   ├── EvaluateDueSchedules.ts
+│       │   └── RecordScheduledExecution.ts
 │       └── index.ts
 │
 ├── persistence/               # Storage implementations
@@ -1389,6 +1606,15 @@ packages/
         ├── server.ts          # Wires everything together
         ├── ClusterSetup.ts    # Sharding, runners, storage config
         └── index.ts
+
+**ClusterSetup.ts responsibilities**: This module must configure:
+1. **Runner type**: `SingleRunner.layer` (local, in-process) or `HttpRunner`/`SocketRunner` (distributed)
+2. **MessageStorage**: `SqlMessageStorage.layer` (durable) or `MessageStorage.layerMemory` (testing)
+3. **RunnerStorage**: `SqlRunnerStorage.layer` (durable) or `RunnerStorage.layerMemory` (testing)
+4. **ShardingConfig**: Via `ShardingConfig.layerFromEnv()` or explicit configuration
+5. **WorkflowEngine**: `ClusterWorkflowEngine` for durable workflow execution
+
+For local deployment, `SingleRunner.layer` bundles all of these with sensible defaults (SQL-backed message/runner storage, noop runners).
 ```
 
 ---
@@ -1450,24 +1676,230 @@ Multiple processes across nodes:
 ## 17. Open Questions
 
 1. **Embedding/Vector search for memory retrieval**: The ontology doesn't model vector embeddings. Should we add embedding-based semantic search for memory retrieval, or rely on structured queries (topic, time, scope)?
+   > **Partially answered**: The `effect/unstable/ai` module supports embedding generation via `LanguageModel` calls, but no built-in vector database integration exists. **Recommendation**: Use an external vector database (e.g., Pinecone, Weaviate, or SQLite with vector extensions) wrapped in an Effect Layer abstraction.
 
 2. **Sub-agent lifecycle**: When a SubAgent is spawned, does it get its own MemoryEntity, or does it share the parent's? The ontology has `spawnedBy` but doesn't constrain memory sharing.
 
 3. **Real-time subscriptions**: Should the gateway support WebSocket subscriptions for entity state changes (e.g., agent status, session updates)?
+   > **Answered**: YES. The `effect/unstable/reactivity` module provides `Atom`, `AtomRegistry`, `AtomRpc`, and `AtomHttpApi`. These support reactive state subscriptions via RPC streaming (`RpcSchema.Stream`). Use `AtomRpc` for entity state change notifications and `AtomHttpApi` for HTTP-based reactive subscriptions.
 
 4. **Multi-model orchestration**: The ontology supports multiple FoundationModels per agent. Should different activities use different models (e.g., fast model for DialogAct classification, powerful model for main generation)?
 
 5. **Workflow versioning**: As the system evolves, how do we handle in-flight workflows when workflow definitions change?
+   > **Partially answered**: The workflow module does not provide built-in versioning. **Recommendation**: Add `workflowType` + `workflowVersion` metadata to workflow payloads and implement checkpoint migration logic manually (see Section 18.7.4).
 
 6. **Context window strategy**: The compaction workflow is defined, but the specific strategy for what to keep/drop/summarize needs detailed specification. Should this be configurable per agent via ProceduralMemory?
 
 7. **Integration protocol**: The ontology models external services generically. Should we specifically model MCP (Model Context Protocol) as the primary integration protocol, given its adoption?
+   > **Answered**: YES. The `effect/unstable/ai` module includes `McpServer` for serving tools and resources via MCP. See Section 9.4 for details.
 
 8. **Testing strategy**: How do we test durable workflows? Effect Cluster's `sendLocal` with serialization simulation is relevant here.
+   > **Answered**: Use `TestRunner.layer` from `effect/unstable/cluster`, which provides an in-memory cluster with `Sharding`, `Runners` (noop), `MessageStorage` (memory), and `RunnerStorage` (memory). Combined with `@effect/vitest` and `Effect.provide`, this enables deterministic testing of entity protocols and workflow execution without SQL or disk I/O.
 
-9. **Schema evolution**: As the ontology evolves (currently v0.7.0), how do we handle SQLite schema migrations for stored entity state?
+9. **Schema evolution**: As the ontology evolves (currently v0.8.0), how do we handle SQLite schema migrations for stored entity state?
+   > **Partially answered**: The `Migrator` module from `effect/unstable/sql` provides migration management with a loader interface and schema directory support. However, Migrator handles **database schema** migrations, not **durable entity state** schema versioning — these are separate concerns requiring distinct strategies.
 
 10. **Shared memory consistency**: The ontology defines `MemoryWriteConflict` resolved by policy. What specific conflict resolution strategies do we implement (last-write-wins, merge, manual)?
+
+11. **One-shot scheduling semantics**: Scope examples include one-time reminders, but current recurrence validation is cron-or-interval. Do we model one-shot schedules as interval + auto-disable, event-triggered single-run, or add an explicit one-shot recurrence construct?
+   > **Partially answered**: The `ClusterCron` module from `effect/unstable/cluster` provides cron-based scheduling. For one-shot schedules, **recommendation**: Use event-triggered activation with `Schedule.recurs(1)` (execute once then stop), or model as interval with automatic disable after first execution.
+
+---
+
+## 18. Architecture Refinement Addendum (2026-02-20)
+
+This addendum captures a full architecture deep-dive review against:
+- `docs/architecture/00-architecture-spec.md`
+- `.reference/ontology/personal_agent_ontology.ttl`
+- `.reference/ontology/shapes/pao-shapes.ttl`
+- Current Effect package and implementation reality in this repository
+
+This section refines the base spec with explicit constraints, sequencing contracts, and a phased delivery plan that prioritizes ontology fidelity and avoids premature complexity.
+
+### 18.1 Deep-Dive Findings Summary
+
+1. The ontology has stricter required constraints than several current architecture descriptions imply. `pao:AIAgent`, `pao:Session`, `pao:MemoryItem`, and `pao:ToolInvocation` are all constrained by `someValuesFrom` plus SHACL shapes that must be represented as hard runtime invariants.
+2. The current repository is a strong Effect v4 baseline (Layer + Schema + HttpApi + CLI) but does not yet include the runtime dependencies required by the target design (`effect/unstable/cluster`, `effect/unstable/ai`, `effect/unstable/rpc`, `@effect/sql-sqlite-bun`).
+3. Compaction, recovery, and governance behavior requires stricter activity ordering/idempotency contracts to avoid duplicate audit entries and memory inconsistencies during retries.
+4. Scheduling and automation are now first-class ontology concepts (`Schedule`, `RecurrencePattern`, `Trigger`, `ScheduledExecution`) and must be modeled explicitly in entities, workflows, and persistence.
+5. Shared memory and workflow evolution are currently underspecified and represent architecture-level risks if not resolved before implementation.
+
+### 18.2 Critical Gaps and Required Corrections
+
+| Priority | Gap | Why It Matters | Required Correction |
+|---|---|---|---|
+| P0 | `AIAgent` cardinality + key constraints not explicitly enforced as runtime invariants | Agents can be created in ontology-invalid states | In `AgentEntity` and domain schemas, enforce required persona, mode, tool, integration, model, hook, external service, and key (`AgentId`) |
+| P0 | `MemoryItem` required fields are under-specified | Memory writes can become non-compliant and unauditable | Require tier, retention policy, sensitivity, provenance generation event, and attributed agent at write time |
+| P0 | `ContextWindow` invariant (`tokensUsed <= tokenCapacity`) not codified as a guard | Session state may become invalid before compaction can run | Enforce invariant in session update path and reject invalid writes |
+| P0 | Tool invocation policy/compliance references are not guaranteed in all paths | Governance/audit trace can be incomplete | Require each `ToolInvocation` to persist governing policy, compliance status, input/output, invoking agent, and session link |
+| P1 | Retry + audit/hook sequencing lacks idempotency contract | Recovery may duplicate side effects | Add idempotency envelope and dedupe keys for side-effecting activities |
+| P1 | Compaction trigger has no formal ordering with memory encoding | Freshly encoded facts may be compacted incorrectly | Add explicit turn processing state machine and compaction preconditions |
+| P1 | Scheduler lifecycle/execution model missing | Cron/interval/event automations cannot be represented or audited durably | Add scheduler entity + schedule execution workflow + schedule tables |
+| P1 | Shared memory vs per-agent memory persistence is ambiguous | Cross-agent consistency and conflict resolution undefined | Define shared-memory storage contract and conflict strategy before implementation |
+| P1 | Workflow versioning for in-flight durable workflows is undefined | Deployments can break in-flight executions | Add `workflowType` + `workflowVersion` metadata and migration policy |
+
+### 18.3 Non-Negotiable Ontology Constraints (Encode Early)
+
+These constraints must be represented in Effect Schema/domain contracts before building higher-level workflows.
+
+1. `pao:AIAgent` constraints:
+   - Required: `hasPersona`, `operatesInMode`, `hasAvailableTool`, `hasIntegration`, `usesModel`, `hasHook`, `hasExternalService`
+   - Key: `hasAgentId`
+2. `pao:Session` constraints:
+   - Required: `hasParticipant`, `partOfConversation`, `hasStatus`, `hasTemporalExtent`
+   - Key: `hasSessionId`
+3. `pao:MemoryItem` constraints:
+   - Required: `storedIn`, `governedByRetention`, `hasSensitivityLevel`, `prov:wasGeneratedBy`, `prov:wasAttributedTo`
+   - Cardinality: exactly one `storedIn` memory tier
+4. `pao:ToolInvocation` constraints:
+   - Required: `invokesTool`, `hasInput`, `hasOutput`, `inSession`, `invokedBy`, `producedToolResult`, `governedByPolicy`, `hasComplianceStatus`
+5. `pao:Schedule` constraints:
+   - Required: `ownedByAgent`, `hasRecurrencePattern`, `activatedBy`, `hasConcurrencyPolicy`, `schedulesAction`, `hasScheduleStatus`
+   - Optional but functional: `allowsCatchUp`
+6. `pao:ScheduledExecution` constraints:
+   - Required: `executionOf`, `hasTemporalExtent`, `hasExecutionOutcome`
+7. `pao:RecurrencePattern` constraints:
+   - Must satisfy SHACL `or`: at least one of `hasCronExpression` or `hasIntervalSeconds`
+8. SHACL invariants:
+   - `ContextWindow`: `hasTokensUsed <= hasTokenCapacity`
+   - `Claim`: confidence bounds in `[0, 1]` when present
+   - `RecurrencePattern`: cron-or-interval requirement
+9. Disjointness/value partitions:
+   - Preserve disjoint class families and disjoint unions in Schema unions to prevent invalid mixed states.
+
+### 18.4 Refined Core Abstractions (MVP-Safe)
+
+The initial implementation should stabilize these abstractions and defer non-essential distribution complexity:
+
+1. `Domain` package:
+   - Ontology-aligned Schema classes, branded IDs, and literals/value partitions
+   - Tagged error model for deterministic failures
+2. `Persistence` package:
+   - SQLite-first storage for core metadata and durable state
+   - KV/file store only where necessary (procedural content, large blobs)
+3. `Entity` protocols:
+   - `AgentEntity`, `SessionEntity`, `MemoryEntity` with explicit message contracts and invariant guards
+4. `Workflow` contracts:
+   - `TurnProcessingWorkflow` and `ErrorRecoveryWorkflow` first
+   - Activities as explicit retry boundaries with idempotency metadata
+5. `Scheduler` core:
+   - `SchedulerEntity` for durable schedule lifecycle and due-run coordination
+   - `ScheduleExecutionWorkflow` for trigger evaluation, concurrency enforcement, and execution recording
+6. `Governance` core:
+   - `EvaluatePolicy` and `WriteAuditEntry` on all tool execution paths
+
+Deferred until later phases:
+- Multi-runner distribution
+- Broad external integration discovery matrix
+- Advanced multi-model orchestration
+- Shared-memory conflict optimization beyond baseline policy
+
+### 18.5 Minimum Viable Vertical Slice
+
+Deliver one end-to-end slice before expanding breadth:
+
+1. Create/configure `AgentEntity` with ontology-valid defaults
+2. Start `SessionEntity` in a `Conversation`
+3. Process one turn via `TurnProcessingWorkflow`:
+   - classify dialog act (simple implementation)
+   - evaluate policy
+   - retrieve memory
+   - invoke model (single model deployment)
+   - optionally execute tool
+   - encode memory
+   - write audit trail
+4. Create one schedule and execute it through `ScheduleExecutionWorkflow` (cron or interval)
+5. Stream response back to CLI or HTTP client
+6. Persist and replay entity/workflow state after restart
+
+This slice is the correctness baseline for all subsequent features.
+
+### 18.6 Phased Implementation Plan
+
+| Phase | Goal | Entry Criteria | Exit Criteria |
+|---|---|---|---|
+| 0 | Ontology projection baseline | Spec accepted | Mapping matrix from ontology + SHACL to Schema/domain complete |
+| 1 | Identity + interaction core | Phase 0 done | Agent/session/turn creation persists and reloads with invariant enforcement |
+| 2 | Memory correctness core | Phase 1 done | Memory writes/retrieval enforce `MemoryItem` + `Claim` constraints; context window guard active |
+| 3 | Durable turn workflow + recovery skeleton | Phase 2 done | Turn processing + retry/recovery run with idempotency envelope and deterministic replay |
+| 4 | AI + tool + governance + scheduler completion | Phase 3 done | Tool invocations and scheduled executions persist full policy/compliance/outcome links and pass conformance checks |
+| 5 | Observability + gateway + distribution | Phase 4 done | HTTP/SSE, metrics, and multi-runner configuration validated in integration tests |
+
+### 18.7 Required Sequencing Contracts
+
+#### 18.7.1 Activity Idempotency Envelope
+
+Every side-effecting activity must carry:
+- `workflowExecutionId`
+- `activityName`
+- `activityAttempt`
+- `idempotencyKey`
+- `causationId`/`correlationId`
+
+`WriteAuditEntry`, integration/tool execution, and memory writes must dedupe on `idempotencyKey`.
+
+#### 18.7.2 Turn Processing and Compaction Ordering
+
+Compaction must not run until memory encoding is committed for the current turn.
+
+Required order:
+1. `InvokeModel` completed
+2. Tool execution group completed
+3. `EncodeMemory` committed
+4. Context window counters updated
+5. Compaction eligibility evaluated
+6. `CompactionWorkflow` may start
+
+#### 18.7.3 Shared Memory Contract
+
+If shared artifacts are enabled:
+1. Shared items use a canonical shared store record
+2. Agent-local references point to shared IDs
+3. Conflicts produce explicit `MemoryWriteConflict` records
+4. Conflict resolution policy must be selected and auditable
+
+#### 18.7.4 Workflow Evolution Contract
+
+Persist `workflowType`, `workflowVersion`, and checkpoint schema version.
+Deployments must define one of:
+1. continue old versions until completion
+2. migrate checkpoints with tested migration functions
+3. terminate with compensating recovery flow
+
+### 18.8 Ontology Conformance and Test Gates
+
+The implementation is not complete unless these gates pass:
+
+1. Schema validation tests:
+   - reject invalid `AIAgent` instances missing required relations
+   - reject invalid sessions/context windows
+   - reject invalid memory/tool invocation records
+   - reject invalid schedule/recurrence/scheduled execution records
+2. Persistence conformance tests:
+   - round-trip all required ontology fields through storage
+   - preserve cardinality and key constraints
+3. Recovery/idempotency tests:
+   - replay workflows without duplicate audit/tool side effects
+4. SHACL-aligned invariants:
+   - `tokensUsed <= tokenCapacity`
+   - claim confidence bounds
+   - recurrence pattern cron-or-interval requirement
+5. Integration tests:
+   - end-to-end turn lifecycle produces complete provenance/audit chain
+   - scheduler tick produces valid `ScheduledExecution` records with correct outcomes
+
+### 18.9 Decision Backlog (Must Resolve Before Full Build-Out)
+
+1. Embedding strategy: ontology extension vs implementation metadata
+2. Sub-agent memory model: isolated vs inherited/shared tiers
+3. Shared memory conflict policy: LWW vs merge vs manual mediation
+4. Workflow version migration policy for in-flight executions
+5. Hook and audit ordering on denied tool actions
+6. Scope of real-time subscriptions and cross-agent delegation auth model
+7. One-shot schedule modeling (interval + auto-disable vs dedicated construct)
+8. Catch-up/backfill limits for missed runs after downtime
+
+Resolving these decisions is required before scaling beyond the MVP vertical slice.
 
 ---
 
@@ -1482,13 +1914,26 @@ Multiple processes across nodes:
 
 ## Appendix B: Effect Source Reference
 
+> **Note (v4)**: In Effect v4, most modules are consolidated into the core `effect` package under `effect/unstable/*` subpaths. The `.reference/effect/` directory is a shallow clone of the `effect-smol` repository.
+
 - **Core**: `.reference/effect/packages/effect/src/`
-- **Cluster**: `.reference/effect/packages/cluster/`
-- **AI**: `.reference/effect/packages/ai/`
-- **Platform**: `.reference/effect/packages/platform/src/`
-- **SQL**: `.reference/effect/packages/sql/src/`
-- **CLI**: `.reference/effect/packages/cli/src/`
-- **RPC**: `.reference/effect/packages/rpc/src/`
+- **Cluster**: `.reference/effect/packages/effect/src/unstable/cluster/`
+- **AI**: `.reference/effect/packages/effect/src/unstable/ai/`
+- **Workflow**: `.reference/effect/packages/effect/src/unstable/workflow/`
+- **HTTP**: `.reference/effect/packages/effect/src/unstable/http/`
+- **HttpApi**: `.reference/effect/packages/effect/src/unstable/httpapi/`
+- **SQL**: `.reference/effect/packages/effect/src/unstable/sql/`
+- **CLI**: `.reference/effect/packages/effect/src/unstable/cli/`
+- **RPC**: `.reference/effect/packages/effect/src/unstable/rpc/`
+- **Persistence**: `.reference/effect/packages/effect/src/unstable/persistence/`
+- **EventLog**: `.reference/effect/packages/effect/src/unstable/eventlog/`
+- **Reactivity**: `.reference/effect/packages/effect/src/unstable/reactivity/`
+- **Observability**: `.reference/effect/packages/effect/src/unstable/observability/`
+- **Encoding**: `.reference/effect/packages/effect/src/unstable/encoding/`
+- **Socket**: `.reference/effect/packages/effect/src/unstable/socket/`
+- **DevTools**: `.reference/effect/packages/effect/src/unstable/devtools/`
+- **Platform-Bun**: `.reference/effect/packages/platform-bun/`
+- **SQL Drivers**: `.reference/effect/packages/sql/` (sqlite-bun, sqlite-node, etc.)
 
 ## Appendix C: Effect Solutions Guides
 
