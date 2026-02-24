@@ -94,25 +94,65 @@ export interface AuditEntryRecord {
   readonly createdAt: Instant
 }
 
+export interface RecurrencePattern {
+  readonly label: string
+  readonly cronExpression: string | null
+  readonly intervalSeconds: number | null
+}
+
+export interface CronTrigger {
+  readonly _tag: "CronTrigger"
+}
+
+export interface IntervalTrigger {
+  readonly _tag: "IntervalTrigger"
+}
+
+export interface EventTrigger {
+  readonly _tag: "EventTrigger"
+}
+
+export type Trigger = CronTrigger | IntervalTrigger | EventTrigger
+
+export const TriggerSource = Schema.Literals([
+  "CronTick",
+  "IntervalTick",
+  "Event",
+  "Manual"
+])
+export type TriggerSource = typeof TriggerSource.Type
+
 export interface ScheduleRecord {
   readonly scheduleId: ScheduleId
   readonly ownerAgentId: AgentId
+  readonly recurrencePattern: RecurrencePattern
+  readonly trigger: Trigger
+  readonly actionRef: string
   readonly scheduleStatus: ScheduleStatus
   readonly concurrencyPolicy: ConcurrencyPolicy
   readonly allowsCatchUp: boolean
   readonly autoDisableAfterRun: boolean
   readonly catchUpWindowSeconds: number
   readonly maxCatchUpRunsPerTick: number
+  readonly lastExecutionAt: Instant | null
   readonly nextExecutionAt: Instant | null
 }
 
 export interface ScheduledExecutionRecord {
   readonly executionId: ScheduledExecutionId
   readonly scheduleId: ScheduleId
+  readonly dueAt: Instant
+  readonly triggerSource: TriggerSource
   readonly outcome: ExecutionOutcome
   readonly startedAt: Instant
   readonly endedAt: Instant | null
   readonly skipReason: string | null
+}
+
+export interface DueScheduleRecord {
+  readonly schedule: ScheduleRecord
+  readonly dueAt: Instant
+  readonly triggerSource: TriggerSource
 }
 
 // Stable MVP ports. Keep these narrow and compose on Effect primitives.
@@ -160,6 +200,6 @@ export interface GovernancePort {
 
 export interface SchedulePort {
   readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void>
-  readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<ScheduleRecord>>
+  readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<DueScheduleRecord>>
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
 }
