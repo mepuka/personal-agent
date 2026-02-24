@@ -1,5 +1,11 @@
 import { Effect } from "effect"
-import { SandboxViolation, TokenBudgetExceeded, ToolQuotaExceeded } from "./errors.js"
+import {
+  ContextWindowExceeded,
+  SandboxViolation,
+  SessionNotFound,
+  TokenBudgetExceeded,
+  ToolQuotaExceeded
+} from "./errors.js"
 import {
   AgentId,
   AuditEntryId,
@@ -122,7 +128,7 @@ export interface SessionTurnPort {
   readonly updateContextWindow: (
     sessionId: SessionId,
     deltaTokens: number
-  ) => Effect.Effect<void>
+  ) => Effect.Effect<void, ContextWindowExceeded | SessionNotFound>
 }
 
 export interface MemoryPort {

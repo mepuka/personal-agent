@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { AgentId, ToolName } from "./ids.js"
+import { AgentId, SessionId, ToolName } from "./ids.js"
 
 export class TokenBudgetExceeded extends Schema.ErrorClass<TokenBudgetExceeded>("TokenBudgetExceeded")({
   _tag: Schema.tag("TokenBudgetExceeded"),
@@ -19,4 +19,16 @@ export class SandboxViolation extends Schema.ErrorClass<SandboxViolation>("Sandb
   _tag: Schema.tag("SandboxViolation"),
   agentId: AgentId,
   reason: Schema.String
+}) {}
+
+export class SessionNotFound extends Schema.ErrorClass<SessionNotFound>("SessionNotFound")({
+  _tag: Schema.tag("SessionNotFound"),
+  sessionId: SessionId
+}) {}
+
+export class ContextWindowExceeded extends Schema.ErrorClass<ContextWindowExceeded>("ContextWindowExceeded")({
+  _tag: Schema.tag("ContextWindowExceeded"),
+  sessionId: SessionId,
+  tokenCapacity: Schema.Number,
+  attemptedTokensUsed: Schema.Number
 }) {}
