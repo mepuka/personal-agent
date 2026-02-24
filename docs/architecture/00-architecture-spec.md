@@ -1,8 +1,8 @@
 # Personal Agent Architecture Specification
 
-**Version**: 0.2.0-draft
-**Date**: 2026-02-23
-**Status**: v4-aligned audit pass — package consolidation, API verification, gap analysis (2026-02-23)
+**Version**: 0.3.0-draft
+**Date**: 2026-02-24
+**Status**: v4-aligned audit pass + distributed agent OS capability gap closure (2026-02-24)
 **Ontology Version**: PAO v0.8.0
 **Runtime**: Effect TypeScript v4 (4.0.0-beta.11, `effect-smol`)
 
@@ -174,7 +174,8 @@ class Configure extends Rpc.make("Configure", {
 // For streaming responses:
 class ProcessTurn extends Rpc.make("ProcessTurn", {
   success: RpcSchema.Stream(TurnOutput, TurnError),
-  payload: { input: TurnInput }
+  payload: { input: TurnInput },
+  stream: true
 }).annotate(ClusterSchema.Persisted, true) {}
 
 // Group into entity protocol
@@ -266,6 +267,7 @@ An **Activity** is a single unit of work within a workflow. Activities are the b
 | `EncodeMemory` | Encoding (MemoryOp) | SQLite write | Immediate retry, 2 attempts |
 | `RetrieveMemory` | Retrieval (MemoryOp) | SQLite read | Immediate retry, 2 attempts |
 | `EvaluatePolicy` | PermissionPolicy check | Read policies | No retry (deterministic) |
+| `CheckTokenBudget` | AgentQuota check | Read agent quota | No retry (deterministic) |
 | `WriteAuditEntry` | AuditEntry | SQLite append | Retry until success |
 | `SendMessage` | Message via Channel | Network I/O | Exponential backoff |
 | `ClassifyDialogAct` | DialogAct | LLM call (fast) | Exponential backoff, 2 attempts |
@@ -288,6 +290,10 @@ SessionEntity receives ProcessTurn message
     │       ├─ Activity: EvaluatePolicy
     │       │     └─ Checks PermissionPolicy, SafetyConstraint
     │       │     └─ Writes AuditEntry
+    │       │
+    │       ├─ Activity: CheckTokenBudget
+    │       │     └─ Reads AgentEntity quota state
+    │       │     └─ Fails with TokenBudgetExceeded if over budget
     │       │
     │       ├─ Activity: RetrieveMemory
     │       │     └─ Queries relevant memories across tiers
@@ -315,6 +321,7 @@ SessionEntity receives ProcessTurn message
     │       └─ Returns Turn with ContentBlocks
     │
     ├─ Updates context window token tracking
+    ├─ Updates agent token budget (tokensConsumed += actual usage)
     │
     ├─ If context window near capacity:
     │     └─ Spawns CompactionWorkflow
@@ -372,6 +379,13 @@ ErrorRecoveryWorkflow
 - desires: Set<DesireId>                    # pao:holdsDesire (BDI)
 - activeGoals: Set<GoalId>                  # pao:pursuesGoal
 - sandboxPolicy: SandboxPolicy              # pao:enforcedBySandboxPolicy
+- quota: AgentQuota                          # pao:hasQuota (resource limits)
+  - tokenBudget: number                     # pao:hasTokenBudget (total tokens per period)
+  - budgetPeriod: QuotaPeriod               # pao:hasQuotaPeriod (Daily|Monthly|Yearly|Lifetime)
+  - budgetResetAt: Option<DateTime>         # Next budget reset timestamp
+  - tokensConsumed: number                  # Running counter for current period
+  - memoryByteLimit: Option<number>         # pao:hasMemoryByteLimit (max bytes across all tiers)
+  - toolInvocationLimits: Map<ToolName, ToolQuota>  # Per-tool invocation caps
 ```
 
 **RPC Protocol** (messages this entity accepts):
@@ -426,6 +440,14 @@ ErrorRecoveryWorkflow
 ```
 
 **Persistence**: Turn history in SQLite. Working memory reconstructed from turns + memory tiers.
+
+**Crash-safe Working Memory reconstruction**: Working memory is volatile (in-memory during a session) and must be recoverable after a runner crash. The reconstruction protocol:
+
+1. **On entity activation**: Load last N turns from SQLite (`turns` table, ordered by `turn_index`)
+2. **Replay context**: Re-assemble the context window from persisted turns' `content_blocks` + model invocation metadata
+3. **Restore scratchpad**: The `EncodeMemory` activity (step 8 in TurnProcessingWorkflow) persists all memory items durably before the turn completes. Any scratchpad content not yet persisted belongs to the in-flight workflow, which resumes from its last checkpoint.
+4. **In-flight turn recovery**: If a crash occurs mid-turn, the durable workflow resumes from the last completed activity. Activities before `EncodeMemory` are replayed; activities after are executed fresh. The `AssemblePrompt` activity is pure (no side effects) and deterministically reconstructs working memory from persisted state.
+5. **Token counter recovery**: `tokensUsed` and `tokenCapacity` are persisted in the `sessions` table and restored on activation. The `InvokeModel` activity records actual token usage, so counters are crash-consistent.
 
 **Shard group**: `"session"` — sessions are medium-lived, higher-count.
 
@@ -542,6 +564,9 @@ ErrorRecoveryWorkflow
 - scheduleStatus: ScheduleStatus             # pao:hasScheduleStatus (functional)
 - concurrencyPolicy: ConcurrencyPolicy       # pao:hasConcurrencyPolicy (functional)
 - allowsCatchUp: boolean                     # pao:allowsCatchUp (functional)
+- autoDisableAfterRun: boolean               # Implementation metadata for one-shot behavior
+- catchUpWindowSeconds: number               # Max age of due windows eligible for catch-up
+- maxCatchUpRunsPerTick: number              # Backfill throttle to prevent catch-up storms
 - lastExecutionAt: Option<DateTime>
 - nextExecutionAt: Option<DateTime>
 ```
@@ -563,7 +588,20 @@ ErrorRecoveryWorkflow
 - `RecurrencePattern` must include at least one of `hasCronExpression` or `hasIntervalSeconds`.
 - `ScheduledExecution` must include `executionOf`, `hasTemporalExtent`, and `hasExecutionOutcome`.
 
+**Lifecycle + execution contract (resolved on 2026-02-24)**:
+- Initial status is `ScheduleActive` unless explicitly created as paused.
+- Allowed status transitions:
+  - `ScheduleActive` -> `SchedulePaused` | `ScheduleDisabled` | `ScheduleExpired`
+  - `SchedulePaused` -> `ScheduleActive` | `ScheduleDisabled`
+  - `ScheduleExpired` -> `ScheduleDisabled`
+  - `ScheduleDisabled` is terminal.
+- One-shot schedules are represented as interval schedules (`hasIntervalSeconds`) with `autoDisableAfterRun = true`.
+- For one-shot schedules, after the first terminal execution record (`ExecutionSucceeded` | `ExecutionFailed` | `ExecutionSkipped`), the schedule transitions to `ScheduleDisabled` and clears `nextExecutionAt`.
+- Every scheduler decision (run, skip, replace, disable-after-run) must produce a durable `ScheduledExecution` record.
+
 **Shard group**: `"schedule"` — medium-lived, high-read, low-write.
+
+> **Implementation note**: The `SchedulerEntity` should build on `ClusterCron` from `effect/unstable/cluster` for cron-based scheduling, and `DeliverAt` for deferred message delivery, rather than implementing parallel scheduling infrastructure. `ClusterCron` provides cluster-aware, leader-elected cron execution that handles shard-safe scheduling automatically. The domain-level `SchedulerEntity` adds ontology semantics (concurrency policy, catch-up, execution records) on top of these primitives.
 
 ---
 
@@ -599,28 +637,36 @@ ErrorRecoveryWorkflow
    - Retry: No retry (deterministic)
    - Ontology: `pao:PermissionPolicy`, `pao:AuditEntry`, `pao:AuthorizationDecision`
 
-3. **RetrieveMemory**
+3. **CheckTokenBudget**
+   - Input: agentId, estimated input tokens (from prompt assembly)
+   - Output: `BudgetCheckResult` (Allowed | ExceededWithRemaining)
+   - Side effects: Reads AgentEntity quota state
+   - Retry: No retry (deterministic)
+   - On exceeded: Fail with `TokenBudgetExceeded` error, write `AuditEntry` with quota-specific reason
+   - Ontology: `pao:AgentQuota`, `pao:hasTokenBudget`
+
+4. **RetrieveMemory**
    - Input: userMessage, conversationContext, agentId
    - Output: `Array<MemoryItem>` (relevant items from all tiers)
    - Side effects: SQLite reads, KeyValueStore reads, updates `hasLastAccessTime`
    - Retry: 2 attempts, immediate
    - Ontology: `pao:Retrieval`, `pao:MemoryItem`
 
-4. **AssemblePrompt**
+5. **AssemblePrompt**
    - Input: system prompt (from ProceduralMemory), retrieved memories, turn history, user message
    - Output: Complete `Prompt` for LLM
    - Side effects: None (pure computation)
    - Retry: Not needed
    - Note: This is where WorkingMemory is constructed — the LLM context window
 
-5. **InvokeModel**
+6. **InvokeModel**
    - Input: assembled Prompt, GenerationConfiguration, ToolDefinitions
    - Output: `GenerateTextResponse` (text + tool calls + reasoning + usage)
    - Side effects: LLM API call via `effect/unstable/ai` LanguageModel service
    - Retry: 3 attempts, exponential backoff (respects FailureType)
    - Ontology: `pao:ModelInvocation`, `pao:GenerationConfiguration`, `pao:FoundationModel`
 
-6. **ExecuteTools** (0..N, parallel with concurrency limit)
+7. **ExecuteTools** (0..N, parallel with concurrency limit)
    - Input: `Array<ToolCallPart>` from model response
    - Output: `Array<ToolResult>` with ComplianceStatus
    - Side effects: Tool-specific (file I/O, HTTP calls, DB queries, etc.)
@@ -629,14 +675,14 @@ ErrorRecoveryWorkflow
    - Audit: Each invocation creates AuditEntry with AuthorizationDecision
    - Ontology: `pao:ToolInvocation`, `pao:ToolResult`, `pao:ComplianceStatus`
 
-7. **EncodeMemory**
+8. **EncodeMemory**
    - Input: Turn content, tool results, model reasoning
    - Output: `Array<MemoryItemId>` (items stored)
    - Side effects: SQLite writes (episodic), KeyValueStore writes (if preferences detected)
    - Retry: 2 attempts, immediate
    - Ontology: `pao:Encoding`, `pao:Episode`, `pao:Claim`
 
-8. **UpdateCommonGround**
+9. **UpdateCommonGround**
    - Input: Turn results, dialog act classification
    - Output: `GroundingAct` with `AcceptanceEvidence`
    - Side effects: Updates ConversationEntity's CommonGround
@@ -822,11 +868,19 @@ For each task in topological order (respecting `blockedBy` dependencies):
 1. **EvaluateDueSchedules**
    - Reads active schedules and evaluates recurrence pattern + trigger
    - Supports cron and interval recurrence patterns
+   - Computes due windows from `lastExecutionAt` to `now`
    - Applies `allowsCatchUp` policy for missed windows after downtime
+   - Catch-up policy:
+     - If `allowsCatchUp = false`: skip backfill runs and advance `nextExecutionAt` to the next future window
+     - If `allowsCatchUp = true`: execute at most `maxCatchUpRunsPerTick` windows, bounded by `catchUpWindowSeconds`
 
 2. **EnforceConcurrencyPolicy**
    - Applies `ConcurrencyAllow` | `ConcurrencyForbid` | `ConcurrencyReplace`
    - Decides run/skip/replace for overlapping executions
+   - Policy semantics:
+     - `ConcurrencyAllow`: run a new execution even if one is in flight
+     - `ConcurrencyForbid`: write `ExecutionSkipped` with reason `ConcurrencyForbid` when overlap exists
+     - `ConcurrencyReplace`: mark overlapping in-flight execution as replaced (`ExecutionSkipped`), then start the new execution
 
 3. **ExecuteScheduledAction**
    - Executes target action (e.g., plan execution, compaction, memory consolidation, or custom automation action)
@@ -834,11 +888,19 @@ For each task in topological order (respecting `blockedBy` dependencies):
 
 4. **RecordExecutionOutcome**
    - Persists `ScheduledExecution` with:
+     - `dueAt` (the scheduled window evaluated by the scheduler)
+     - `triggerSource` (`CronTick` | `IntervalTick` | `Event` | `Manual`) — implementation metadata, not yet in PAO SHACL constraints
      - `executionOf` (schedule link)
      - `hasTemporalExtent` (start/end interval)
      - `hasExecutionOutcome` (`ExecutionSucceeded` | `ExecutionFailed` | `ExecutionSkipped`)
+     - optional skip/concurrency reason when outcome is `ExecutionSkipped`
 
 **Output**: `Array<ScheduledExecutionSummary>` for observability and audit surfaces.
+
+**Resolved scheduling decisions (2026-02-24)**:
+- One-shot semantics are implemented as interval recurrence + `autoDisableAfterRun`.
+- Catch-up is bounded by `catchUpWindowSeconds` and `maxCatchUpRunsPerTick`.
+- Concurrency decisions are explicitly materialized as execution outcomes (run/skip/replace).
 
 ---
 
@@ -858,8 +920,11 @@ For each task in topological order (respecting `blockedBy` dependencies):
 ### 7.2 SQLite Schema (Core Tables)
 
 ```sql
--- Agent state
-agents (agent_id PK, persona JSON, permission_mode, model_config JSON, created_at, updated_at)
+-- Agent state (with quota tracking)
+agents (agent_id PK, persona JSON, permission_mode, model_config JSON,
+        token_budget INT, budget_period CHECK(budget_period IN ('Daily','Monthly','Yearly','Lifetime')),
+        budget_reset_at DATETIME, tokens_consumed INT NOT NULL DEFAULT 0,
+        memory_byte_limit INT, created_at, updated_at)
 agent_tools (agent_id FK, tool_name, tool_definition JSON)
 agent_beliefs (agent_id FK, claim_id FK, belief JSON)
 agent_desires (agent_id FK, desire_id PK, desire JSON)
@@ -878,6 +943,11 @@ turns (turn_id PK, session_id FK, conversation_id FK, turn_index,
 tool_invocations (invocation_id PK, turn_id FK, session_id FK, agent_id FK,
                   tool_name, input JSON, output JSON, compliance_status,
                   policy_id FK, invocation_group_id, created_at)
+
+-- Tool invocation quotas (per-agent, per-tool limits)
+tool_quotas (agent_id FK, tool_name, max_per_session INT, max_per_day INT,
+             invocations_today INT NOT NULL DEFAULT 0, quota_reset_at DATETIME,
+             PRIMARY KEY (agent_id, tool_name))
 
 -- Memory items
 memory_items (item_id PK, agent_id FK, tier, content JSON, topic,
@@ -902,12 +972,20 @@ schedules (schedule_id PK, agent_id FK, recurrence_pattern_id FK, trigger_type,
            action_definition JSON,
            schedule_status CHECK(schedule_status IN ('ScheduleActive','SchedulePaused','ScheduleExpired','ScheduleDisabled')),
            concurrency_policy CHECK(concurrency_policy IN ('ConcurrencyAllow','ConcurrencyForbid','ConcurrencyReplace')),
-           allows_catch_up BOOLEAN, created_at, updated_at)
+           allows_catch_up BOOLEAN NOT NULL DEFAULT FALSE,
+           auto_disable_after_run BOOLEAN NOT NULL DEFAULT FALSE,
+           catch_up_window_seconds INTEGER NOT NULL DEFAULT 86400 CHECK(catch_up_window_seconds > 0),
+           max_catch_up_runs_per_tick INTEGER NOT NULL DEFAULT 1 CHECK(max_catch_up_runs_per_tick > 0),
+           last_execution_at, next_execution_at,
+           created_at, updated_at)
 recurrence_patterns (pattern_id PK, label NOT NULL,
                      cron_expression, interval_seconds,
-                     CHECK(cron_expression IS NOT NULL OR interval_seconds IS NOT NULL))
+                     CHECK((cron_expression IS NOT NULL) OR (interval_seconds IS NOT NULL AND interval_seconds > 0)))
 scheduled_executions (execution_id PK, schedule_id FK,
+                      due_at, trigger_source CHECK(trigger_source IN ('CronTick','IntervalTick','Event','Manual')),
                       outcome CHECK(outcome IN ('ExecutionSucceeded','ExecutionFailed','ExecutionSkipped')),
+                      skip_reason,
+                      concurrency_decision CHECK(concurrency_decision IN ('Allow','ForbidSkipped','ReplaceExisting') OR concurrency_decision IS NULL),
                       started_at, ended_at, initiated_session_id FK, created_at)
 
 -- Governance
@@ -929,27 +1007,31 @@ reliability_incidents (incident_id PK, entity_id, entity_type, recovery_id FK, c
 
 ### 7.3 KeyValueStore Layout
 
+All KeyValueStore paths are **namespace-scoped per agent**. Each agent's storage is rooted at `{agentId}/` and agents cannot access paths outside their namespace. This is enforced by the `SandboxPolicy` filesystem guard (Section 10.5).
+
 ```
-procedural-memory/
-  {agentId}/
-    system-prompt          # Main system prompt
-    persona-prompt         # Persona-specific instructions
+{agentId}/                             # Agent namespace root (isolation boundary)
+  procedural-memory/
+    system-prompt                      # Main system prompt
+    persona-prompt                     # Persona-specific instructions
     policies/
-      {policyName}         # Learned behavioral policies
+      {policyName}                     # Learned behavioral policies
     skills/
-      {skillName}          # Learned skill descriptions
-
-memory-blocks/
-  {agentId}/
-    {blockKey}             # Letta-style core memory blocks
-                           # e.g., "human", "persona", "preferences"
-
-agent-config/
-  {agentId}/
-    config                 # Agent configuration
-    model-deployment       # Current model deployment config
-    generation-config      # Generation parameters
+      {skillName}                      # Learned skill descriptions
+  memory-blocks/
+    {blockKey}                         # Letta-style core memory blocks
+                                       # e.g., "human", "persona", "preferences"
+  config/
+    config                             # Agent configuration
+    model-deployment                   # Current model deployment config
+    generation-config                  # Generation parameters
+  workspace/                           # Agent-scoped scratch files
+    {filename}                         # Files created by tool executions
 ```
+
+**Namespace enforcement**: The `KeyValueStore` Layer provided to each agent is constructed with a prefix scope of `{agentId}/`. All key operations (`get`, `set`, `remove`) are transparently prefixed, making cross-agent access impossible at the API level. This is independent of `SandboxPolicy` — even without a policy, the scoped KV Layer prevents namespace violations.
+
+**Sub-agent namespaces**: Sub-agents spawned via `SpawnSubAgent` receive their own namespace (`{subAgentId}/`). They do not inherit the parent's namespace. Shared data between parent and sub-agent must go through the `SharedMemoryArtifact` mechanism (Section 8.4).
 
 ### 7.4 Migration to Cloud
 
@@ -1063,12 +1145,26 @@ OntologyToolDefinition (pao:ToolDefinition)
     - failureSchema: Schema (typed error)
 ```
 
+**Tool invocation quotas**: Each tool can carry per-agent invocation limits defined in `AgentQuota.toolInvocationLimits`:
+
+```
+ToolQuota:
+  maxPerSession: Option<number>            # Max invocations per session (resets on session end)
+  maxPerDay: Option<number>                # Max invocations per 24h rolling window
+  currentSessionCount: number              # Tracked in memory
+  currentDayCount: number                  # Tracked in tool_quotas SQL table
+```
+
+The `ExecuteTool` activity checks quotas before execution. If exceeded, it fails with `ToolQuotaExceeded` error and writes an `AuditEntry` with reason `"tool_quota_exceeded:{toolName}"`.
+
 Each tool invocation creates an audit trail:
 1. PermissionPolicy evaluated → AuthorizationDecision
-2. AuditEntry written with decision + reason
-3. Tool handler executed (if allowed)
-4. ToolResult recorded with ComplianceStatus
-5. All wrapped in ToolInvocation entity with full provenance
+2. **Tool quota checked → QuotaCheckResult** (if quotas defined)
+3. AuditEntry written with decision + reason
+4. Tool handler executed (if allowed and within quota)
+5. ToolResult recorded with ComplianceStatus
+6. Tool quota counters incremented
+7. All wrapped in ToolInvocation entity with full provenance
 
 ### 9.3 Model Invocation Tracking
 
@@ -1163,6 +1259,34 @@ Audit entries are append-only in SQLite. They are never deleted (except via Eras
 - **ErasureEvent**: User-requested deletion, recorded with `requestedBy` provenance
 - **SandboxPolicy**: Filesystem/network restrictions enforced per agent
 
+### 10.5 SandboxPolicy Enforcement
+
+The `SandboxPolicy` (ontology: `pao:SandboxPolicy`) defines per-agent isolation boundaries. Unlike `PermissionPolicy` (which governs what an agent _may_ do), `SandboxPolicy` governs what an agent _can access_ at the infrastructure level.
+
+**Policy dimensions**:
+```
+SandboxPolicy:
+  agentId: AgentId                           # pao:enforcedBySandboxPolicy (inverse)
+  filesystemScope: FilesystemScope           # Allowed paths (read/write/execute)
+    - allowedPaths: Array<GlobPattern>       # e.g., ["/agents/{agentId}/**"]
+    - deniedPaths: Array<GlobPattern>        # e.g., ["/agents/other-agent/**"]
+  networkScope: NetworkScope                 # Allowed network targets
+    - allowedHosts: Array<HostPattern>       # e.g., ["api.openai.com", "*.internal"]
+    - deniedHosts: Array<HostPattern>        # e.g., ["*.competitor.com"]
+  resourceLimits: ResourceLimits             # Compute/memory bounds
+    - maxConcurrentTools: number             # Parallel tool execution cap
+    - maxToolExecutionMs: number             # Per-tool timeout
+```
+
+**Enforcement mechanism**: SandboxPolicy is enforced as an **Effect Layer** that wraps the `ExecuteTool` activity's execution environment. This is implemented by:
+
+1. **FileSystem guard**: A scoped `FileSystem` Layer that intercepts all file operations and validates paths against `filesystemScope` before delegation. Unauthorized access produces `SandboxViolation` error.
+2. **Network guard**: A scoped `HttpClient` Layer that validates outbound request hosts against `networkScope` before sending. Unauthorized requests produce `SandboxViolation` error.
+3. **Resource guard**: Wraps tool execution in `Effect.timeout` and concurrency `Semaphore` per `resourceLimits`.
+4. **Audit**: Every `SandboxViolation` produces an `AuditEntry` with decision `Deny` and reason citing the specific policy constraint violated.
+
+The sandbox Layer is constructed per-agent at entity activation time and provided to all tool executions within that agent's scope. Sub-agents inherit the parent's sandbox policy by default, with optional further restriction (never relaxation).
+
 ---
 
 ## 11. Networking & Gateway
@@ -1214,7 +1338,8 @@ GET    /audit                             # Query audit log
 ```
 Request
   → Authentication (who is calling)
-  → Rate limiting
+  → Rate limiting (per-client, infrastructure-level)
+  → Agent quota check (per-agent token/tool budget)
   → Request validation (Schema-driven)
   → Policy check (is caller authorized for this entity)
   → Entity routing (Sharding resolves entity address)
@@ -1222,6 +1347,26 @@ Request
   → Response serialization
   → Audit logging
 ```
+
+**Rate limiting implementation**: Uses `RateLimiter` from `effect/unstable/persistence` with the following configuration:
+
+```
+RateLimiter configuration:
+  - Algorithm: fixed-window (default) or token-bucket (for burst-tolerant endpoints)
+  - Key strategy:
+    - Per-client: "client:{clientId}:api" — limits total API calls per client
+    - Per-agent: "agent:{agentId}:turns" — limits turn processing rate per agent
+    - Per-tool: "agent:{agentId}:tool:{toolName}" — limits tool invocation rate
+  - Default limits:
+    - API calls: 100/minute per client
+    - Turn processing: 20/minute per agent
+    - Tool invocations: 60/minute per agent per tool
+  - On exceeded: "fail" for API calls (return 429), "delay" for internal rate limits (backpressure)
+```
+
+The `RateLimiter` Layer is provided in the gateway middleware stack via `Layer.provide(RateLimiter.layer)`. Each middleware step calls `RateLimiter.consume({ limit, window, key, onExceeded })` before proceeding.
+
+**Agent quota check**: A separate middleware step (after rate limiting, before request validation) reads the target agent's `AgentQuota` from `AgentEntity` and rejects requests that would exceed the agent's token budget. This is a fast path check — the detailed budget enforcement happens in `CheckTokenBudget` activity during turn processing.
 
 ### 11.3 Streaming
 
@@ -1527,6 +1672,60 @@ This section provides a detailed mapping of every ontology module to specific Ef
 | `pao:ExecutionOutcome` | `Schema.Literal("ExecutionSucceeded", "ExecutionFailed", "ExecutionSkipped")` | Execution result |
 | `pao:ConcurrencyPolicy` | `Schema.Literal("ConcurrencyAllow", "ConcurrencyForbid", "ConcurrencyReplace")` | Overlap behavior |
 
+### Module 10: Distribution & Quotas (Ontology Extension)
+
+> **Note**: These classes are not yet in PAO v0.8.0. They are **proposed ontology extensions** required to formalize distribution and resource quota semantics. They should be added to the ontology before Phase 5 implementation.
+
+**Distribution classes** (required for multi-runner deployment):
+
+| Proposed Ontology Class | Effect Construct | Notes |
+|---|---|---|
+| `pao:Shard` | Cluster shard assignment | Partition of entities assigned to a single runner |
+| `pao:Runner` | `RunnerAddress` from `effect/unstable/cluster` | Computation unit executing entities and workflows |
+| `pao:ClusterNode` | Deployment unit (1+ runners) | Physical/virtual host running runner processes |
+| `pao:belongsToShard` | Entity → Shard assignment | Derived from `ClusterSchema.ShardGroup` annotation |
+| `pao:hostedBy` | Runner → ClusterNode | Which node hosts which runner |
+| `pao:hasReplicationFactor` | Shard group config | Number of replicas per shard (future) |
+
+**Quota classes** (required for per-agent resource management):
+
+| Proposed Ontology Class | Effect Construct | Notes |
+|---|---|---|
+| `pao:AgentQuota` | `Schema.Class("AgentQuota")` in AgentEntity state | Resource limits per agent |
+| `pao:hasTokenBudget` | `Schema.Number` field | Total token allowance per quota period |
+| `pao:hasQuotaPeriod` | `Schema.Literal("Daily", "Monthly", "Yearly", "Lifetime")` | Budget reset frequency |
+| `pao:hasMemoryByteLimit` | `Schema.Number` field | Max storage bytes across all memory tiers |
+| `pao:hasToolInvocationLimit` | `Schema.Class("ToolQuota")` | Per-tool invocation caps |
+| `pao:QuotaPeriod` | Value partition | `owl:oneOf` (Daily, Monthly, Yearly, Lifetime) |
+| `pao:TokenBudgetExceeded` | Tagged error extending `FailureType` | Quota violation error |
+| `pao:ToolQuotaExceeded` | Tagged error extending `FailureType` | Tool quota violation error |
+| `pao:SandboxViolation` | Tagged error extending `FailureType` | Sandbox policy violation error |
+
+**SHACL shape constraints** (proposed):
+
+```
+pao:AgentQuotaShape a sh:NodeShape ;
+  sh:targetClass pao:AgentQuota ;
+  sh:property [
+    sh:path pao:hasTokenBudget ;
+    sh:datatype xsd:nonNegativeInteger ;
+    sh:maxCount 1
+  ] ;
+  sh:property [
+    sh:path pao:hasQuotaPeriod ;
+    sh:in (pao:Daily pao:Monthly pao:Yearly pao:Lifetime) ;
+    sh:maxCount 1
+  ] .
+
+pao:AIAgentQuotaShape a sh:NodeShape ;
+  sh:targetClass pao:AIAgent ;
+  sh:property [
+    sh:path pao:hasQuota ;
+    sh:class pao:AgentQuota ;
+    sh:maxCount 1
+  ] .
+```
+
 ---
 
 ## 15. Package Structure
@@ -1671,6 +1870,49 @@ Multiple processes across nodes:
 - Single runner → multi-runner (add RunnerAddress config)
 - Load balancer routes HTTP to any runner
 
+### Runner Lifecycle & Shard Rebalancing
+
+In multi-runner mode, runners must be dynamically discoverable and shards must rebalance when runners join or leave.
+
+**Runner discovery**: Runners register themselves in `SqlRunnerStorage` on startup. The `RunnerHealth` service monitors liveness:
+
+- **Heartbeat interval**: Each runner writes a heartbeat to `RunnerStorage` every 5 seconds
+- **Failure detection**: If 3 consecutive heartbeats are missed (15s), the runner is marked dead
+- **Clock skew tolerance**: Heartbeat timestamps allow ±2s drift between nodes
+- **Discovery mechanism**: New runners register via `RunnerStorage.register()` and are immediately visible to the shard assignment algorithm. For Kubernetes deployments, `RunnerHealth.layerK8s()` uses the K8s API for liveness checks.
+
+**Shard rebalancing**: When runners join or leave:
+
+1. **Shard lock expiry**: Dead runner's shard locks expire after failure detection timeout (15s)
+2. **Rebalancing algorithm**: Remaining runners acquire orphaned shards via atomic `RunnerStorage.acquire(address, shardIds)` (compare-and-swap on shard lock)
+3. **New runner joins**: Shard assignment is rebalanced across all healthy runners. Shards migrate from overloaded runners to the new runner via lock release + re-acquisition.
+4. **Hot-spot mitigation**: If a shard group exceeds a configurable message throughput threshold, the shard count for that group can be increased (requires entity re-sharding, which is a manual operation).
+
+**Multi-runner failure scenarios**:
+
+- **Single runner failure**: Shards rebalance to surviving runners within 15s. Unprocessed messages replayed from `MessageStorage`.
+- **Multiple simultaneous failures**: Each surviving runner independently acquires available shards. No quorum required — PostgreSQL's row-level locks prevent double-assignment.
+- **Network partition**: Runners on the minority side lose their shard locks (heartbeats fail to reach PostgreSQL). Runners on the majority side acquire those shards. When the partition heals, minority-side runners re-register and receive rebalanced shard assignments. Messages sent during partition are stored in `MessageStorage` and delivered upon reconnection.
+- **Split-brain prevention**: PostgreSQL row-level locking on shard assignments prevents two runners from owning the same shard simultaneously. A runner must hold the lock to process messages for a shard.
+
+### PostgreSQL High Availability (Cloud)
+
+PostgreSQL is the single coordination point for multi-runner deployments. Its availability is critical.
+
+**Requirements**:
+
+1. **Replication**: Primary-replica with synchronous replication for `runner_storage` and `message_storage` tables (coordination data). Asynchronous replication acceptable for domain state tables.
+2. **Automatic failover**: Use managed PostgreSQL (AWS RDS Multi-AZ, GCP Cloud SQL HA, or similar) or a proxy like PgBouncer + Patroni for self-hosted deployments.
+3. **Connection pooling**: All runners connect through a connection pool (PgBouncer or built-in Effect SQL pool) to prevent connection exhaustion.
+4. **WAL archiving**: Continuous WAL archiving for point-in-time recovery of domain state.
+
+**Behavior when PostgreSQL is unavailable**:
+
+- **Shard coordination**: Runners cannot acquire or release shards. Existing shard assignments remain stable (runners continue processing messages for shards they already own).
+- **Message storage**: New persisted messages cannot be stored. Runners buffer messages in memory up to `mailboxCapacity`, then reject with `MailboxFull` error.
+- **Domain state**: Entity state mutations are held in memory and flushed when PostgreSQL recovers. The `SqlClient` retry policy applies (`Effect.retry` with exponential backoff, max 30s).
+- **Recovery**: When PostgreSQL becomes available, runners re-register, flush buffered state, and resume normal operation. No message loss if mailbox capacity was not exceeded.
+
 ---
 
 ## 17. Open Questions
@@ -1702,7 +1944,7 @@ Multiple processes across nodes:
 10. **Shared memory consistency**: The ontology defines `MemoryWriteConflict` resolved by policy. What specific conflict resolution strategies do we implement (last-write-wins, merge, manual)?
 
 11. **One-shot scheduling semantics**: Scope examples include one-time reminders, but current recurrence validation is cron-or-interval. Do we model one-shot schedules as interval + auto-disable, event-triggered single-run, or add an explicit one-shot recurrence construct?
-   > **Partially answered**: The `ClusterCron` module from `effect/unstable/cluster` provides cron-based scheduling. For one-shot schedules, **recommendation**: Use event-triggered activation with `Schedule.recurs(1)` (execute once then stop), or model as interval with automatic disable after first execution.
+   > **Answered (2026-02-24)**: Model one-shot schedules as interval recurrence (`hasIntervalSeconds`) with `autoDisableAfterRun = true`. After the first terminal execution record (`ExecutionSucceeded` | `ExecutionFailed` | `ExecutionSkipped`), transition the schedule to `ScheduleDisabled` and clear `nextExecutionAt`. Do not model one-shot behavior via `Schedule.recurs(1)`.
 
 ---
 
@@ -1734,9 +1976,19 @@ This section refines the base spec with explicit constraints, sequencing contrac
 | P0 | Tool invocation policy/compliance references are not guaranteed in all paths | Governance/audit trace can be incomplete | Require each `ToolInvocation` to persist governing policy, compliance status, input/output, invoking agent, and session link |
 | P1 | Retry + audit/hook sequencing lacks idempotency contract | Recovery may duplicate side effects | Add idempotency envelope and dedupe keys for side-effecting activities |
 | P1 | Compaction trigger has no formal ordering with memory encoding | Freshly encoded facts may be compacted incorrectly | Add explicit turn processing state machine and compaction preconditions |
-| P1 | Scheduler lifecycle/execution model missing | Cron/interval/event automations cannot be represented or audited durably | Add scheduler entity + schedule execution workflow + schedule tables |
+| P1 | Scheduler lifecycle/execution model was previously missing (now specified in this spec) | Cron/interval/event automations must be represented and audited durably | Implement Sections 5.6, 6.7, and 7.2 as written (one-shot interval+auto-disable, bounded catch-up, explicit concurrency outcome recording) |
 | P1 | Shared memory vs per-agent memory persistence is ambiguous | Cross-agent consistency and conflict resolution undefined | Define shared-memory storage contract and conflict strategy before implementation |
 | P1 | Workflow versioning for in-flight durable workflows is undefined | Deployments can break in-flight executions | Add `workflowType` + `workflowVersion` metadata and migration policy |
+| P0 | No per-agent token budget enforcement | Agents can consume unlimited tokens with no guardrails | Added `AgentQuota` to AgentEntity state (Section 5.1), `CheckTokenBudget` activity to TurnProcessingWorkflow (Section 6.1), budget columns to SQL schema (Section 7.2). **RESOLVED in v0.3.0.** |
+| P0 | SandboxPolicy enforcement undefined at runtime | File/network isolation is aspirational, not enforced | Added Section 10.5 with scoped FileSystem/HttpClient Layers, resource guards, and audit trail. **RESOLVED in v0.3.0.** |
+| P0 | PostgreSQL single point of failure | Multi-runner deployment has no HA strategy | Added PostgreSQL HA subsection to Section 16 with replication, failover, and unavailability behavior. **RESOLVED in v0.3.0.** |
+| P0 | Working Memory crash reconstruction unspecified | Volatile session state lost on runner crash | Added crash-safe reconstruction protocol to Section 5.2 with 5-step recovery process. **RESOLVED in v0.3.0.** |
+| P0 | Runner lifecycle and shard rebalancing undefined | Cannot add/remove runners dynamically | Added Runner Lifecycle subsection to Section 16 with heartbeat, failure detection, and rebalancing. **RESOLVED in v0.3.0.** |
+| P1 | No per-agent file system namespace isolation | Agents can access each other's files and KV data | Added namespace-scoped KV layout to Section 7.3 with prefix-scoped Layer enforcement. **RESOLVED in v0.3.0.** |
+| P1 | No end-to-end workflow transaction boundary | Turn side effects can be partially committed | Added Section 18.7.5 with saga pattern, commit phases, and compensation semantics. **RESOLVED in v0.3.0.** |
+| P1 | Tool invocation quotas not enforced | No per-tool per-agent invocation limits | Added ToolQuota to Section 9.2, `tool_quotas` table to SQL schema. **RESOLVED in v0.3.0.** |
+| P1 | RateLimiter not wired into gateway | Rate limiting listed but not implemented | Added RateLimiter configuration and key strategy to Section 11.2 middleware. **RESOLVED in v0.3.0.** |
+| P1 | No ontology classes for distribution or quotas | Distribution and resource management invisible to domain model | Added Module 10 to Section 14 with proposed `pao:Shard`, `pao:Runner`, `pao:AgentQuota`, `pao:QuotaPeriod` classes. **SPECIFIED in v0.3.0; pending ontology merge into PAO.** |
 
 ### 18.3 Non-Negotiable Ontology Constraints (Encode Early)
 
@@ -1866,6 +2118,24 @@ Deployments must define one of:
 2. migrate checkpoints with tested migration functions
 3. terminate with compensating recovery flow
 
+#### 18.7.5 Turn Processing Transaction Boundary
+
+The `TurnProcessingWorkflow` uses a **saga pattern** to achieve consistency across its activities. This is not a database transaction — external tool calls are irreversible, so full rollback is impossible. Instead, the saga guarantees: (1) internal state changes (memory, audit, counters) are atomic at the commit point, and (2) partial failures are explicitly recorded with compensation metadata so the system never enters a silently inconsistent state.
+
+**Transaction envelope**:
+
+1. **Pre-commit phase** (activities 1-7): All activities execute normally. Failures trigger activity-level retries, then `ErrorRecoveryWorkflow` if retries exhaust.
+2. **Commit phase** (activities 8-9): `EncodeMemory` and `UpdateCommonGround` persist the turn's results. These two activities form the "commit point" — once both complete, the turn is committed.
+3. **Post-commit phase**: Context window counters updated, token budget updated, compaction eligibility evaluated.
+
+**Compensation on failure**:
+
+- If `EncodeMemory` fails after `ExecuteTools` succeeded: Tool results are lost from memory but the tool side effects (e.g., file writes) cannot be reversed. The workflow records a `PartialTurnFailure` event and the turn is marked as failed. The user is notified that tool actions were taken but not recorded.
+- If `InvokeModel` fails: No side effects have occurred yet (tools haven't run). The workflow can safely retry or abort.
+- If an external tool call fails mid-batch: Completed tool results are preserved; the failed tool produces a `ToolResult` with error status. The model is re-invoked with partial results if configured for tool retry.
+
+**Exactly-once semantics for external calls**: External tool invocations are inherently at-most-once (network calls cannot be atomically rolled back). The `idempotencyKey` from Section 18.7.1 must be passed to external services that support it. For services that don't, the architecture accepts at-most-once delivery with explicit failure recording rather than risking duplicate side effects.
+
 ### 18.8 Ontology Conformance and Test Gates
 
 The implementation is not complete unless these gates pass:
@@ -1887,19 +2157,115 @@ The implementation is not complete unless these gates pass:
 5. Integration tests:
    - end-to-end turn lifecycle produces complete provenance/audit chain
    - scheduler tick produces valid `ScheduledExecution` records with correct outcomes
+6. Quota enforcement tests:
+   - `CheckTokenBudget` rejects turns when agent token budget exceeded
+   - `ExecuteTool` rejects invocations when tool quota exceeded
+   - Budget counters reset correctly on period boundaries
+7. Sandbox enforcement tests:
+   - Scoped FileSystem Layer blocks cross-agent path access
+   - Scoped HttpClient Layer blocks unauthorized host access
+   - `SandboxViolation` produces `AuditEntry` with deny decision
+8. Namespace isolation tests:
+   - Agent A's KeyValueStore cannot read Agent B's keys
+   - Sub-agent namespace is independent from parent
 
-### 18.9 Decision Backlog (Must Resolve Before Full Build-Out)
+### 18.9 Decision Backlog (MVP Status: Closed)
 
-1. Embedding strategy: ontology extension vs implementation metadata
-2. Sub-agent memory model: isolated vs inherited/shared tiers
-3. Shared memory conflict policy: LWW vs merge vs manual mediation
-4. Workflow version migration policy for in-flight executions
-5. Hook and audit ordering on denied tool actions
-6. Scope of real-time subscriptions and cross-agent delegation auth model
-7. One-shot schedule modeling (interval + auto-disable vs dedicated construct)
-8. Catch-up/backfill limits for missed runs after downtime
+Resolved on 2026-02-24 (MVP defaults approved):
 
-Resolving these decisions is required before scaling beyond the MVP vertical slice.
+1. Embedding strategy: implementation metadata (separate index/table), no PAO core extension in MVP.
+2. Sub-agent memory model: isolated by default; sharing only via explicit shared artifacts.
+3. Shared memory conflict policy: deterministic LWW + required `MemoryWriteConflict` record + audit entry.
+4. Workflow version migration policy: continue old versions until completion; no checkpoint migration in MVP.
+5. Hook/audit ordering on denied tool actions: `EvaluatePolicy` -> `WriteAuditEntry(Deny)` -> optional deny hooks -> no tool execution.
+6. Realtime subscription/delegation scope: caller-owned agent/session scope only; no cross-agent delegation in MVP.
+7. Sub-agent quota inheritance: child agents draw from parent quota pool by default; optional stricter child caps allowed.
+8. Memory size quota enforcement: hard limit at write time (reject + audit); async eviction remains explicit `Forgetting` workflow.
+9. Quota violation audit model: extend `AuditEntry` with structured quota reason codes; defer separate `QuotaViolationEvent` class.
+
+Resolved on 2026-02-24: one-shot schedule modeling and catch-up/backfill policy (Sections 5.6, 6.7, and 7.2).
+
+Resolved on 2026-02-24 (v0.3.0): distributed agent OS capability gaps — per-agent token budget, SandboxPolicy enforcement, PostgreSQL HA, working memory crash reconstruction, runner lifecycle/shard rebalancing, per-agent FS namespace, workflow transaction boundary, tool invocation quotas, RateLimiter wiring, ontology distribution/quota classes.
+
+These decisions are required defaults for Phase 1-4 implementation.
+
+### 18.10 MVP Abstraction Lock List (5 Interfaces)
+
+The MVP should lock exactly five domain-facing interfaces. Everything else should use Effect primitives directly (`Entity`, `Workflow`, `Activity`, `Sharding`, `SqlClient`, `RateLimiter`, `ClusterCron`, `DeliverAt`) to avoid unnecessary wrappers.
+
+These are the only interfaces that must be stable before broad implementation:
+
+1. `AgentStatePort` (ontology anchors: `pao:AIAgent`, `pao:PermissionMode`, `pao:SandboxPolicy`)
+   - Responsibilities:
+     - Load/update ontology-valid agent state
+     - Apply quota consumption and resets
+     - Expose immutable runtime config needed by workflows
+   - Minimal operations:
+     - `get(agentId)`
+     - `upsert(agentState)`
+     - `consumeTokenBudget(agentId, tokens, now)`
+
+2. `SessionTurnPort` (ontology anchors: `pao:Session`, `pao:Turn`, `pao:ContextWindow`)
+   - Responsibilities:
+     - Create/transition session state
+     - Persist turn records and context-window counters
+     - Enforce `tokensUsed <= tokenCapacity`
+   - Minimal operations:
+     - `startSession(input)`
+     - `appendTurn(turnRecord)`
+     - `updateContextWindow(sessionId, deltaTokens)`
+
+3. `MemoryPort` (ontology anchors: `pao:MemoryItem`, `pao:Episode`, `pao:Claim`, `pao:MemoryWriteConflict`)
+   - Responsibilities:
+     - Retrieve candidate memories for turn execution
+     - Encode memories with provenance and retention metadata
+     - Perform forgetting/eviction operations explicitly
+   - Minimal operations:
+     - `retrieve(query)`
+     - `encode(items, provenance)`
+     - `forget(criteria)`
+
+4. `GovernancePort` (ontology anchors: `pao:PermissionPolicy`, `pao:AuditEntry`, `pao:AuthorizationDecision`)
+   - Responsibilities:
+     - Evaluate tool/action policy decisions
+     - Enforce tool quota checks and sandbox constraints
+     - Write canonical audit records for allow/deny/failure paths
+   - Minimal operations:
+     - `evaluatePolicy(input)`
+     - `checkToolQuota(agentId, toolName, now)`
+     - `writeAudit(entry)`
+
+5. `SchedulePort` (ontology anchors: `pao:Schedule`, `pao:RecurrencePattern`, `pao:ScheduledExecution`)
+   - Responsibilities:
+     - Own schedule lifecycle and recurrence metadata
+     - Evaluate due windows and concurrency outcomes
+     - Persist execution records durably
+   - Minimal operations:
+     - `upsertSchedule(input)`
+     - `listDue(now)`
+     - `recordExecution(result)`
+   - Implementation constraint:
+     - Must be implemented on top of `ClusterCron` + `DeliverAt` (Section 5.6 note), not as parallel scheduler infrastructure.
+
+**Anti-overengineering guardrail**: No additional interface is allowed in MVP unless it reduces ontology mismatch risk or removes duplicated cross-cutting logic across at least two workflows.
+
+### 18.11 Backlog Decision Review (MVP Defaults, Approved)
+
+The following decisions are approved to unblock implementation while preserving ontology fidelity and Effect-native simplicity.
+
+| Backlog Item | MVP Default (Approved) | Why |
+|---|---|---|
+| 1. Embedding strategy | Keep embeddings as implementation metadata (separate index/table) and keep PAO core unchanged in MVP | Avoid ontology churn before retrieval quality is proven |
+| 2. Sub-agent memory model | Isolated by default (`subAgentId` has its own `MemoryEntity` + namespace); sharing only via explicit shared artifacts | Prevent accidental cross-agent coupling and leakage |
+| 3. Shared memory conflict policy | Deterministic LWW with required `MemoryWriteConflict` record + audit entry on collisions | Minimal operational complexity with explicit traceability |
+| 4. Workflow version migration | Continue old workflow versions until completion; no checkpoint migration in MVP | Lowest-risk deployment posture for durable workflows |
+| 5. Hook/audit ordering on denied tools | `EvaluatePolicy` -> `WriteAuditEntry(Deny)` -> optional deny hooks -> no tool execution | Guarantees denial is auditable before any follow-up behavior |
+| 6. Realtime subscription + delegation scope | Subscriptions limited to caller-owned agent/session scope; no cross-agent delegation in MVP | Constrains auth surface and reduces abuse paths |
+| 7. Sub-agent quota inheritance | Sub-agents draw from parent quota pool by default; optional stricter child caps allowed | Prevents quota bypass via agent fan-out |
+| 8. Memory size quota enforcement | Enforce hard limit at write time (reject + audit) in MVP; async eviction remains explicit `Forgetting` workflow | Deterministic behavior and simpler failure modes |
+| 9. Quota violation audit model | Extend `AuditEntry` with structured quota reason codes in MVP; defer separate `QuotaViolationEvent` class | Reuse existing governance surface and avoid schema proliferation |
+
+These defaults are now moved from "Decision Backlog" to "Resolved" and are required inputs for Phase 1-4 implementation.
 
 ---
 
