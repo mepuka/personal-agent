@@ -560,7 +560,8 @@ ErrorRecoveryWorkflow
   - intervalSeconds?: number                 # pao:hasIntervalSeconds
 - trigger: Trigger                           # pao:activatedBy (functional)
   - type: CronTrigger | IntervalTrigger | EventTrigger
-- action: ActionDescriptor                   # pao:schedulesAction (functional)
+  - note: ontology trigger subclasses are marker types in PAO v0.8.0 (no additional required fields)
+- actionRef: string                          # Stable reference to pao:schedulesAction individual
 - scheduleStatus: ScheduleStatus             # pao:hasScheduleStatus (functional)
 - concurrencyPolicy: ConcurrencyPolicy       # pao:hasConcurrencyPolicy (functional)
 - allowsCatchUp: boolean                     # pao:allowsCatchUp (functional)
@@ -571,7 +572,16 @@ ErrorRecoveryWorkflow
 - nextExecutionAt: Option<DateTime>
 ```
 
-**RPC Protocol**:
+**Domain Port Contract (Phase 1, implemented)**:
+```
+- upsertSchedule(schedule: ScheduleRecord) → void
+- listDue(now: DateTime) → Array<DueScheduleRecord>
+  - DueScheduleRecord = { schedule, dueAt, triggerSource }
+- recordExecution(event: ScheduledExecutionRecord) → void
+  - ScheduledExecutionRecord includes dueAt + triggerSource metadata in addition to temporal extent + outcome
+```
+
+**Entity Command Surface (Phase 2 target)**:
 ```
 - CreateSchedule(input: CreateScheduleInput) → ScheduleId
 - UpdateSchedule(scheduleId: ScheduleId, patch: SchedulePatch) → void
@@ -579,7 +589,7 @@ ErrorRecoveryWorkflow
 - ResumeSchedule(scheduleId: ScheduleId) → void
 - DisableSchedule(scheduleId: ScheduleId) → void
 - TriggerNow(scheduleId: ScheduleId) → ScheduledExecutionId
-- ListDue(now: DateTime) → Array<ScheduleId>
+- ListDue(now: DateTime) → Array<DueScheduleRecord>
 - RecordExecution(event: ScheduledExecutionRecord) → void
 ```
 
@@ -587,6 +597,7 @@ ErrorRecoveryWorkflow
 - `Schedule` must include exactly one owner, trigger, recurrence pattern, action, schedule status, and concurrency policy.
 - `RecurrencePattern` must include at least one of `hasCronExpression` or `hasIntervalSeconds`.
 - `ScheduledExecution` must include `executionOf`, `hasTemporalExtent`, and `hasExecutionOutcome`.
+- MVP normalization rule: exactly one of `cronExpression` or `intervalSeconds` should be set per schedule to keep recurrence evaluation deterministic.
 
 **Lifecycle + execution contract (resolved on 2026-02-24)**:
 - Initial status is `ScheduleActive` unless explicitly created as paused.
@@ -601,7 +612,11 @@ ErrorRecoveryWorkflow
 
 **Shard group**: `"schedule"` — medium-lived, high-read, low-write.
 
-> **Implementation note**: The `SchedulerEntity` should build on `ClusterCron` from `effect/unstable/cluster` for cron-based scheduling, and `DeliverAt` for deferred message delivery, rather than implementing parallel scheduling infrastructure. `ClusterCron` provides cluster-aware, leader-elected cron execution that handles shard-safe scheduling automatically. The domain-level `SchedulerEntity` adds ontology semantics (concurrency policy, catch-up, execution records) on top of these primitives.
+> **Implementation note (API-verified for `effect@4.0.0-beta.11`)**: The `SchedulerEntity` should build on `ClusterCron.make` from `effect/unstable/cluster/ClusterCron` and `DeliverAt.symbol` from `effect/unstable/cluster/DeliverAt`, rather than implementing parallel scheduling infrastructure. `ClusterCron` provides cluster-aware, leader-elected cron execution; `DeliverAt` provides deferred delivery metadata.
+>
+> **Phasing rule**:
+> - **Phase 1 (current)**: Port-backed due-window evaluation and execution recording (`upsertSchedule` / `listDue` / `recordExecution`) with in-memory and SQL adapters.
+> - **Phase 2**: Wrap the same port contract with `ClusterCron` + `DeliverAt` + `ClusterWorkflowEngine` orchestration for distributed, replay-safe runtime scheduling.
 
 ---
 
@@ -873,6 +888,9 @@ For each task in topological order (respecting `blockedBy` dependencies):
    - Catch-up policy:
      - If `allowsCatchUp = false`: skip backfill runs and advance `nextExecutionAt` to the next future window
      - If `allowsCatchUp = true`: execute at most `maxCatchUpRunsPerTick` windows, bounded by `catchUpWindowSeconds`
+   - Phase split:
+     - **Phase 1**: interval due windows are computed in `SchedulePort`; cron/event/manual triggers are expressed as `nextExecutionAt` + `triggerSource` by the caller/runtime.
+     - **Phase 2**: `ClusterCron` + `DeliverAt` become the primary trigger source for cron/event dispatch and due-window materialization.
 
 2. **EnforceConcurrencyPolicy**
    - Applies `ConcurrencyAllow` | `ConcurrencyForbid` | `ConcurrencyReplace`
@@ -901,6 +919,8 @@ For each task in topological order (respecting `blockedBy` dependencies):
 - One-shot semantics are implemented as interval recurrence + `autoDisableAfterRun`.
 - Catch-up is bounded by `catchUpWindowSeconds` and `maxCatchUpRunsPerTick`.
 - Concurrency decisions are explicitly materialized as execution outcomes (run/skip/replace).
+- `dueAt` and `triggerSource` are required execution metadata in runtime records for deterministic replay and audit joins.
+- In MVP, concurrency policy evaluation lives in workflow logic; persistence-layer ports only store outcomes and schedule checkpoints.
 
 ---
 
@@ -2242,10 +2262,11 @@ These are the only interfaces that must be stable before broad implementation:
      - Persist execution records durably
    - Minimal operations:
      - `upsertSchedule(input)`
-     - `listDue(now)`
+     - `listDue(now)` returning due-window records (`schedule`, `dueAt`, `triggerSource`)
      - `recordExecution(result)`
    - Implementation constraint:
-     - Must be implemented on top of `ClusterCron` + `DeliverAt` (Section 5.6 note), not as parallel scheduler infrastructure.
+     - Phase 1: adapters may use port-backed due-window evaluation directly.
+     - Phase 2: runtime scheduler must be implemented on top of `ClusterCron` + `DeliverAt` (Section 5.6 note), not as parallel scheduler infrastructure.
 
 **Anti-overengineering guardrail**: No additional interface is allowed in MVP unless it reduces ontology mismatch risk or removes duplicated cross-cutting logic across at least two workflows.
 
@@ -2264,6 +2285,7 @@ The following decisions are approved to unblock implementation while preserving 
 | 7. Sub-agent quota inheritance | Sub-agents draw from parent quota pool by default; optional stricter child caps allowed | Prevents quota bypass via agent fan-out |
 | 8. Memory size quota enforcement | Enforce hard limit at write time (reject + audit) in MVP; async eviction remains explicit `Forgetting` workflow | Deterministic behavior and simpler failure modes |
 | 9. Quota violation audit model | Extend `AuditEntry` with structured quota reason codes in MVP; defer separate `QuotaViolationEvent` class | Reuse existing governance surface and avoid schema proliferation |
+| 10. Scheduler runtime wiring | Keep `SchedulePort` as the stable MVP contract (`upsertSchedule`, `listDue`, `recordExecution`); defer `ClusterCron` + `DeliverAt` orchestration wiring to Phase 2 while preserving the same port semantics | Avoids overengineering now while preserving the Effect-native distributed path |
 
 These defaults are now moved from "Decision Backlog" to "Resolved" and are required inputs for Phase 1-4 implementation.
 
