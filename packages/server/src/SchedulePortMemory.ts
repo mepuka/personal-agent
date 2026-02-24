@@ -59,10 +59,19 @@ export class SchedulePortMemory extends ServiceMap.Service<SchedulePortMemory>()
         })
       ]).pipe(Effect.asVoid)
 
+    const getSchedule = (scheduleId: ScheduleId) =>
+      Ref.get(schedules).pipe(
+        Effect.map((map) => Option.getOrNull(HashMap.get(map, scheduleId)))
+      )
+
+    const listExecutions = () => Ref.get(executions)
+
     return {
       upsertSchedule,
       listDue,
-      recordExecution
+      recordExecution,
+      getSchedule,
+      listExecutions
     } as const
   })
 }) {

@@ -122,6 +122,13 @@ export const TriggerSource = Schema.Literals([
 ])
 export type TriggerSource = typeof TriggerSource.Type
 
+export const ScheduleSkipReason = Schema.Literals([
+  "ConcurrencyForbid",
+  "ConcurrencyReplace",
+  "ManualTriggerInactive"
+])
+export type ScheduleSkipReason = typeof ScheduleSkipReason.Type
+
 export interface ScheduleRecord {
   readonly scheduleId: ScheduleId
   readonly ownerAgentId: AgentId
@@ -146,7 +153,7 @@ export interface ScheduledExecutionRecord {
   readonly outcome: ExecutionOutcome
   readonly startedAt: Instant
   readonly endedAt: Instant | null
-  readonly skipReason: string | null
+  readonly skipReason: ScheduleSkipReason | null
 }
 
 export interface DueScheduleRecord {
