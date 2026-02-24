@@ -5,7 +5,7 @@
     { "path": "../domain" } 
   ],
   "compilerOptions": {
-    "types": ["node"],
+    "types": ["node", "bun-types"],
     "outDir": "build/src",
     "tsBuildInfoFile": ".tsbuildinfo/src.tsbuildinfo",
     "rootDir": "src"

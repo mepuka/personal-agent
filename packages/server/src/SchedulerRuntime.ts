@@ -2,7 +2,7 @@ import type { ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
 import type { Instant, ScheduleRecord, ScheduleSkipReason, TriggerSource } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
 import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, ServiceMap } from "effect"
-import { SchedulePortMemory } from "./SchedulePortMemory.js"
+import { SchedulePortTag } from "./PortTags.js"
 
 export interface ExecutionTicket {
   readonly executionId: ScheduledExecutionId
@@ -17,7 +17,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
   "server/SchedulerRuntime",
   {
     make: Effect.gen(function*() {
-      const schedulePort = yield* SchedulePortMemory
+      const schedulePort = yield* SchedulePortTag
       const inFlightBySchedule = yield* Ref.make(
         HashMap.empty<ScheduleId, ReadonlyArray<ExecutionTicket>>()
       )

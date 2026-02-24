@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ScheduleId } from "@template/domain/ids"
-import type { Instant, ScheduleRecord, ScheduleSkipReason } from "@template/domain/ports"
+import type { Instant, SchedulePort, ScheduleRecord, ScheduleSkipReason } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
+import { SchedulePortTag } from "../src/PortTags.js"
 import { SchedulePortMemory } from "../src/SchedulePortMemory.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
 
@@ -173,10 +174,18 @@ describe("SchedulerRuntime", () => {
 })
 
 const schedulePortLayer = SchedulePortMemory.layer
+const schedulePortTagLayer = Layer.effect(
+  SchedulePortTag,
+  Effect.gen(function*() {
+    return (yield* SchedulePortMemory) as SchedulePort
+  })
+).pipe(Layer.provide(schedulePortLayer))
+
 const runtimeTestLayer = Layer.mergeAll(
   schedulePortLayer,
+  schedulePortTagLayer,
   SchedulerRuntime.layer.pipe(
-    Layer.provide(schedulePortLayer)
+    Layer.provide(schedulePortTagLayer)
   )
 )
 

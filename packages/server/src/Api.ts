@@ -3,7 +3,7 @@ import type { AgentState } from "@template/domain/ports"
 import { RuntimeApi, RuntimeStatus } from "@template/domain/RuntimeApi"
 import { Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { AgentStatePortMemory } from "./AgentStatePortMemory.js"
+import { AgentStatePortTag } from "./PortTags.js"
 
 const RuntimeApiLive = HttpApiBuilder.group(
   RuntimeApi,
@@ -11,7 +11,7 @@ const RuntimeApiLive = HttpApiBuilder.group(
   (handlers) =>
     handlers.handle("getStatus", () =>
       Effect.gen(function*() {
-        const agentPort = yield* AgentStatePortMemory
+        const agentPort = yield* AgentStatePortTag
         const agentId = "agent:bootstrap" as AgentId
 
         const existing = yield* agentPort.get(agentId)
@@ -29,7 +29,7 @@ const RuntimeApiLive = HttpApiBuilder.group(
 
         return new RuntimeStatus({
           service: "personal-agent",
-          phase: "phase1-in-memory-ports",
+          phase: "phase1-sql-core-ports",
           ontologyVersion: "PAO v0.8.0",
           architectureVersion: "0.3.0-draft",
           branch: "codex/mvp-implementation-kickoff"

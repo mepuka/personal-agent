@@ -1,0 +1,61 @@
+import type { AgentId } from "@template/domain/ids"
+import type { Instant } from "@template/domain/ports"
+import { Effect, Layer, ServiceMap } from "effect"
+import { SchedulerRuntime } from "../SchedulerRuntime.js"
+import { SchedulerCommandEntity, type SchedulerExecutePayload } from "./SchedulerCommandEntity.js"
+
+export interface SchedulerDispatchSummary {
+  readonly claimed: number
+  readonly dispatched: number
+  readonly accepted: number
+}
+
+export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchLoop>()(
+  "server/SchedulerDispatchLoop",
+  {
+    make: Effect.gen(function*() {
+      const runtime = yield* SchedulerRuntime
+      const makeClient = yield* SchedulerCommandEntity.client
+      const client = makeClient("scheduler-command-lane")
+
+      const dispatchDue = (now: Instant): Effect.Effect<SchedulerDispatchSummary> =>
+        Effect.gen(function*() {
+          const tickets = yield* runtime.claimDue(now)
+          let accepted = 0
+
+          for (const ticket of tickets) {
+            const payload: SchedulerExecutePayload = {
+              executionId: ticket.executionId,
+              scheduleId: ticket.scheduleId,
+              dueAt: ticket.dueAt,
+              triggerSource: ticket.triggerSource,
+              startedAt: ticket.startedAt,
+              endedAt: now,
+              actionRef: ticket.actionRef,
+              outcome: "ExecutionSucceeded",
+              agentId: schedulerAgentId
+            }
+
+            const result = yield* client.execute(payload).pipe(Effect.orDie)
+            if (result.accepted) {
+              accepted += 1
+            }
+          }
+
+          return {
+            claimed: tickets.length,
+            dispatched: tickets.length,
+            accepted
+          } as const
+        })
+
+      return {
+        dispatchDue
+      } as const
+    })
+  }
+) {
+  static layer = Layer.effect(this, this.make)
+}
+
+const schedulerAgentId = "agent:scheduler" as AgentId
