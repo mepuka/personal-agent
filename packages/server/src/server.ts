@@ -1,10 +1,23 @@
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
+import { AgentStatePortMemory } from "./AgentStatePortMemory.js"
 import { ApiLive } from "./Api.js"
+import { GovernancePortMemory } from "./GovernancePortMemory.js"
+import { MemoryPortMemory } from "./MemoryPortMemory.js"
+import { SchedulePortMemory } from "./SchedulePortMemory.js"
+import { SessionTurnPortMemory } from "./SessionTurnPortMemory.js"
+
+const PortsLive = Layer.mergeAll(
+  AgentStatePortMemory.layer,
+  SessionTurnPortMemory.layer,
+  MemoryPortMemory.layer,
+  GovernancePortMemory.layer,
+  SchedulePortMemory.layer
+)
 
 const HttpLive = HttpRouter.serve(
-  ApiLive
+  ApiLive.pipe(Layer.provide(PortsLive))
 ).pipe(
   Layer.provideMerge(BunHttpServer.layer({ port: 3000 }))
 )
