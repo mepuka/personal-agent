@@ -37,3 +37,8 @@ export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("Channel
   _tag: Schema.tag("ChannelNotFound"),
   channelId: Schema.String
 }) {}
+
+export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("ChannelNotFound")({
+  _tag: Schema.tag("ChannelNotFound"),
+  channelId: Schema.String
+}) {}
