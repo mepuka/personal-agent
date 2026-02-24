@@ -2,13 +2,15 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Build the full message lifecycle: CLI `agent chat` → Channel entity (facade) → Session entity → TurnProcessingWorkflow → LLM → streamed SSE response back to CLI, with multi-turn conversation history. Replace hand-coded API with EntityProxy-derived endpoints.
+**Goal:** Build the full message lifecycle: CLI `agent chat` → Channel entity (facade) → Session entity → TurnProcessingWorkflow → LLM → streamed SSE response back to CLI, with multi-turn conversation history.
 
-**Architecture:** Channel-as-Facade. ChannelEntity is the user-facing API — the CLI sends text to a channelId and gets a stream back. Channel manages session lifecycle internally. All HTTP endpoints are auto-derived from entity RPCs via `EntityProxy.toHttpApiGroup` + `EntityProxyServer.layerHttpApi`. CLI is a thin HTTP client (gateway-only).
+**Architecture:** Channel-as-Facade. ChannelEntity is the user-facing API. CLI sends text to a channelId, gets an SSE stream back. Channel manages session lifecycle internally. EntityProxy derives HTTP endpoints for non-streaming entities (Agent, Governance, Memory). Channel gets hand-crafted SSE routes. Session is internal-only (no HTTP surface).
 
 **Tech Stack:** Effect 4.0.0-beta.11, Effect Cluster entities, EntityProxy, SQLite (via `@effect/sql-sqlite-bun`), Bun runtime (server + CLI).
 
 **Design doc:** `docs/plans/2026-02-24-channel-gateway-vertical-slice-design.md`
+
+**Key constraint:** EntityProxy's HTTP layer does NOT support streaming RPC responses — it serializes Stream as a regular value. All streaming endpoints must use manual `HttpRouter` + `HttpServerResponse.stream()` with SSE encoding.
 
 ---
 
@@ -18,14 +20,14 @@ Move `TurnStreamEvent` types to their own module so they survive RuntimeApi dele
 
 **Files:**
 - Create: `packages/domain/src/events.ts`
-- Modify: `packages/domain/src/RuntimeApi.ts` (remove event classes)
+- Modify: `packages/domain/src/index.ts:4` (replace RuntimeApi re-export with events)
 - Modify: `packages/server/src/entities/SessionEntity.ts:3` (update import)
 - Modify: `packages/server/src/turn/TurnProcessingRuntime.ts` (update import)
 - Modify: `packages/server/src/TurnStreamingRouter.ts:1` (update import)
 
 **Step 1: Create `packages/domain/src/events.ts`**
 
-Move all event Schema.Class definitions and the TurnStreamEvent union. Keep SubmitTurnRequest too (used by SessionEntity's ProcessTurnRpc payload pattern).
+Copy all Schema.Class event definitions and SubmitTurnRequest from `RuntimeApi.ts`:
 
 ```typescript
 import { Schema } from "effect"
@@ -109,23 +111,31 @@ export const TurnStreamEvent = Schema.Union([
 export type TurnStreamEvent = typeof TurnStreamEvent.Type
 ```
 
-**Step 2: Update imports across the codebase**
+**Step 2: Update `packages/domain/src/index.ts`**
 
-Replace all `from "@template/domain/RuntimeApi"` with `from "@template/domain/events"` for event-related imports:
+Replace line 4 (`export * from "./RuntimeApi.js"`) with:
 
-- `packages/server/src/entities/SessionEntity.ts:3` — change `TurnStreamEvent` import
-- `packages/server/src/turn/TurnProcessingRuntime.ts` — change event imports
-- `packages/server/src/TurnStreamingRouter.ts:1` — change `SubmitTurnRequest`, `TurnFailedEvent`, `TurnStreamEvent` imports
+```typescript
+export * from "./events.js"
+```
 
-**Step 3: Verify**
+**Step 3: Update server imports**
+
+Replace all `from "@template/domain/RuntimeApi"` with `from "@template/domain/events"`:
+
+- `packages/server/src/entities/SessionEntity.ts:3`
+- `packages/server/src/turn/TurnProcessingRuntime.ts` (search for RuntimeApi import)
+- `packages/server/src/TurnStreamingRouter.ts:1`
+
+**Step 4: Verify**
 
 Run: `bun run check`
 Expected: Zero TypeScript errors.
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
-git add packages/domain/src/events.ts packages/domain/src/RuntimeApi.ts packages/server/src/entities/SessionEntity.ts packages/server/src/turn/TurnProcessingRuntime.ts packages/server/src/TurnStreamingRouter.ts
+git add packages/domain/src/events.ts packages/domain/src/index.ts packages/domain/src/RuntimeApi.ts packages/server/src/entities/SessionEntity.ts packages/server/src/turn/TurnProcessingRuntime.ts packages/server/src/TurnStreamingRouter.ts
 git commit -m "refactor: extract event schemas from RuntimeApi to domain/events"
 ```
 
@@ -162,7 +172,7 @@ export type ChannelType = typeof ChannelType.Type
 
 **Step 3: Add `ChannelRecord` and `ChannelPort` to `packages/domain/src/ports.ts`**
 
-Add `ChannelId` to the id imports. Add `ChannelType` to the status imports.
+Add `ChannelId` to the id imports (line 14 area). Add `ChannelType` to the status imports (line 30 area).
 
 After the `SchedulePort` interface (line 265), add:
 
@@ -184,7 +194,7 @@ export interface ChannelPort {
 
 **Step 4: Extend `SessionTurnPort` with `listTurns`**
 
-In `packages/domain/src/ports.ts`, add to the `SessionTurnPort` interface (after line 235):
+In `packages/domain/src/ports.ts`, add to the `SessionTurnPort` interface (after `updateContextWindow`, line 235):
 
 ```typescript
   readonly listTurns: (
@@ -206,7 +216,7 @@ export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("Channel
 **Step 6: Verify**
 
 Run: `bun run check`
-Expected: Errors in `SessionTurnPortMemory.ts` (missing `listTurns`). That's expected — we fix it in Task 3.
+Expected: Errors in `SessionTurnPortMemory.ts` (missing `listTurns`). That's expected — fixed in Task 3.
 
 **Step 7: Commit**
 
@@ -228,7 +238,7 @@ git commit -m "feat(domain): add Channel types, ChannelPort, listTurns to Sessio
 
 **Step 1: Add `ChannelPortTag` to `packages/server/src/PortTags.ts`**
 
-Add import of `ChannelPort` and add after `MemoryPortTag`:
+Add `ChannelPort` to the type import from `@template/domain/ports`. Add after `MemoryPortTag`:
 
 ```typescript
 export const ChannelPortTag = ServiceMap.Service<ChannelPort>("server/ports/ChannelPort")
@@ -236,7 +246,7 @@ export const ChannelPortTag = ServiceMap.Service<ChannelPort>("server/ports/Chan
 
 **Step 2: Add `listTurns` to `SessionTurnPortMemory`**
 
-In `packages/server/src/SessionTurnPortMemory.ts`, add after `updateContextWindow` (before the return, ~line 60):
+In `packages/server/src/SessionTurnPortMemory.ts`, add before the return object (~line 61):
 
 ```typescript
       const listTurns = (sessionId: SessionId) =>
@@ -248,11 +258,11 @@ In `packages/server/src/SessionTurnPortMemory.ts`, add after `updateContextWindo
         )
 ```
 
-Add `listTurns` to the returned object.
+Add `listTurns` to the returned `as const` object.
 
 **Step 3: Add migration `0003_channel_tables` to `packages/server/src/persistence/DomainMigrator.ts`**
 
-After the `"0002_core_phase1_tables"` entry, add:
+After the `"0002_core_phase1_tables"` entry (line 122), add:
 
 ```typescript
   "0003_channel_tables": Effect.gen(function*() {
@@ -273,7 +283,7 @@ After the `"0002_core_phase1_tables"` entry, add:
 
 **Step 4: Create `packages/server/src/ChannelPortSqlite.ts`**
 
-Follow the exact pattern of `AgentStatePortSqlite` and `SessionTurnPortSqlite`:
+Follow `AgentStatePortSqlite` / `SessionTurnPortSqlite` patterns exactly:
 
 ```typescript
 import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
@@ -370,64 +380,59 @@ const decodeChannelRow = (row: ChannelRow): ChannelRecord => ({
 
 **Step 5: Write test `packages/server/test/ChannelPortSqlite.test.ts`**
 
-Follow the pattern from `SessionTurnPortSqlite.test.ts`:
+Follow the `AgentEntity.test.ts` layer setup pattern exactly — `SqliteRuntime.layer({ filename: dbPath })`:
 
 ```typescript
-import { Effect, Layer } from "effect"
-import { it } from "@effect/vitest"
+import { describe, expect, it } from "@effect/vitest"
+import type { AgentId, ChannelId, ConversationId, SessionId } from "@template/domain/ids"
+import type { ChannelRecord, Instant } from "@template/domain/ports"
+import { DateTime, Effect, Layer } from "effect"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import type { ChannelRecord } from "@template/domain/ports"
-import type { ChannelId, AgentId, SessionId, ConversationId } from "@template/domain/ids"
-import { DateTime } from "effect"
 
-const testDatabasePath = (name: string): string =>
-  join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)
+const makeTestLayer = (dbPath: string) => {
+  const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+  const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+  const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
 
-const cleanupDatabase = (path: string) =>
-  Effect.sync(() => { rmSync(path, { force: true }) })
+  const portLayer = ChannelPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
+  return Layer.mergeAll(sqlInfrastructureLayer, portLayer)
+}
+
+const instant = (input: string): Instant => DateTime.fromDateUnsafe(new Date(input))
+
+const makeChannel = (id: string): ChannelRecord => ({
+  channelId: `channel:${id}` as ChannelId,
+  channelType: "CLI",
+  agentId: "agent:bootstrap" as AgentId,
+  activeSessionId: `session:${id}` as SessionId,
+  activeConversationId: `conv:${id}` as ConversationId,
+  createdAt: instant("2026-02-24T12:00:00.000Z")
+})
 
 describe("ChannelPortSqlite", () => {
-  const dbPath = testDatabasePath("channel-port")
-
-  const sqliteLayer = SqliteRuntime.layer(dbPath)
-  const migrationLayer = DomainMigrator.layer.pipe(
-    Layer.provide(sqliteLayer),
-    Layer.orDie
-  )
-  const portLayer = ChannelPortSqlite.layer.pipe(
-    Layer.provide(sqliteLayer),
-    Layer.provide(migrationLayer)
-  )
-  const testLayer = Layer.mergeAll(portLayer, sqliteLayer, migrationLayer)
-
-  afterAll(() => {
-    rmSync(dbPath, { force: true })
-  })
-
-  const makeChannel = (id: string): ChannelRecord => ({
-    channelId: `channel:${id}` as ChannelId,
-    channelType: "CLI",
-    agentId: "agent:bootstrap" as AgentId,
-    activeSessionId: `session:${id}` as SessionId,
-    activeConversationId: `conv:${id}` as ConversationId,
-    createdAt: DateTime.unsafeMake(Date.now())
-  })
-
-  it.effect("get returns null for unknown channel", () =>
-    Effect.gen(function*() {
+  it.effect("get returns null for unknown channel", () => {
+    const dbPath = testDatabasePath("channel-port-null")
+    return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
       const result = yield* port.get("channel:unknown" as ChannelId)
       expect(result).toBeNull()
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 
-  it.effect("create + get roundtrip", () =>
-    Effect.gen(function*() {
+  it.effect("create + get roundtrip", () => {
+    const dbPath = testDatabasePath("channel-port-roundtrip")
+    return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
       const channel = makeChannel("test1")
       yield* port.create(channel)
@@ -436,20 +441,33 @@ describe("ChannelPortSqlite", () => {
       expect(result!.channelId).toBe(channel.channelId)
       expect(result!.channelType).toBe("CLI")
       expect(result!.activeSessionId).toBe(channel.activeSessionId)
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 
-  it.effect("create is idempotent (upsert)", () =>
-    Effect.gen(function*() {
+  it.effect("create is idempotent (upsert)", () => {
+    const dbPath = testDatabasePath("channel-port-upsert")
+    return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
       const channel = makeChannel("test2")
       yield* port.create(channel)
       yield* port.create({ ...channel, channelType: "HTTP" })
       const result = yield* port.get(channel.channelId)
       expect(result!.channelType).toBe("HTTP")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
+
+const testDatabasePath = (name: string): string =>
+  join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)
+
+const cleanupDatabase = (path: string) =>
+  Effect.sync(() => { rmSync(path, { force: true }) })
 ```
 
 **Step 6: Run tests**
@@ -478,6 +496,11 @@ git commit -m "feat(server): add ChannelPortSqlite with migration and tests"
 - Create: `packages/server/test/ChannelEntity.test.ts`
 
 **Step 1: Create `packages/server/src/entities/ChannelEntity.ts`**
+
+Key patterns:
+- `createChannel` is **create-if-missing** — checks if channel exists before creating
+- `sendMessage` returns `Stream.unwrap(Effect.gen(...))` — the Effect resolves channel state, the unwrapped stream is the SessionEntity response
+- `getHistory` delegates to `SessionTurnPortTag.listTurns`
 
 ```typescript
 import type { AgentId, ChannelId, ConversationId, SessionId } from "@template/domain/ids"
@@ -549,12 +572,16 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
     createChannel: ({ payload, entityId }) =>
       Effect.gen(function*() {
         const channelId = entityId as ChannelId
+
+        // Create-if-missing: skip if channel already exists
+        const existing = yield* channelPort.get(channelId)
+        if (existing !== null) return
+
         const agentId = payload.agentId as AgentId
         const sessionId = `session:${crypto.randomUUID()}` as SessionId
         const conversationId = `conv:${crypto.randomUUID()}` as ConversationId
         const now = yield* DateTime.now
 
-        // Create the channel record
         yield* channelPort.create({
           channelId,
           channelType: payload.channelType,
@@ -564,7 +591,6 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
           createdAt: now
         })
 
-        // Bootstrap the session via SessionEntity
         const sessionClient = makeSessionClient(sessionId)
         yield* sessionClient.startSession({
           sessionId,
@@ -575,28 +601,32 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
       }),
 
     sendMessage: ({ payload, entityId }) =>
-      Effect.gen(function*() {
-        const channelId = entityId as ChannelId
-        const channel = yield* channelPort.get(channelId)
-        if (channel === null) {
-          return yield* new ChannelNotFound({ channelId })
-        }
+      // Stream.unwrap: Effect<Stream<A>> → Stream<A>
+      // The Effect resolves channel state, returns the inner stream from SessionEntity
+      Stream.unwrap(
+        Effect.gen(function*() {
+          const channelId = entityId as ChannelId
+          const channel = yield* channelPort.get(channelId)
+          if (channel === null) {
+            return Stream.fail(new ChannelNotFound({ channelId }))
+          }
 
-        const turnId = `turn:${crypto.randomUUID()}`
-        const now = yield* DateTime.now
-        const sessionClient = makeSessionClient(channel.activeSessionId)
+          const turnId = `turn:${crypto.randomUUID()}`
+          const now = yield* DateTime.now
+          const sessionClient = makeSessionClient(channel.activeSessionId)
 
-        return sessionClient.processTurn({
-          turnId,
-          sessionId: channel.activeSessionId,
-          conversationId: channel.activeConversationId,
-          agentId: channel.agentId,
-          content: payload.content,
-          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: payload.content }],
-          createdAt: now,
-          inputTokens: 0
+          return sessionClient.processTurn({
+            turnId,
+            sessionId: channel.activeSessionId,
+            conversationId: channel.activeConversationId,
+            agentId: channel.agentId,
+            content: payload.content,
+            contentBlocks: [{ contentBlockType: "TextBlock" as const, text: payload.content }],
+            createdAt: now,
+            inputTokens: 0
+          })
         })
-      }).pipe(Effect.map(Stream.unwrap)),
+      ),
 
     getHistory: ({ entityId }) =>
       Effect.gen(function*() {
@@ -612,14 +642,15 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
 }))
 ```
 
-**Important implementation note:** The `sendMessage` handler returns a `Stream` (because `stream: true`). The handler wraps the delegation to `SessionEntity.processTurn` — which itself returns a `Stream<TurnStreamEvent>` — in an Effect that resolves the channel, builds the payload, and then returns the inner stream. The `Effect.map(Stream.unwrap)` pattern may need adjustment based on the exact entity handler signature. During implementation, check the reference entity streaming tests at `.reference/effect/packages/effect/test/cluster/Entity.test.ts` for the correct pattern.
-
 **Step 2: Write test `packages/server/test/ChannelEntity.test.ts`**
 
-This test needs both ChannelEntity and SessionEntity wired with their dependencies. Use `Entity.makeTestClient` for ChannelEntity. Since ChannelEntity calls `SessionEntity.client`, we need Sharding context — `makeTestClient` provides this.
+Uses `Entity.makeTestClient` pattern from `AgentEntity.test.ts`. Includes mock TurnProcessingRuntime from `SessionEntity.test.ts`:
 
 ```typescript
-import { it } from "@effect/vitest"
+import { describe, expect, it } from "@effect/vitest"
+import type { AgentId, ChannelId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type { Instant, SessionTurnPort } from "@template/domain/ports"
+import type { TurnStreamEvent } from "@template/domain/events"
 import { DateTime, Effect, Layer, Stream } from "effect"
 import { ShardingConfig } from "effect/unstable/cluster"
 import { Entity } from "effect/unstable/cluster"
@@ -632,50 +663,94 @@ import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
+import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import type { ChannelId } from "@template/domain/ids"
 
-const testDatabasePath = (name: string): string =>
-  join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)
+const makeMockTurnProcessingRuntime = () =>
+  Layer.succeed(TurnProcessingRuntime, {
+    processTurn: (_input: ProcessTurnPayload) =>
+      Effect.succeed({
+        turnId: _input.turnId,
+        accepted: true,
+        auditReasonCode: "turn_processing_accepted" as const,
+        assistantContent: "mock response",
+        assistantContentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }],
+        modelFinishReason: "stop",
+        modelUsageJson: "{}"
+      }),
+    processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> =>
+      Stream.make(
+        {
+          type: "turn.started" as const,
+          sequence: 1,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          createdAt: input.createdAt
+        },
+        {
+          type: "assistant.delta" as const,
+          sequence: 2,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          delta: "mock response"
+        },
+        {
+          type: "turn.completed" as const,
+          sequence: 3,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          accepted: true,
+          auditReasonCode: "turn_processing_accepted",
+          modelFinishReason: "stop",
+          modelUsageJson: "{}"
+        }
+      )
+  } as any)
 
-describe("ChannelEntity", () => {
-  const dbPath = testDatabasePath("channel-entity")
+const makeTestLayer = (dbPath: string) => {
+  const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+  const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+  const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
 
-  const sqliteLayer = SqliteRuntime.layer(dbPath)
-  const migrationLayer = DomainMigrator.layer.pipe(
-    Layer.provide(sqliteLayer),
-    Layer.orDie
+  const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
   )
-  const sqlInfra = Layer.mergeAll(sqliteLayer, migrationLayer)
-
-  const channelPortLayer = Layer.effect(
+  const channelPortTagLayer = Layer.effect(
     ChannelPortTag,
     Effect.gen(function*() {
       return (yield* ChannelPortSqlite) as any
     })
-  ).pipe(Layer.provide(ChannelPortSqlite.layer.pipe(Layer.provide(sqlInfra))))
+  ).pipe(Layer.provide(channelPortSqliteLayer))
 
-  const sessionTurnPortLayer = Layer.effect(
+  const sessionTurnSqliteLayer = SessionTurnPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const sessionTurnTagLayer = Layer.effect(
     SessionTurnPortTag,
     Effect.gen(function*() {
-      return (yield* SessionTurnPortSqlite) as any
+      return (yield* SessionTurnPortSqlite) as SessionTurnPort
     })
-  ).pipe(Layer.provide(SessionTurnPortSqlite.layer.pipe(Layer.provide(sqlInfra))))
+  ).pipe(Layer.provide(sessionTurnSqliteLayer))
 
-  // Mock TurnProcessingRuntime — returns a simple stream for testing
-  // Real implementation would need the full workflow stack
-  // For this test, we verify channel → session delegation works
+  return Layer.mergeAll(
+    sqlInfrastructureLayer,
+    channelPortSqliteLayer,
+    channelPortTagLayer,
+    sessionTurnSqliteLayer,
+    sessionTurnTagLayer,
+    makeMockTurnProcessingRuntime(),
+    ShardingConfig.layer()
+  )
+}
 
-  afterAll(() => {
-    rmSync(dbPath, { force: true })
-  })
-
-  it.effect("createChannel + getHistory returns empty", () =>
-    Effect.gen(function*() {
+describe("ChannelEntity", () => {
+  it.effect("createChannel + getHistory returns empty", () => {
+    const dbPath = testDatabasePath("channel-entity-history")
+    return Effect.gen(function*() {
       const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
-      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
-      const client = makeClient(channelId)
+      const channelId = `channel:${crypto.randomUUID()}`
+      const client = yield* makeClient(channelId)
 
       yield* client.createChannel({
         channelType: "CLI",
@@ -685,23 +760,90 @@ describe("ChannelEntity", () => {
       const history = yield* client.getHistory({})
       expect(history).toEqual([])
     }).pipe(
-      Effect.provide(Layer.mergeAll(
-        channelPortLayer,
-        sessionTurnPortLayer,
-        ShardingConfig.layer()
-      )),
-      Effect.scoped
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
     )
-  )
+  })
+
+  it.effect("createChannel is idempotent (create-if-missing)", () => {
+    const dbPath = testDatabasePath("channel-entity-idempotent")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const channelId = `channel:${crypto.randomUUID()}`
+      const client = yield* makeClient(channelId)
+
+      yield* client.createChannel({ channelType: "CLI", agentId: "agent:bootstrap" })
+
+      // Get the session ID after first create
+      const port = yield* ChannelPortSqlite
+      const channel1 = yield* port.get(channelId as any)
+      const sessionId1 = channel1!.activeSessionId
+
+      // Call createChannel again — should NOT reset session
+      yield* client.createChannel({ channelType: "CLI", agentId: "agent:bootstrap" })
+      const channel2 = yield* port.get(channelId as any)
+      expect(channel2!.activeSessionId).toBe(sessionId1)
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("sendMessage returns stream of TurnStreamEvents", () => {
+    const dbPath = testDatabasePath("channel-entity-send")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const channelId = `channel:${crypto.randomUUID()}`
+      const client = yield* makeClient(channelId)
+
+      yield* client.createChannel({ channelType: "CLI", agentId: "agent:bootstrap" })
+
+      const events = yield* client.sendMessage({ content: "hello" }).pipe(
+        Stream.runCollect
+      )
+
+      expect(events.length).toBeGreaterThan(0)
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events.some((e) => e.type === "assistant.delta")).toBe(true)
+      expect(events.some((e) => e.type === "turn.completed")).toBe(true)
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("sendMessage to non-existent channel fails with ChannelNotFound", () => {
+    const dbPath = testDatabasePath("channel-entity-notfound")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const client = yield* makeClient("channel:nonexistent")
+
+      const error = yield* client.sendMessage({ content: "hello" }).pipe(
+        Stream.runCollect,
+        Effect.flip
+      )
+
+      expect(error._tag).toBe("ChannelNotFound")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
+
+const instant = (input: string): Instant => DateTime.fromDateUnsafe(new Date(input))
+
+const testDatabasePath = (name: string): string =>
+  join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)
+
+const cleanupDatabase = (path: string) =>
+  Effect.sync(() => { rmSync(path, { force: true }) })
 ```
 
-**Note:** Full sendMessage testing requires a mock or real `TurnProcessingRuntime` + workflow stack. The test may need to provide a mock runtime that returns a predetermined stream. Adjust during implementation based on what's feasible. At minimum, verify createChannel + getHistory work.
-
-**Step 3: Run test**
+**Step 3: Run tests**
 
 Run: `bun run test -- packages/server/test/ChannelEntity.test.ts`
-Expected: Tests pass.
+Expected: 4 tests pass.
 
 **Step 4: Verify**
 
@@ -712,58 +854,102 @@ Expected: Zero errors.
 
 ```bash
 git add packages/server/src/entities/ChannelEntity.ts packages/server/test/ChannelEntity.test.ts
-git commit -m "feat(server): add ChannelEntity with createChannel, sendMessage, getHistory"
+git commit -m "feat(server): add ChannelEntity with create-if-missing, streaming sendMessage, getHistory"
 ```
 
 ---
 
-## Task 5: Create ProxyGateway
-
-Wire EntityProxy to auto-derive HTTP endpoints from all entities.
+## Task 5: Create Gateway (EntityProxy + SSE Routes)
 
 **Files:**
 - Create: `packages/server/src/gateway/ProxyGateway.ts`
+- Create: `packages/server/src/gateway/ChannelRoutes.ts`
 
-**Step 1: Create `packages/server/src/gateway/ProxyGateway.ts`**
+**Step 1: Create `packages/server/src/gateway/ChannelRoutes.ts`**
+
+Manual SSE routes for Channel entity. Adapts TurnStreamingRouter pattern to use ChannelEntity:
 
 ```typescript
-import { Effect, Layer } from "effect"
-import { HttpApi } from "effect/unstable/httpapi"
-import { EntityProxy, EntityProxyServer } from "effect/unstable/cluster"
+import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
+import { Effect, Schema, Stream } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
-import { AgentEntity } from "../entities/AgentEntity.js"
-import { SessionEntity } from "../entities/SessionEntity.js"
-import { GovernanceEntity } from "../entities/GovernanceEntity.js"
-import { MemoryEntity } from "../entities/MemoryEntity.js"
 import { ChannelEntity } from "../entities/ChannelEntity.js"
 
-// Auto-derive HTTP API groups from entity RPCs
-const ChannelHttpApi = EntityProxy.toHttpApiGroup("channels", ChannelEntity)
-const SessionHttpApi = EntityProxy.toHttpApiGroup("sessions", SessionEntity)
-const AgentHttpApi = EntityProxy.toHttpApiGroup("agents", AgentEntity)
-const GovernanceHttpApi = EntityProxy.toHttpApiGroup("governance", GovernanceEntity)
-const MemoryHttpApi = EntityProxy.toHttpApiGroup("memory", MemoryEntity)
+// POST /channels/:channelId/create — create-if-missing
+const createChannel = HttpRouter.add(
+  "POST",
+  "/channels/:channelId/create",
+  (request) =>
+    Effect.gen(function*() {
+      const makeClient = yield* ChannelEntity.client
+      const channelId = extractParam(request.url, 1) // /channels/:channelId/create
+      const body = yield* request.json
+      const client = makeClient(channelId)
 
-// Combine into a single HttpApi
-const ProxyApi = HttpApi.make("proxy")
-  .add(ChannelHttpApi)
-  .add(SessionHttpApi)
-  .add(AgentHttpApi)
-  .add(GovernanceHttpApi)
-  .add(MemoryHttpApi)
+      yield* client.createChannel({
+        channelType: body.channelType ?? "CLI",
+        agentId: body.agentId ?? "agent:bootstrap"
+      })
 
-// Auto-implement handlers for each group
-const handlersLayer = Layer.mergeAll(
-  EntityProxyServer.layerHttpApi(ProxyApi, "channels", ChannelEntity),
-  EntityProxyServer.layerHttpApi(ProxyApi, "sessions", SessionEntity),
-  EntityProxyServer.layerHttpApi(ProxyApi, "agents", AgentEntity),
-  EntityProxyServer.layerHttpApi(ProxyApi, "governance", GovernanceEntity),
-  EntityProxyServer.layerHttpApi(ProxyApi, "memory", MemoryEntity)
+      return HttpServerResponse.json({ ok: true })
+    })
 )
 
-// Health check endpoint (plain HttpRouter, not entity-based)
-const healthRouter = HttpRouter.add(
+// POST /channels/:channelId/messages — SSE streaming
+const sendMessage = HttpRouter.add(
+  "POST",
+  "/channels/:channelId/messages",
+  (request) =>
+    Effect.gen(function*() {
+      const makeClient = yield* ChannelEntity.client
+      const channelId = extractParam(request.url, 1)
+      const body = yield* request.json
+      const client = makeClient(channelId)
+
+      const stream = client.sendMessage({ content: body.content }).pipe(
+        Stream.map(encodeSseEvent),
+        Stream.catch((error) =>
+          Stream.make(
+            encodeSseEvent({
+              type: "turn.failed",
+              sequence: Number.MAX_SAFE_INTEGER,
+              turnId: "",
+              sessionId: "",
+              errorCode: getErrorCode(error),
+              message: getErrorMessage(error)
+            } satisfies TurnFailedEvent)
+          )
+        )
+      )
+
+      return HttpServerResponse.stream(stream, {
+        contentType: "text/event-stream",
+        headers: {
+          "cache-control": "no-cache",
+          connection: "keep-alive"
+        }
+      })
+    })
+)
+
+// POST /channels/:channelId/history — get conversation history
+const getHistory = HttpRouter.add(
+  "POST",
+  "/channels/:channelId/history",
+  (request) =>
+    Effect.gen(function*() {
+      const makeClient = yield* ChannelEntity.client
+      const channelId = extractParam(request.url, 1)
+      const client = makeClient(channelId)
+
+      const turns = yield* client.getHistory({})
+      return HttpServerResponse.json(turns)
+    })
+)
+
+// GET /health — health check
+const health = HttpRouter.add(
   "GET",
   "/health",
   () =>
@@ -775,32 +961,97 @@ const healthRouter = HttpRouter.add(
     )
 )
 
-// Export the combined API layer + health route
-export const ProxyApiLive = HttpApiBuilder.layer(ProxyApi).pipe(
-  Layer.provide(handlersLayer)
-)
+export const layer = HttpRouter.mergeAll(createChannel, sendMessage, getHistory, health)
 
-export const ProxyHealthRoute = healthRouter
+// --- Helpers (carried over from TurnStreamingRouter) ---
 
-export { ProxyApi }
+const encodeSseEvent = (event: TurnStreamEvent): Uint8Array =>
+  new TextEncoder().encode(
+    `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+  )
+
+const extractParam = (inputUrl: string, index: number): string => {
+  const url = new URL(inputUrl, "http://localhost")
+  const parts = url.pathname.split("/").filter(Boolean)
+  return parts[index] ?? ""
+}
+
+const getErrorCode = (error: unknown): string => {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    typeof error._tag === "string"
+  ) {
+    return error._tag
+  }
+  return "TurnProcessingError"
+}
+
+const getErrorMessage = (error: unknown): string => {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    typeof error.reason === "string"
+  ) {
+    return error.reason
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
 ```
 
-**Important:** The exact import paths and API may differ. During implementation:
-1. Check if `EntityProxy` and `EntityProxyServer` are exported from `effect/unstable/cluster` or need separate imports
-2. Check if `HttpApi.make("proxy").add(group)` or `.addGroup(group)` is the correct API
-3. Check if `HttpApiBuilder` is from `effect/unstable/httpapi`
-4. Consult `.reference/effect/packages/effect/src/unstable/cluster/EntityProxy.ts` for exact exports
+**Step 2: Create `packages/server/src/gateway/ProxyGateway.ts`**
 
-**Step 2: Verify**
+EntityProxy for non-streaming entities only:
+
+```typescript
+import { Layer } from "effect"
+import { HttpApi } from "effect/unstable/httpapi"
+import { EntityProxy, EntityProxyServer } from "effect/unstable/cluster"
+import { AgentEntity } from "../entities/AgentEntity.js"
+import { GovernanceEntity } from "../entities/GovernanceEntity.js"
+import { MemoryEntity } from "../entities/MemoryEntity.js"
+
+// Auto-derive HTTP API groups from non-streaming entity RPCs
+const AgentHttpApi = EntityProxy.toHttpApiGroup("agents", AgentEntity)
+const GovernanceHttpApi = EntityProxy.toHttpApiGroup("governance", GovernanceEntity)
+const MemoryHttpApi = EntityProxy.toHttpApiGroup("memory", MemoryEntity)
+
+// Combine into a single HttpApi
+// NOTE: check exact API — may need .addGroup() instead of .add()
+export const ProxyApi = HttpApi.make("proxy")
+  .add(AgentHttpApi)
+  .add(GovernanceHttpApi)
+  .add(MemoryHttpApi)
+
+// Auto-implement handlers via EntityProxyServer
+export const ProxyHandlersLive = Layer.mergeAll(
+  EntityProxyServer.layerHttpApi(ProxyApi, "agents", AgentEntity),
+  EntityProxyServer.layerHttpApi(ProxyApi, "governance", GovernanceEntity),
+  EntityProxyServer.layerHttpApi(ProxyApi, "memory", MemoryEntity)
+)
+```
+
+**Important notes for implementation:**
+1. Verify `EntityProxy` and `EntityProxyServer` export paths — may be `effect/unstable/cluster/EntityProxy` and `effect/unstable/cluster/EntityProxyServer` rather than barrel exports
+2. Verify `HttpApi.make("proxy").add(group)` compiles — may need different chaining API
+3. `HttpApiBuilder.layer(ProxyApi)` is needed to create the serving layer from ProxyApi + ProxyHandlersLive
+4. Import `HttpApiBuilder` from `effect/unstable/httpapi`
+
+**Step 3: Verify**
 
 Run: `bun run check`
-Expected: Zero errors (or known issues to fix).
+Expected: Zero errors.
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
-git add packages/server/src/gateway/ProxyGateway.ts
-git commit -m "feat(server): add ProxyGateway with EntityProxy-derived HTTP endpoints"
+git add packages/server/src/gateway/ChannelRoutes.ts packages/server/src/gateway/ProxyGateway.ts
+git commit -m "feat(server): add ChannelRoutes (SSE) and ProxyGateway (EntityProxy for non-streaming entities)"
 ```
 
 ---
@@ -808,7 +1059,7 @@ git commit -m "feat(server): add ProxyGateway with EntityProxy-derived HTTP endp
 ## Task 6: Wire Server and Delete Old Files
 
 **Files:**
-- Modify: `packages/server/src/server.ts` (replace ApiLive + TurnStreamingLayer)
+- Modify: `packages/server/src/server.ts`
 - Delete: `packages/server/src/Api.ts`
 - Delete: `packages/server/src/TurnStreamingRouter.ts`
 - Delete: `packages/domain/src/RuntimeApi.ts`
@@ -816,9 +1067,22 @@ git commit -m "feat(server): add ProxyGateway with EntityProxy-derived HTTP endp
 **Step 1: Update `packages/server/src/server.ts`**
 
 Key changes:
-1. Remove imports: `ApiLive` from `./Api.js`, `TurnStreamingLayer` from `./TurnStreamingRouter.js`
-2. Add imports: `ProxyApiLive`, `ProxyHealthRoute` from `./gateway/ProxyGateway.js`, `ChannelPortSqlite` from `./ChannelPortSqlite.js`, `ChannelEntity` layer, `ChannelPortTag`
-3. Add channel port layers (same pattern as other ports):
+
+1. **Remove imports:**
+   - `ApiLive` from `./Api.js`
+   - `TurnStreamingLayer` from `./TurnStreamingRouter.js`
+   - `RuntimeApi`, `CreateSessionResponse`, `RuntimeStatus` — no longer needed
+
+2. **Add imports:**
+   - `{ layer as ChannelEntityLayer }` from `./entities/ChannelEntity.js`
+   - `{ layer as ChannelRoutesLayer }` from `./gateway/ChannelRoutes.js`
+   - `{ ProxyApi, ProxyHandlersLive }` from `./gateway/ProxyGateway.js`
+   - `{ ChannelPortSqlite }` from `./ChannelPortSqlite.js`
+   - `{ ChannelPortTag }` from `./PortTags.js` (add to existing import)
+   - `{ HttpApiBuilder }` from `effect/unstable/httpapi`
+   - Type import for `ChannelPort` from `@template/domain/ports`
+
+3. **Add channel port layers** (same wiring pattern as other ports):
 
 ```typescript
 const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
@@ -831,7 +1095,11 @@ const channelPortTagLayer = Layer.effect(
     return (yield* ChannelPortSqlite) as ChannelPort
   })
 ).pipe(Layer.provide(channelPortSqliteLayer))
+```
 
+4. **Add channel entity layer:**
+
+```typescript
 const channelEntityLayer = ChannelEntityLayer.pipe(
   Layer.provide(clusterLayer),
   Layer.provide(channelPortTagLayer),
@@ -839,20 +1107,39 @@ const channelEntityLayer = ChannelEntityLayer.pipe(
 )
 ```
 
-4. Add channel layers to `PortsLive` Layer.mergeAll
-5. Replace `HttpApiAndStreamingLive`:
+5. **Add channel layers to `PortsLive`** (in the `Layer.mergeAll` block):
 
 ```typescript
-const HttpApiAndProxyLive = Layer.mergeAll(
+  channelPortTagLayer,
+  channelEntityLayer,
+```
+
+6. **Replace `HttpApiAndStreamingLive`:**
+
+```typescript
+const ProxyApiLive = HttpApiBuilder.layer(ProxyApi).pipe(
+  Layer.provide(ProxyHandlersLive)
+)
+
+const HttpApiAndRoutesLive = Layer.mergeAll(
   ProxyApiLive,
-  ProxyHealthRoute
+  ChannelRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
 )
 ```
 
-6. Update `HttpLive` to use `HttpApiAndProxyLive`
+7. **Update `HttpLive`** to use `HttpApiAndRoutesLive`:
+
+```typescript
+const HttpLive = HttpRouter.serve(
+  HttpApiAndRoutesLive
+).pipe(
+  Layer.provide(clusterLayer),
+  Layer.provideMerge(BunHttpServer.layer({ port: 3000 }))
+)
+```
 
 **Step 2: Delete old files**
 
@@ -862,28 +1149,26 @@ rm packages/server/src/TurnStreamingRouter.ts
 rm packages/domain/src/RuntimeApi.ts
 ```
 
-**Step 3: Fix any remaining imports**
+**Step 3: Fix remaining imports**
 
-Search for imports of deleted files and update:
-- `RuntimeClient.ts` imports `RuntimeApi` — will be rewritten in Task 7
-- Any test files importing from RuntimeApi — update to events.ts
+- `packages/cli/src/RuntimeClient.ts` — imports `RuntimeApi`. Will be fully rewritten in Task 7.
+- Any test files — check for `RuntimeApi` imports, update to `events` or remove.
 
-**Step 4: Verify**
+**Step 4: Verify server compiles**
 
-Run: `bun run check`
-Expected: Errors only in CLI package (RuntimeClient.ts references deleted RuntimeApi). Server package should compile.
+Run: `bun run check` (expect CLI errors only — fixed in Task 7)
 
 **Step 5: Run server tests**
 
 Run: `bun run test -- packages/server/`
-Expected: All server tests pass. (Existing tests that imported RuntimeApi events should have been updated in Task 1.)
+Expected: All server tests pass.
 
 **Step 6: Commit**
 
 ```bash
 git add -u
-git add packages/server/src/gateway/ProxyGateway.ts packages/server/src/server.ts
-git commit -m "feat(server): wire ProxyGateway, delete hand-coded Api + TurnStreamingRouter + RuntimeApi"
+git add packages/server/src/server.ts packages/server/src/gateway/
+git commit -m "feat(server): wire ChannelRoutes + ProxyGateway, delete Api.ts + TurnStreamingRouter + RuntimeApi"
 ```
 
 ---
@@ -891,19 +1176,19 @@ git commit -m "feat(server): wire ProxyGateway, delete hand-coded Api + TurnStre
 ## Task 7: Rewrite CLI for `agent chat`
 
 **Files:**
-- Modify: `packages/cli/src/RuntimeClient.ts` (rewrite as ChatClient)
-- Modify: `packages/cli/src/Cli.ts` (add chat command)
-- Modify: `packages/cli/src/bin.ts` (update layer)
+- Rewrite: `packages/cli/src/RuntimeClient.ts` → ChatClient
+- Rewrite: `packages/cli/src/Cli.ts`
+- Modify: `packages/cli/src/bin.ts`
 
-**Step 1: Rewrite `packages/cli/src/RuntimeClient.ts` → ChatClient**
+**Step 1: Rewrite `packages/cli/src/RuntimeClient.ts`**
 
-Replace the entire file. Use raw `HttpClient` for POST requests and SSE stream parsing:
+Replace entirely with a ChatClient using raw HTTP + SSE stream parsing:
 
 ```typescript
-import { Effect, Layer, Schema, ServiceMap, Stream } from "effect"
+import { Effect, Layer, ServiceMap, Stream } from "effect"
+import type { TurnStreamEvent } from "@template/domain/events"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
-import { TurnStreamEvent } from "@template/domain/events"
 
 const BASE_URL = "http://localhost:3000"
 
@@ -913,7 +1198,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient
 
     const createChannel = (channelId: string, agentId: string) =>
       httpClient.execute(
-        HttpClientRequest.post(`${BASE_URL}/createchannel/${channelId}`).pipe(
+        HttpClientRequest.post(`${BASE_URL}/channels/${channelId}/create`).pipe(
           HttpClientRequest.jsonBody({ channelType: "CLI", agentId })
         )
       ).pipe(
@@ -923,7 +1208,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient
 
     const sendMessage = (channelId: string, content: string) =>
       httpClient.execute(
-        HttpClientRequest.post(`${BASE_URL}/sendmessage/${channelId}`).pipe(
+        HttpClientRequest.post(`${BASE_URL}/channels/${channelId}/messages`).pipe(
           HttpClientRequest.jsonBody({ content })
         )
       ).pipe(
@@ -946,23 +1231,19 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient
       Effect.scoped
     )
 
-    return {
-      createChannel,
-      sendMessage,
-      health
-    } as const
+    return { createChannel, sendMessage, health } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)
 }
 ```
 
-**Important SSE parsing note:** The `Stream.splitLines` + filter `data:` approach is a simplified SSE parser. EntityProxy may use a different streaming format (e.g., JSON lines, ndjson, or Effect's internal stream encoding). During implementation, inspect the actual response format from the proxy endpoint and adjust the parser accordingly. You may need to consult `.reference/effect/packages/effect/src/unstable/cluster/EntityProxyServer.ts` to see how streaming responses are encoded.
+**Important:** The SSE parsing (`Stream.decodeText → splitLines → filter "data:" → parse JSON`) matches the SSE wire format from `ChannelRoutes.ts` (`event: ${type}\ndata: ${json}\n\n`). If the actual response format differs, adjust the parser.
 
 **Step 2: Rewrite `packages/cli/src/Cli.ts`**
 
 ```typescript
-import { Args, Command, Options } from "effect/unstable/cli"
+import { Command, Options } from "effect/unstable/cli"
 import { Console, Effect, Stream } from "effect"
 import { ChatClient } from "./RuntimeClient.js"
 import * as readline from "node:readline"
@@ -972,24 +1253,17 @@ const channelOption = Options.text("channel").pipe(
   Options.optional
 )
 
-const newFlag = Options.boolean("new").pipe(
-  Options.withDescription("Start a fresh channel"),
-  Options.withDefault(false)
-)
-
-const chat = Command.make("chat", { channel: channelOption, new: newFlag }).pipe(
+const chat = Command.make("chat", { channel: channelOption }).pipe(
   Command.withDescription("Interactive chat with the agent"),
-  Command.withHandler(({ channel, new: isNew }) =>
+  Command.withHandler(({ channel }) =>
     ChatClient.use((client) =>
       Effect.gen(function*() {
-        // Resolve or create channel
         const channelId = channel ?? `channel:${crypto.randomUUID()}`
 
         yield* Effect.logInfo(`Creating channel ${channelId}...`)
         yield* client.createChannel(channelId, "agent:bootstrap")
         yield* Effect.logInfo("Channel ready. Type your message (Ctrl+C to exit).\n")
 
-        // REPL loop
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout
@@ -1081,72 +1355,203 @@ Expected: Zero TypeScript errors.
 
 ```bash
 git add packages/cli/src/RuntimeClient.ts packages/cli/src/Cli.ts packages/cli/src/bin.ts
-git commit -m "feat(cli): add agent chat command with streaming REPL"
+git commit -m "feat(cli): add agent chat command with SSE streaming REPL"
 ```
 
 ---
 
-## Task 8: Integration Test
+## Task 8: Integration Tests
+
+Test the full HTTP round-trip through ChannelRoutes SSE endpoints.
 
 **Files:**
-- Create: `packages/server/test/ProxyGateway.e2e.test.ts`
+- Create: `packages/server/test/ChannelRoutes.e2e.test.ts`
 
-**Step 1: Create integration test**
+**Step 1: Create HTTP integration test**
 
-This test verifies the HTTP round-trip through EntityProxy. It requires the full server layer stack (SQLite, migrations, cluster, entities, proxy).
+This test starts a real HTTP server on a random port and sends actual HTTP requests:
 
 ```typescript
-import { it } from "@effect/vitest"
-import { Effect, Layer, Stream } from "effect"
+import { describe, expect, it } from "@effect/vitest"
+import type { SessionTurnPort } from "@template/domain/ports"
+import type { TurnStreamEvent } from "@template/domain/events"
+import { DateTime, Effect, Layer, Stream } from "effect"
+import { ShardingConfig, SingleRunner } from "effect/unstable/cluster"
+import * as HttpClient from "effect/unstable/http/HttpClient"
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
+import * as HttpRouter from "effect/unstable/http/HttpRouter"
+import * as HttpServer from "effect/unstable/http/HttpServer"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-// Import the ChannelEntity client for direct entity testing
-// (avoids HTTP setup complexity for this first e2e test)
-import { ChannelEntity } from "../src/entities/ChannelEntity.js"
-import { ShardingConfig } from "effect/unstable/cluster"
-// ... layer setup matching server.ts but with test SQLite path
+import { layer as ChannelEntityLayer } from "../src/entities/ChannelEntity.js"
+import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
+import { layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
+import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
+import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
+import { ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
+import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
+import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
+import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 
-describe("ProxyGateway E2E", () => {
-  // Build a test layer stack that mirrors server.ts but uses test SQLite
-  // This is a direct entity client test, not HTTP —
-  // HTTP testing requires starting an actual server which is complex.
-  // For this slice, verify entity-level integration.
+// Mock TurnProcessingRuntime (same as ChannelEntity test)
+const makeMockTurnProcessingRuntime = () =>
+  Layer.succeed(TurnProcessingRuntime, {
+    processTurn: (_input: ProcessTurnPayload) =>
+      Effect.succeed({
+        turnId: _input.turnId,
+        accepted: true,
+        auditReasonCode: "turn_processing_accepted" as const,
+        assistantContent: "mock response",
+        assistantContentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }],
+        modelFinishReason: "stop",
+        modelUsageJson: "{}"
+      }),
+    processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> =>
+      Stream.make(
+        {
+          type: "turn.started" as const,
+          sequence: 1,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          createdAt: input.createdAt
+        },
+        {
+          type: "assistant.delta" as const,
+          sequence: 2,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          delta: "hello from agent"
+        },
+        {
+          type: "turn.completed" as const,
+          sequence: 3,
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          accepted: true,
+          auditReasonCode: "turn_processing_accepted",
+          modelFinishReason: "stop",
+          modelUsageJson: "{}"
+        }
+      )
+  } as any)
 
-  it.effect("createChannel then sendMessage streams events", () =>
-    Effect.gen(function*() {
-      // Create channel
-      const makeChannelClient = yield* ChannelEntity.client
+// Build full test layer with HTTP server + cluster + all dependencies
+const makeTestLayer = (dbPath: string) => {
+  const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+  const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+  const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+
+  const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+  const channelPortTagLayer = Layer.effect(
+    ChannelPortTag,
+    Effect.gen(function*() { return (yield* ChannelPortSqlite) as any })
+  ).pipe(Layer.provide(channelPortSqliteLayer))
+
+  const sessionTurnSqliteLayer = SessionTurnPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+  const sessionTurnTagLayer = Layer.effect(
+    SessionTurnPortTag,
+    Effect.gen(function*() { return (yield* SessionTurnPortSqlite) as SessionTurnPort })
+  ).pipe(Layer.provide(sessionTurnSqliteLayer))
+
+  const clusterLayer = SingleRunner.layer().pipe(
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.orDie
+  )
+
+  const channelEntityLayer = ChannelEntityLayer.pipe(
+    Layer.provide(clusterLayer),
+    Layer.provide(channelPortTagLayer),
+    Layer.provide(sessionTurnTagLayer)
+  )
+
+  const sessionEntityLayer = SessionEntityLayer.pipe(
+    Layer.provide(clusterLayer),
+    Layer.provide(sessionTurnTagLayer),
+    Layer.provide(makeMockTurnProcessingRuntime())
+  )
+
+  // Serve ChannelRoutes on a random port
+  const httpLayer = HttpRouter.serve(ChannelRoutesLayer).pipe(
+    Layer.provide(channelEntityLayer),
+    Layer.provide(sessionEntityLayer),
+    Layer.provide(clusterLayer),
+    Layer.provideMerge(HttpServer.layerTest)  // Provides test HTTP server
+  )
+
+  return httpLayer
+}
+
+describe("ChannelRoutes E2E", () => {
+  it.effect("POST /health returns ok", () => {
+    const dbPath = testDatabasePath("e2e-health")
+    return Effect.gen(function*() {
+      const client = yield* HttpClient.HttpClient
+      const response = yield* client.execute(
+        HttpClientRequest.get("/health")
+      ).pipe(Effect.scoped)
+      const body = yield* response.json
+      expect(body).toEqual({ status: "ok", service: "personal-agent" })
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("create channel + send message returns SSE stream", () => {
+    const dbPath = testDatabasePath("e2e-send")
+    return Effect.gen(function*() {
+      const client = yield* HttpClient.HttpClient
       const channelId = `channel:${crypto.randomUUID()}`
-      const client = makeChannelClient(channelId)
 
-      yield* client.createChannel({
-        channelType: "CLI",
-        agentId: "agent:bootstrap"
-      })
+      // Create channel
+      yield* client.execute(
+        HttpClientRequest.post(`/channels/${channelId}/create`).pipe(
+          HttpClientRequest.jsonBody({ channelType: "CLI", agentId: "agent:bootstrap" })
+        )
+      ).pipe(Effect.scoped)
 
-      // Send message and collect stream events
-      const events = yield* client.sendMessage({ content: "Hello agent" }).pipe(
-        Stream.take(1), // At minimum get the first event
+      // Send message
+      const response = yield* client.execute(
+        HttpClientRequest.post(`/channels/${channelId}/messages`).pipe(
+          HttpClientRequest.jsonBody({ content: "hello" })
+        )
+      )
+
+      // Parse SSE stream
+      const events = yield* response.stream.pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.filter((line) => line.startsWith("data: ")),
+        Stream.map((line) => JSON.parse(line.slice(6)) as TurnStreamEvent),
         Stream.runCollect
       )
 
       expect(events.length).toBeGreaterThan(0)
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events.some((e) => e.type === "assistant.delta")).toBe(true)
+      expect(events.some((e) => e.type === "turn.completed")).toBe(true)
     }).pipe(
-      Effect.provide(/* full test layer */),
-      Effect.scoped
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
     )
-  )
+  })
 })
+
+const testDatabasePath = (name: string): string =>
+  join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)
+
+const cleanupDatabase = (path: string) =>
+  Effect.sync(() => { rmSync(path, { force: true }) })
 ```
 
-**Note:** The full integration test layer is complex — it needs SQLite, migrations, all port layers, all entity layers, TurnProcessingRuntime (which needs WorkflowEngine, ChatPersistence, LanguageModel, ToolRegistry, etc.). During implementation, determine the minimum viable test layer. Consider:
-1. Mocking TurnProcessingRuntime to return a predetermined stream
-2. Or wiring the full stack with a mock LanguageModel
+**Note:** `HttpServer.layerTest` provides a test HTTP server that HttpClient can access without a real TCP port. Check if this exists in Effect's current API — alternative is to use `BunHttpServer.layer({ port: 0 })` for random port binding, then build the HttpClient with the actual port. Adjust during implementation.
 
-**Step 2: Run test**
+**Step 2: Run tests**
 
-Run: `bun run test -- packages/server/test/ProxyGateway.e2e.test.ts`
+Run: `bun run test -- packages/server/test/ChannelRoutes.e2e.test.ts`
+Expected: 2 tests pass.
 
 **Step 3: Run full test suite**
 
@@ -1156,8 +1561,8 @@ Expected: All tests pass.
 **Step 4: Commit**
 
 ```bash
-git add packages/server/test/ProxyGateway.e2e.test.ts
-git commit -m "test(server): add ProxyGateway integration test"
+git add packages/server/test/ChannelRoutes.e2e.test.ts
+git commit -m "test(server): add ChannelRoutes HTTP E2E tests with SSE streaming"
 ```
 
 ---
@@ -1191,6 +1596,7 @@ curl http://localhost:3000/health
 # Terminal 3: Test CLI
 bun run packages/cli/src/bin.ts agent status
 bun run packages/cli/src/bin.ts agent chat
+# Type a message, verify streamed response appears
 ```
 
 **Step 5: Final commit if any cleanup needed**
@@ -1206,9 +1612,10 @@ git commit -m "chore: final cleanup for channel + gateway vertical slice"
 
 | Risk | Mitigation |
 |------|------------|
-| EntityProxy streaming format unknown | Inspect actual response during Task 5. May need to keep thin SSE adapter if proxy uses different format. |
-| Entity-to-entity RPC (Channel → Session) | Verify `SessionEntity.client` works inside ChannelEntity handler. Both entities share Sharding context. |
-| `HttpApi.add()` vs `.addGroup()` | Check exact API in `.reference/effect/packages/effect/src/unstable/http/HttpApi.ts` |
-| EntityProxy import path | May be `effect/unstable/cluster/EntityProxy` not `effect/unstable/cluster` barrel |
-| CLI SSE parsing | EntityProxy may encode streams differently than manual SSE. Adjust parser. |
-| Full integration test layer | May need significant layer setup. Start with entity-level tests, add HTTP later. |
+| `EntityProxy` / `EntityProxyServer` import paths | May not be barrel-exported from `effect/unstable/cluster`. Check imports at `.reference/effect/packages/effect/src/unstable/cluster/`. May need direct file imports. |
+| `HttpApi.make().add()` vs `.addGroup()` | Check exact chaining API in `.reference/effect/packages/effect/src/unstable/httpapi/HttpApi.ts`. |
+| `HttpServer.layerTest` may not exist | Use `BunHttpServer.layer({ port: 0 })` + extract actual port for test HTTP client. |
+| Entity-to-entity RPC (Channel → Session) | `SessionEntity.client` in ChannelEntity handler requires Sharding. Both entities share Sharding context within the cluster layer. |
+| `Stream.unwrap` in sendMessage handler | Must return `Stream`, not `Effect<Stream>`. The `Stream.unwrap(Effect.gen(...))` pattern converts `Effect<Stream<A>>` → `Stream<A>`. Verify against `.reference/effect/` streaming entity tests. |
+| CLI SSE parser assumes `data:` line format | Matches ChannelRoutes encoder (`event: ${type}\ndata: ${json}\n\n`). `splitLines` + filter `"data: "` is correct for this format. |
+| `HttpRouter.mergeAll` may not exist | May need `Layer.mergeAll` of individual HttpRouter layers instead. Check API. |
