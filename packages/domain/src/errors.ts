@@ -32,3 +32,9 @@ export class ContextWindowExceeded extends Schema.ErrorClass<ContextWindowExceed
   tokenCapacity: Schema.Number,
   attemptedTokensUsed: Schema.Number
 }) {}
+
+export class ClusterEntityError extends Schema.ErrorClass<ClusterEntityError>("ClusterEntityError")({
+  _tag: Schema.tag("ClusterEntityError"),
+  entityType: Schema.String,
+  reason: Schema.String
+}) {}

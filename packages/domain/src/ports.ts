@@ -19,6 +19,7 @@ import type {
   ToolName,
   TurnId
 } from "./ids.js"
+import { MessageId } from "./ids.js"
 import type {
   AuthorizationDecision,
   ConcurrencyPolicy,
@@ -27,6 +28,7 @@ import type {
   QuotaPeriod,
   ScheduleStatus
 } from "./status.js"
+import { AgentRole } from "./status.js"
 
 export const Instant = Schema.DateTimeUtc
 export type Instant = typeof Instant.Type
@@ -47,12 +49,63 @@ export interface SessionState {
   readonly tokensUsed: number
 }
 
+export const TextBlock = Schema.Struct({
+  contentBlockType: Schema.Literal("TextBlock"),
+  text: Schema.String
+})
+export type TextBlock = typeof TextBlock.Type
+
+export const ToolUseBlock = Schema.Struct({
+  contentBlockType: Schema.Literal("ToolUseBlock"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  inputJson: Schema.String
+})
+export type ToolUseBlock = typeof ToolUseBlock.Type
+
+export const ToolResultBlock = Schema.Struct({
+  contentBlockType: Schema.Literal("ToolResultBlock"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  outputJson: Schema.String,
+  isError: Schema.Boolean
+})
+export type ToolResultBlock = typeof ToolResultBlock.Type
+
+export const ImageBlock = Schema.Struct({
+  contentBlockType: Schema.Literal("ImageBlock"),
+  mediaType: Schema.String,
+  source: Schema.String,
+  altText: Schema.Union([Schema.String, Schema.Null])
+})
+export type ImageBlock = typeof ImageBlock.Type
+
+export const ContentBlock = Schema.Union([
+  TextBlock,
+  ToolUseBlock,
+  ToolResultBlock,
+  ImageBlock
+])
+export type ContentBlock = typeof ContentBlock.Type
+
+export const MessageRecord = Schema.Struct({
+  messageId: MessageId,
+  role: AgentRole,
+  content: Schema.String,
+  contentBlocks: Schema.Array(ContentBlock)
+})
+export type MessageRecord = typeof MessageRecord.Type
+
 export interface TurnRecord {
   readonly turnId: TurnId
   readonly sessionId: SessionId
   readonly conversationId: ConversationId
-  readonly agentId: AgentId
-  readonly content: string
+  readonly turnIndex: number
+  readonly participantRole: AgentRole
+  readonly participantAgentId: AgentId | null
+  readonly message: MessageRecord
+  readonly modelFinishReason: string | null
+  readonly modelUsageJson: string | null
   readonly createdAt: Instant
 }
 

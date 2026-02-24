@@ -1,16 +1,19 @@
-import type { ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
-import type {
-  DueScheduleRecord,
-  Instant,
-  ScheduledExecutionRecord,
-  SchedulePort,
-  ScheduleRecord,
-  Trigger,
-  TriggerSource
-} from "@template/domain/ports"
-import { DateTime, Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import type { SqlError } from "effect/unstable/sql/SqlError"
+import * as SqlSchema from "effect/unstable/sql/SqlSchema"
+import type { ScheduledExecutionId, ScheduleId } from "../../domain/src/ids.js"
+import {
+  type DueScheduleRecord,
+  type Instant,
+  type ScheduledExecutionRecord,
+  type SchedulePort,
+  type ScheduleRecord,
+  ScheduleSkipReason,
+  type Trigger,
+  TriggerSource
+} from "../../domain/src/ports.js"
+import { ConcurrencyPolicy, ExecutionOutcome, ScheduleStatus } from "../../domain/src/status.js"
 import {
   dueWindows,
   executionFinishedAt,
@@ -18,40 +21,136 @@ import {
   triggerSourceFromTrigger
 } from "./scheduler/ScheduleDue.js"
 
-interface ScheduleRow {
-  readonly schedule_id: string
-  readonly owner_agent_id: string
-  readonly recurrence_label: string
-  readonly cron_expression: string | null
-  readonly interval_seconds: number | null
-  readonly trigger_tag: string
-  readonly action_ref: string
-  readonly schedule_status: ScheduleRecord["scheduleStatus"]
-  readonly concurrency_policy: ScheduleRecord["concurrencyPolicy"]
-  readonly allows_catch_up: number
-  readonly auto_disable_after_run: number
-  readonly catch_up_window_seconds: number
-  readonly max_catch_up_runs_per_tick: number
-  readonly last_execution_at: string | null
-  readonly next_execution_at: string | null
-}
+const ScheduleRowSchema = Schema.Struct({
+  schedule_id: Schema.String,
+  owner_agent_id: Schema.String,
+  recurrence_label: Schema.String,
+  cron_expression: Schema.Union([Schema.String, Schema.Null]),
+  interval_seconds: Schema.Union([Schema.Number, Schema.Null]),
+  trigger_tag: Schema.Literals(["CronTrigger", "IntervalTrigger", "EventTrigger"]),
+  action_ref: Schema.String,
+  schedule_status: ScheduleStatus,
+  concurrency_policy: ConcurrencyPolicy,
+  allows_catch_up: Schema.Number,
+  auto_disable_after_run: Schema.Number,
+  catch_up_window_seconds: Schema.Number,
+  max_catch_up_runs_per_tick: Schema.Number,
+  last_execution_at: Schema.Union([Schema.String, Schema.Null]),
+  next_execution_at: Schema.Union([Schema.String, Schema.Null])
+})
+type ScheduleRow = typeof ScheduleRowSchema.Type
 
-interface ExecutionRow {
-  readonly execution_id: string
-  readonly schedule_id: string
-  readonly due_at: string
-  readonly trigger_source: TriggerSource
-  readonly outcome: ScheduledExecutionRecord["outcome"]
-  readonly started_at: string
-  readonly ended_at: string | null
-  readonly skip_reason: ScheduledExecutionRecord["skipReason"]
-}
+const ExecutionRowSchema = Schema.Struct({
+  execution_id: Schema.String,
+  schedule_id: Schema.String,
+  due_at: Schema.String,
+  trigger_source: TriggerSource,
+  outcome: ExecutionOutcome,
+  started_at: Schema.String,
+  ended_at: Schema.Union([Schema.String, Schema.Null]),
+  skip_reason: Schema.Union([ScheduleSkipReason, Schema.Null])
+})
+type ExecutionRow = typeof ExecutionRowSchema.Type
+
+const ScheduleIdRequest = Schema.Struct({ scheduleId: Schema.String })
+const DueAtRequest = Schema.Struct({ dueAtIso: Schema.String })
+const EmptyRequest = Schema.Struct({})
+const InstantFromSqlString = Schema.DateTimeUtcFromString
+const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
 export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()(
   "server/SchedulePortSqlite",
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
+
+      const findScheduleById = SqlSchema.findOneOption({
+        Request: ScheduleIdRequest,
+        Result: ScheduleRowSchema,
+        execute: ({ scheduleId }) =>
+          sql`
+            SELECT
+              schedule_id,
+              owner_agent_id,
+              recurrence_label,
+              cron_expression,
+              interval_seconds,
+              trigger_tag,
+              action_ref,
+              schedule_status,
+              concurrency_policy,
+              allows_catch_up,
+              auto_disable_after_run,
+              catch_up_window_seconds,
+              max_catch_up_runs_per_tick,
+              last_execution_at,
+              next_execution_at
+            FROM schedules
+            WHERE schedule_id = ${scheduleId}
+            LIMIT 1
+          `.withoutTransform
+      })
+
+      const findDueSchedules = SqlSchema.findAll({
+        Request: DueAtRequest,
+        Result: ScheduleRowSchema,
+        execute: ({ dueAtIso }) =>
+          sql`
+            SELECT
+              schedule_id,
+              owner_agent_id,
+              recurrence_label,
+              cron_expression,
+              interval_seconds,
+              trigger_tag,
+              action_ref,
+              schedule_status,
+              concurrency_policy,
+              allows_catch_up,
+              auto_disable_after_run,
+              catch_up_window_seconds,
+              max_catch_up_runs_per_tick,
+              last_execution_at,
+              next_execution_at
+            FROM schedules
+            WHERE schedule_status = 'ScheduleActive'
+              AND next_execution_at IS NOT NULL
+              AND next_execution_at <= ${dueAtIso}
+              AND (cron_expression IS NOT NULL OR interval_seconds IS NOT NULL)
+          `.withoutTransform
+      })
+
+      const findAllExecutions = SqlSchema.findAll({
+        Request: EmptyRequest,
+        Result: ExecutionRowSchema,
+        execute: () =>
+          sql`
+            SELECT
+              execution_id,
+              schedule_id,
+              due_at,
+              trigger_source,
+              outcome,
+              started_at,
+              ended_at,
+              skip_reason
+            FROM scheduled_executions
+            ORDER BY created_at ASC, execution_id ASC
+          `.withoutTransform
+      })
+
+      const getScheduleRow = (
+        scheduleId: ScheduleId
+      ): Effect.Effect<ScheduleRecord | null, SqlError | Schema.SchemaError> =>
+        findScheduleById({ scheduleId }).pipe(
+          Effect.map(
+            Option.match({
+              onNone: () => null,
+              onSome: decodeScheduleRow
+            })
+          )
+        )
 
       const upsertSchedule: SchedulePort["upsertSchedule"] = (schedule) =>
         sql`
@@ -109,29 +208,7 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
         )
 
       const listDue: SchedulePort["listDue"] = (now) =>
-        sql<ScheduleRow>`
-          SELECT
-            schedule_id,
-            owner_agent_id,
-            recurrence_label,
-            cron_expression,
-            interval_seconds,
-            trigger_tag,
-            action_ref,
-            schedule_status,
-            concurrency_policy,
-            allows_catch_up,
-            auto_disable_after_run,
-            catch_up_window_seconds,
-            max_catch_up_runs_per_tick,
-            last_execution_at,
-            next_execution_at
-          FROM schedules
-          WHERE schedule_status = 'ScheduleActive'
-            AND next_execution_at IS NOT NULL
-            AND next_execution_at <= ${toSqlInstant(now)}
-            AND (cron_expression IS NOT NULL OR interval_seconds IS NOT NULL)
-        `.withoutTransform.pipe(
+        findDueSchedules({ dueAtIso: toRequiredSqlInstant(now) }).pipe(
           Effect.map((rows) =>
             rows.flatMap((row) => {
               const schedule = decodeScheduleRow(row)
@@ -172,7 +249,7 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               )
             `.unprepared
 
-            const current = yield* getScheduleRow(sql, record.scheduleId)
+            const current = yield* getScheduleRow(record.scheduleId)
             if (current === null) {
               return
             }
@@ -203,25 +280,13 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
         )
 
       const getSchedule = (scheduleId: ScheduleId) =>
-        getScheduleRow(sql, scheduleId).pipe(
+        getScheduleRow(scheduleId).pipe(
           Effect.map((row) => row === null ? null : row),
           Effect.orDie
         )
 
       const listExecutions = () =>
-        sql<ExecutionRow>`
-          SELECT
-            execution_id,
-            schedule_id,
-            due_at,
-            trigger_source,
-            outcome,
-            started_at,
-            ended_at,
-            skip_reason
-          FROM scheduled_executions
-          ORDER BY created_at ASC, execution_id ASC
-        `.withoutTransform.pipe(
+        findAllExecutions({}).pipe(
           Effect.map((rows) => rows.map(decodeExecutionRow)),
           Effect.orDie
         )
@@ -238,34 +303,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
 ) {
   static layer = Layer.effect(this, this.make)
 }
-
-const getScheduleRow = (
-  sql: SqlClient.SqlClient,
-  scheduleId: ScheduleId
-): Effect.Effect<ScheduleRecord | null, SqlError> =>
-  sql<ScheduleRow>`
-    SELECT
-      schedule_id,
-      owner_agent_id,
-      recurrence_label,
-      cron_expression,
-      interval_seconds,
-      trigger_tag,
-      action_ref,
-      schedule_status,
-      concurrency_policy,
-      allows_catch_up,
-      auto_disable_after_run,
-      catch_up_window_seconds,
-      max_catch_up_runs_per_tick,
-      last_execution_at,
-      next_execution_at
-    FROM schedules
-    WHERE schedule_id = ${scheduleId}
-    LIMIT 1
-  `.withoutTransform.pipe(
-    Effect.map((rows) => rows[0] === undefined ? null : decodeScheduleRow(rows[0]))
-  )
 
 const decodeScheduleRow = (row: ScheduleRow): ScheduleRecord => ({
   scheduleId: row.schedule_id as ScheduleId,
@@ -298,7 +335,7 @@ const decodeExecutionRow = (row: ExecutionRow): ScheduledExecutionRecord => ({
   skipReason: row.skip_reason
 })
 
-const decodeTrigger = (tag: string): Trigger => {
+const decodeTrigger = (tag: ScheduleRow["trigger_tag"]): Trigger => {
   switch (tag) {
     case "CronTrigger": {
       return { _tag: "CronTrigger" }
@@ -315,8 +352,10 @@ const decodeTrigger = (tag: string): Trigger => {
 
 const toSqlBoolean = (value: boolean): number => value ? 1 : 0
 
-const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : DateTime.formatIso(instant)
+const toRequiredSqlInstant = (instant: Instant): string => encodeSqlInstant(instant)
 
-const fromRequiredSqlInstant = (value: string): Instant => DateTime.fromDateUnsafe(new Date(value))
+const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : encodeSqlInstant(instant)
+
+const fromRequiredSqlInstant = (value: string): Instant => decodeSqlInstant(value)
 
 const fromSqlInstant = (value: string | null): Instant | null => value === null ? null : fromRequiredSqlInstant(value)

@@ -7,12 +7,28 @@ export const PermissionMode = Schema.Literals([
 ])
 export type PermissionMode = typeof PermissionMode.Type
 
+export const AgentRole = Schema.Literals([
+  "SystemRole",
+  "UserRole",
+  "AssistantRole",
+  "ToolRole"
+])
+export type AgentRole = typeof AgentRole.Type
+
 export const AuthorizationDecision = Schema.Literals([
   "Allow",
   "Deny",
   "RequireApproval"
 ])
 export type AuthorizationDecision = typeof AuthorizationDecision.Type
+
+export const ContentBlockType = Schema.Literals([
+  "TextBlock",
+  "ToolUseBlock",
+  "ToolResultBlock",
+  "ImageBlock"
+])
+export type ContentBlockType = typeof ContentBlockType.Type
 
 export const ScheduleStatus = Schema.Literals([
   "ScheduleActive",

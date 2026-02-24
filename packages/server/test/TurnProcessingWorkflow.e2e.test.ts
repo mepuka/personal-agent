@@ -6,26 +6,33 @@ import type {
   GovernancePort,
   Instant,
   SessionState,
-  SessionTurnPort,
-  TurnRecord
+  SessionTurnPort
 } from "@template/domain/ports"
 import type { AuthorizationDecision } from "@template/domain/status"
-import { DateTime, Effect, Layer } from "effect"
+import { DateTime, Effect, Layer, Stream } from "effect"
+import * as LanguageModel from "effect/unstable/ai/LanguageModel"
+import * as Response from "effect/unstable/ai/Response"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
+import * as ChatPersistence from "../src/ai/ChatPersistence.js"
+import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
-import { layer as TurnProcessingWorkflowLayer, TurnPolicyDenied } from "../src/turn/TurnProcessingWorkflow.js"
+import {
+  layer as TurnProcessingWorkflowLayer,
+  type ProcessTurnPayload,
+  TurnPolicyDenied
+} from "../src/turn/TurnProcessingWorkflow.js"
 
 describe("TurnProcessingWorkflow e2e", () => {
-  it.effect("processes one turn and persists audit + state", () => {
+  it.effect("processes one turn and persists user + assistant turns", () => {
     const dbPath = testDatabasePath("turn-happy")
     const layer = makeTurnProcessingLayer(dbPath)
 
@@ -70,10 +77,14 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(result.accepted).toBe(true)
       expect(result.turnId).toBe("turn:happy")
       expect(result.auditReasonCode).toBe("turn_processing_accepted")
+      expect(result.assistantContent).toContain("assistant")
       expect(persistedSession?.tokensUsed).toBe(25)
       expect(persistedAgent?.tokensConsumed).toBe(25)
-      expect(turns).toHaveLength(1)
-      expect(turns[0].content).toBe("hello from happy path")
+      expect(turns).toHaveLength(2)
+      expect(turns[0].participantRole).toBe("UserRole")
+      expect(turns[0].message.content).toBe("hello from happy path")
+      expect(turns[1].participantRole).toBe("AssistantRole")
+      expect(turns[1].message.content).toContain("assistant")
       expect(audits.some((entry) => entry.reason === "turn_processing_accepted")).toBe(true)
     }).pipe(
       Effect.provide(layer),
@@ -125,7 +136,7 @@ describe("TurnProcessingWorkflow e2e", () => {
 
       expect(first.accepted).toBe(true)
       expect(second.accepted).toBe(true)
-      expect(turns).toHaveLength(1)
+      expect(turns).toHaveLength(2)
       expect(persistedAgent?.tokensConsumed).toBe(40)
       expect(audits.filter((entry) => entry.reason === "turn_processing_accepted")).toHaveLength(1)
     }).pipe(
@@ -188,8 +199,9 @@ describe("TurnProcessingWorkflow e2e", () => {
 
       expect(persisted.agent?.tokensConsumed).toBe(30)
       expect(persisted.session?.tokensUsed).toBe(30)
-      expect(persisted.turns).toHaveLength(1)
-      expect(persisted.turns[0].content).toBe("persist me")
+      expect(persisted.turns).toHaveLength(2)
+      expect(persisted.turns[0].message.content).toBe("persist me")
+      expect(persisted.turns[1].message.content).toContain("assistant")
       expect(persisted.audits.some((entry) => entry.reason === "turn_processing_accepted")).toBe(true)
     }).pipe(
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -246,6 +258,47 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(turns).toHaveLength(0)
       expect(audits.some((entry) => entry.reason === "turn_processing_policy_denied" && entry.decision === "Deny"))
         .toBe(true)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("exposes canonical stream events", () => {
+    const dbPath = testDatabasePath("turn-stream")
+    const layer = makeTurnProcessingLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:stream" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:stream" as SessionId,
+        conversationId: "conversation:stream" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const events = yield* runtime.processTurnStream(makeTurnPayload({
+        turnId: "turn:stream" as TurnId,
+        sessionId: "session:stream" as SessionId,
+        conversationId: "conversation:stream" as ConversationId,
+        agentId: "agent:stream" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "stream me"
+      })).pipe(Stream.runCollect)
+
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events.some((event) => event.type === "assistant.delta")).toBe(true)
+      expect(events.some((event) => event.type === "turn.completed")).toBe(true)
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -308,6 +361,19 @@ const makeTurnProcessingLayer = (
     })
   ).pipe(Layer.provide(governanceSqliteLayer))
 
+  const mockLanguageModelLayer = Layer.succeed(
+    LanguageModel.LanguageModel,
+    makeMockLanguageModel()
+  )
+
+  const chatPersistenceLayer = ChatPersistence.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
+  const toolRegistryLayer = ToolRegistry.layer.pipe(
+    Layer.provide(governanceTagLayer)
+  )
+
   const clusterLayer = SingleRunner.layer().pipe(
     Layer.provide(sqlInfrastructureLayer),
     Layer.orDie
@@ -321,7 +387,10 @@ const makeTurnProcessingLayer = (
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
     Layer.provide(sessionTurnTagLayer),
-    Layer.provide(governanceTagLayer)
+    Layer.provide(governanceTagLayer),
+    Layer.provide(toolRegistryLayer),
+    Layer.provide(chatPersistenceLayer),
+    Layer.provide(mockLanguageModelLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -336,6 +405,9 @@ const makeTurnProcessingLayer = (
     agentStateTagLayer,
     sessionTurnTagLayer,
     governanceTagLayer,
+    mockLanguageModelLayer,
+    chatPersistenceLayer,
+    toolRegistryLayer,
     workflowEngineLayer,
     turnWorkflowLayer,
     turnRuntimeLayer
@@ -364,14 +436,60 @@ const makeSessionState = (overrides: Partial<SessionState>): SessionState => ({
   ...overrides
 })
 
-const makeTurnPayload = (overrides: Partial<TurnRecord> & { inputTokens?: number }) => ({
-  turnId: (overrides.turnId ?? ("turn:default" as TurnId)) as string,
-  sessionId: (overrides.sessionId ?? ("session:default" as SessionId)) as string,
-  conversationId: (overrides.conversationId ?? ("conversation:default" as ConversationId)) as string,
-  agentId: (overrides.agentId ?? ("agent:default" as AgentId)) as string,
+const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPayload => ({
+  turnId: overrides.turnId ?? "turn:default",
+  sessionId: overrides.sessionId ?? "session:default",
+  conversationId: overrides.conversationId ?? "conversation:default",
+  agentId: overrides.agentId ?? "agent:default",
   content: overrides.content ?? "hello",
+  contentBlocks: overrides.contentBlocks ?? [{ contentBlockType: "TextBlock", text: "hello" }],
   createdAt: overrides.createdAt ?? instant("2026-02-24T12:00:00.000Z"),
   inputTokens: overrides.inputTokens ?? 10
+})
+
+const makeMockLanguageModel = (): LanguageModel.Service => ({
+  generateText: (_options: any) =>
+    Effect.succeed(
+      new LanguageModel.GenerateTextResponse([
+        Response.makePart("tool-call", {
+          id: "call_echo_1",
+          name: "echo.text",
+          params: { text: "hello" },
+          providerExecuted: false
+        }),
+        Response.makePart("tool-result", {
+          id: "call_echo_1",
+          name: "echo.text",
+          isFailure: false,
+          result: { text: "hello" },
+          encodedResult: { text: "hello" },
+          providerExecuted: false,
+          preliminary: false
+        }),
+        Response.makePart("text", {
+          text: "assistant mock response"
+        }),
+        Response.makePart("finish", {
+          reason: "stop",
+          usage: new Response.Usage({
+            inputTokens: {
+              uncached: 10,
+              total: 10,
+              cacheRead: undefined,
+              cacheWrite: undefined
+            },
+            outputTokens: {
+              total: 6,
+              text: 6,
+              reasoning: undefined
+            }
+          }),
+          response: undefined
+        })
+      ])
+    ) as any,
+  streamText: (_options: any) => Stream.empty as any,
+  generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
 })
 
 const testDatabasePath = (name: string): string =>

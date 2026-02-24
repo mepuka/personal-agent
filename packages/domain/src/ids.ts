@@ -12,6 +12,9 @@ export type ConversationId = typeof ConversationId.Type
 export const TurnId = Schema.String.pipe(Schema.brand("TurnId"))
 export type TurnId = typeof TurnId.Type
 
+export const MessageId = Schema.String.pipe(Schema.brand("MessageId"))
+export type MessageId = typeof MessageId.Type
+
 export const MemoryItemId = Schema.String.pipe(Schema.brand("MemoryItemId"))
 export type MemoryItemId = typeof MemoryItemId.Type
 

@@ -1,30 +1,133 @@
-import { DateTime, Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
+import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import { ContextWindowExceeded, SessionNotFound } from "../../domain/src/errors.js"
 import type { SessionId, TurnId } from "../../domain/src/ids.js"
-import type { Instant, SessionState, SessionTurnPort, TurnRecord } from "../../domain/src/ports.js"
+import {
+  ContentBlock as ContentBlockSchema,
+  type Instant,
+  type SessionState,
+  type SessionTurnPort,
+  type TurnRecord
+} from "../../domain/src/ports.js"
+import { AgentRole } from "../../domain/src/status.js"
 
-interface SessionRow {
-  readonly session_id: string
-  readonly conversation_id: string
-  readonly token_capacity: number
-  readonly tokens_used: number
-}
+const SessionRowSchema = Schema.Struct({
+  session_id: Schema.String,
+  conversation_id: Schema.String,
+  token_capacity: Schema.Number,
+  tokens_used: Schema.Number
+})
+type SessionRow = typeof SessionRowSchema.Type
 
-interface TurnRow {
-  readonly turn_id: string
-  readonly session_id: string
-  readonly conversation_id: string
-  readonly agent_id: string
-  readonly content: string
-  readonly created_at: string
-}
+const TurnRowSchema = Schema.Struct({
+  turn_id: Schema.String,
+  session_id: Schema.String,
+  conversation_id: Schema.String,
+  turn_index: Schema.Number,
+  participant_role: AgentRole,
+  participant_agent_id: Schema.Union([Schema.String, Schema.Null]),
+  message_id: Schema.String,
+  message_content: Schema.String,
+  content_blocks_json: Schema.String,
+  model_finish_reason: Schema.Union([Schema.String, Schema.Null]),
+  model_usage_json: Schema.Union([Schema.String, Schema.Null]),
+  created_at: Schema.String
+})
+type TurnRow = typeof TurnRowSchema.Type
+
+const SessionIdRequest = Schema.Struct({ sessionId: Schema.String })
+const TurnIdRequest = Schema.Struct({ turnId: Schema.String })
+
+const ContentBlocksFromJsonString = Schema.fromJsonString(Schema.Array(ContentBlockSchema))
+const InstantFromSqlString = Schema.DateTimeUtcFromString
+
+const decodeSessionRowSchema = Schema.decodeUnknownSync(SessionRowSchema)
+const decodeTurnRowSchema = Schema.decodeUnknownSync(TurnRowSchema)
+const decodeContentBlocksJson = Schema.decodeUnknownSync(ContentBlocksFromJsonString)
+const encodeContentBlocksJson = Schema.encodeSync(ContentBlocksFromJsonString)
+const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
 export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSqlite>()(
   "server/SessionTurnPortSqlite",
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
+
+      const findSessionRowById = SqlSchema.findOneOption({
+        Request: SessionIdRequest,
+        Result: SessionRowSchema,
+        execute: ({ sessionId }) =>
+          sql`
+            SELECT
+              session_id,
+              conversation_id,
+              token_capacity,
+              tokens_used
+            FROM sessions
+            WHERE session_id = ${sessionId}
+            LIMIT 1
+          `.withoutTransform
+      })
+
+      const findTurnById = SqlSchema.findOneOption({
+        Request: TurnIdRequest,
+        Result: Schema.Struct({ turn_id: Schema.String }),
+        execute: ({ turnId }) =>
+          sql`
+            SELECT turn_id
+            FROM turns
+            WHERE turn_id = ${turnId}
+            LIMIT 1
+          `.withoutTransform
+      })
+
+      const findNextTurnIndex = SqlSchema.findOne({
+        Request: SessionIdRequest,
+        Result: Schema.Struct({ next_turn_index: Schema.Number }),
+        execute: ({ sessionId }) =>
+          sql`
+            SELECT COALESCE(MAX(turn_index) + 1, 0) AS next_turn_index
+            FROM turns
+            WHERE session_id = ${sessionId}
+          `.withoutTransform
+      })
+
+      const findTurnsBySessionId = SqlSchema.findAll({
+        Request: SessionIdRequest,
+        Result: TurnRowSchema,
+        execute: ({ sessionId }) =>
+          sql`
+            SELECT
+              turn_id,
+              session_id,
+              conversation_id,
+              turn_index,
+              participant_role,
+              participant_agent_id,
+              message_id,
+              message_content,
+              content_blocks_json,
+              model_finish_reason,
+              model_usage_json,
+              created_at
+            FROM turns
+            WHERE session_id = ${sessionId}
+            ORDER BY turn_index ASC, turn_id ASC
+          `.withoutTransform
+      })
+
+      const readSession = (sessionId: SessionId) =>
+        findSessionRowById({ sessionId }).pipe(
+          Effect.map(
+            Option.match({
+              onNone: () => null,
+              onSome: decodeSessionRow
+            })
+          ),
+          Effect.orDie
+        )
 
       const startSession: SessionTurnPort["startSession"] = (state) =>
         sql`
@@ -52,23 +155,49 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
         )
 
       const appendTurn: SessionTurnPort["appendTurn"] = (turn) =>
-        sql`
-          INSERT OR IGNORE INTO turns (
-            turn_id,
-            session_id,
-            conversation_id,
-            agent_id,
-            content,
-            created_at
-          ) VALUES (
-            ${turn.turnId},
-            ${turn.sessionId},
-            ${turn.conversationId},
-            ${turn.agentId},
-            ${turn.content},
-            ${toSqlInstant(turn.createdAt)}
-          )
-        `.unprepared.pipe(
+        sql.withTransaction(
+          Effect.gen(function*() {
+            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(Effect.orDie)
+            if (Option.isSome(existing)) {
+              return
+            }
+
+            const nextTurnIndex = yield* findNextTurnIndex({ sessionId: turn.sessionId }).pipe(
+              Effect.map((row) => row.next_turn_index),
+              Effect.orDie
+            )
+
+            yield* sql`
+              INSERT INTO turns (
+                turn_id,
+                session_id,
+                conversation_id,
+                turn_index,
+                participant_role,
+                participant_agent_id,
+                message_id,
+                message_content,
+                content_blocks_json,
+                model_finish_reason,
+                model_usage_json,
+                created_at
+              ) VALUES (
+                ${turn.turnId},
+                ${turn.sessionId},
+                ${turn.conversationId},
+                ${nextTurnIndex},
+                ${turn.participantRole},
+                ${turn.participantAgentId},
+                ${turn.message.messageId},
+                ${turn.message.content},
+                ${encodeContentBlocksJson(turn.message.contentBlocks)},
+                ${turn.modelFinishReason},
+                ${turn.modelUsageJson},
+                ${toSqlInstant(turn.createdAt)}
+              )
+            `.unprepared
+          })
+        ).pipe(
           Effect.asVoid,
           Effect.orDie
         )
@@ -79,7 +208,7 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
       ) =>
         sql.withTransaction(
           Effect.gen(function*() {
-            const current = yield* readSession(sql, sessionId)
+            const current = yield* readSession(sessionId)
             if (current === null) {
               return yield* new SessionNotFound({ sessionId })
             }
@@ -111,24 +240,13 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
         )
 
       const getSession = (sessionId: SessionId) =>
-        readSession(sql, sessionId).pipe(
+        readSession(sessionId).pipe(
           Effect.map((state) => state === null ? null : state),
           Effect.orDie
         )
 
       const listTurns = (sessionId: SessionId) =>
-        sql<TurnRow>`
-          SELECT
-            turn_id,
-            session_id,
-            conversation_id,
-            agent_id,
-            content,
-            created_at
-          FROM turns
-          WHERE session_id = ${sessionId}
-          ORDER BY created_at ASC, turn_id ASC
-        `.withoutTransform.pipe(
+        findTurnsBySessionId({ sessionId }).pipe(
           Effect.map((rows) => rows.map(decodeTurnRow)),
           Effect.orDie
         )
@@ -146,36 +264,37 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
   static layer = Layer.effect(this, this.make)
 }
 
-const readSession = (sql: SqlClient.SqlClient, sessionId: SessionId) =>
-  sql<SessionRow>`
-    SELECT
-      session_id,
-      conversation_id,
-      token_capacity,
-      tokens_used
-    FROM sessions
-    WHERE session_id = ${sessionId}
-    LIMIT 1
-  `.withoutTransform.pipe(
-    Effect.map((rows) => rows[0] === undefined ? null : decodeSessionRow(rows[0]))
-  )
+const decodeSessionRow = (row: SessionRow): SessionState => {
+  const decoded = decodeSessionRowSchema(row)
+  return {
+    sessionId: decoded.session_id as SessionId,
+    conversationId: decoded.conversation_id as SessionState["conversationId"],
+    tokenCapacity: decoded.token_capacity,
+    tokensUsed: decoded.tokens_used
+  }
+}
 
-const decodeSessionRow = (row: SessionRow): SessionState => ({
-  sessionId: row.session_id as SessionId,
-  conversationId: row.conversation_id as SessionState["conversationId"],
-  tokenCapacity: row.token_capacity,
-  tokensUsed: row.tokens_used
-})
+const decodeTurnRow = (row: TurnRow): TurnRecord => {
+  const decoded = decodeTurnRowSchema(row)
+  return {
+    turnId: decoded.turn_id as TurnId,
+    sessionId: decoded.session_id as TurnRecord["sessionId"],
+    conversationId: decoded.conversation_id as TurnRecord["conversationId"],
+    turnIndex: decoded.turn_index,
+    participantRole: decoded.participant_role,
+    participantAgentId: decoded.participant_agent_id as TurnRecord["participantAgentId"],
+    message: {
+      messageId: decoded.message_id as TurnRecord["message"]["messageId"],
+      role: decoded.participant_role,
+      content: decoded.message_content,
+      contentBlocks: decodeContentBlocksJson(decoded.content_blocks_json)
+    },
+    modelFinishReason: decoded.model_finish_reason,
+    modelUsageJson: decoded.model_usage_json,
+    createdAt: fromRequiredSqlInstant(decoded.created_at)
+  }
+}
 
-const decodeTurnRow = (row: TurnRow): TurnRecord => ({
-  turnId: row.turn_id as TurnId,
-  sessionId: row.session_id as TurnRecord["sessionId"],
-  conversationId: row.conversation_id as TurnRecord["conversationId"],
-  agentId: row.agent_id as TurnRecord["agentId"],
-  content: row.content,
-  createdAt: fromRequiredSqlInstant(row.created_at)
-})
+const toSqlInstant = (instant: Instant): string => encodeSqlInstant(instant)
 
-const toSqlInstant = (instant: Instant): string => DateTime.formatIso(instant)
-
-const fromRequiredSqlInstant = (value: string): Instant => DateTime.fromDateUnsafe(new Date(value))
+const fromRequiredSqlInstant = (value: string): Instant => decodeSqlInstant(value)

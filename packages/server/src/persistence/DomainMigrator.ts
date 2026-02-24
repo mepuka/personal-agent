@@ -98,8 +98,14 @@ const loader = SqliteMigrator.fromRecord({
         turn_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         conversation_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        content TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        participant_role TEXT NOT NULL,
+        participant_agent_id TEXT,
+        message_id TEXT NOT NULL,
+        message_content TEXT NOT NULL,
+        content_blocks_json TEXT NOT NULL,
+        model_finish_reason TEXT,
+        model_usage_json TEXT,
         created_at TEXT NOT NULL
       )
     `.unprepared
@@ -107,6 +113,11 @@ const loader = SqliteMigrator.fromRecord({
     yield* sql`
       CREATE INDEX IF NOT EXISTS turns_session_created_at_idx
       ON turns (session_id, created_at)
+    `.unprepared
+
+    yield* sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS turns_session_turn_index_idx
+      ON turns (session_id, turn_index)
     `.unprepared
   })
 })

@@ -54,6 +54,8 @@
       "name": "@template/server",
       "version": "0.0.0",
       "dependencies": {
+        "@effect/ai-anthropic": "4.0.0-beta.11",
+        "@effect/ai-openai": "4.0.0-beta.11",
         "@effect/platform-bun": "4.0.0-beta.11",
         "@effect/sql-sqlite-bun": "4.0.0-beta.11",
         "@effect/sql-sqlite-node": "4.0.0-beta.11",
@@ -152,6 +154,10 @@
     "@dprint/formatter": ["@dprint/formatter@0.4.1", "", {}, "sha512-IB/GXdlMOvi0UhQQ9mcY15Fxcrc2JPadmo6tqefCNV0bptFq7YBpggzpqYXldBXDa04CbKJ+rDwO2eNRPE2+/g=="],
 
     "@dprint/typescript": ["@dprint/typescript@0.91.8", "", {}, "sha512-tuKn4leCPItox1O4uunHcQF0QllDCvPWklnNQIh2PiWWVtRAGltJJnM4Cwj5AciplosD1Hiz7vAY3ew3crLb3A=="],
+
+    "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.0-beta.11", "", { "peerDependencies": { "effect": "^4.0.0-beta.11" } }, "sha512-w0tY/maJErbWJ7N89ozfHihTqBu4bmmRTDV/beXrFeoXgzfrxzWSXPmhQvarb1Ma2yLJbAfoBv5+xHtsk89TVw=="],
+
+    "@effect/ai-openai": ["@effect/ai-openai@4.0.0-beta.11", "", { "peerDependencies": { "effect": "^4.0.0-beta.11" } }, "sha512-gR/BtcMbm/qPY3nL4cJZ3tP4FFerJ6Z7MKv49DN19MJGHkcYzwJHbBTpD06e/dX6Grr6o5q6xTyvPMxtSS0hvQ=="],
 
     "@effect/build-utils": ["@effect/build-utils@0.7.9", "", { "bin": { "build-utils": "main.js" } }, "sha512-I9tuSvKOnhF2NNsCzHulsUvEwJBQKqiZ1RtbJA+DfxqXZ9J1QSh4txnfnDC2D2bygMYuWqMJWg7TvAWun7cs6w=="],
 

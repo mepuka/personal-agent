@@ -19,9 +19,15 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
       const appendTurn: SessionTurnPort["appendTurn"] = (turn) =>
         Ref.update(turns, (map) => {
           const current = HashMap.get(map, turn.sessionId)
-          const next = Option.isSome(current)
-            ? [...current.value, turn]
-            : [turn]
+          const existingTurns = Option.isSome(current) ? current.value : ([] as Array<TurnRecord>)
+          if (existingTurns.some((existing) => existing.turnId === turn.turnId)) {
+            return map
+          }
+          const nextTurn: TurnRecord = {
+            ...turn,
+            turnIndex: existingTurns.length
+          }
+          const next = [...existingTurns, nextTurn]
           return HashMap.set(map, turn.sessionId, next)
         })
 

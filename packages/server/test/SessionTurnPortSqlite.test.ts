@@ -27,7 +27,12 @@ describe("SessionTurnPortSqlite", () => {
         turnId: "turn:1" as TurnId,
         sessionId: session.sessionId,
         conversationId: session.conversationId,
-        content: "hello"
+        message: {
+          messageId: "message:hello" as TurnRecord["message"]["messageId"],
+          role: "UserRole",
+          content: "hello",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "hello" }]
+        }
       })
 
       yield* sessionPort.startSession(session)
@@ -41,6 +46,8 @@ describe("SessionTurnPortSqlite", () => {
       expect(loadedSession?.tokensUsed).toBe(10)
       expect(turns).toHaveLength(1)
       expect(turns[0].turnId).toBe("turn:1")
+      expect(turns[0].turnIndex).toBe(0)
+      expect(turns[0].message.content).toBe("hello")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -122,7 +129,12 @@ describe("SessionTurnPortSqlite", () => {
           turnId: "turn:restart" as TurnId,
           sessionId,
           conversationId: session.conversationId,
-          content: "persist me"
+          message: {
+            messageId: "message:persist" as TurnRecord["message"]["messageId"],
+            role: "UserRole",
+            content: "persist me",
+            contentBlocks: [{ contentBlockType: "TextBlock", text: "persist me" }]
+          }
         }))
       }).pipe(Effect.provide(firstLayer))
 
@@ -136,7 +148,7 @@ describe("SessionTurnPortSqlite", () => {
       expect(persisted.session).not.toBeNull()
       expect(persisted.session?.tokensUsed).toBe(40)
       expect(persisted.turns).toHaveLength(1)
-      expect(persisted.turns[0].content).toBe("persist me")
+      expect(persisted.turns[0].message.content).toBe("persist me")
     }).pipe(
       Effect.ensuring(cleanupDatabase(dbPath))
     )
@@ -171,8 +183,17 @@ const makeTurnRecord = (overrides: Partial<TurnRecord>): TurnRecord => ({
   turnId: "turn:default" as TurnId,
   sessionId: "session:default" as SessionId,
   conversationId: "conversation:default" as ConversationId,
-  agentId: "agent:default" as AgentId,
-  content: "test",
+  turnIndex: 0,
+  participantRole: "UserRole",
+  participantAgentId: "agent:default" as AgentId,
+  message: {
+    messageId: "message:default" as TurnRecord["message"]["messageId"],
+    role: "UserRole",
+    content: "test",
+    contentBlocks: [{ contentBlockType: "TextBlock", text: "test" }]
+  },
+  modelFinishReason: null,
+  modelUsageJson: null,
   createdAt: instant("2026-02-24T12:00:00.000Z"),
   ...overrides
 })

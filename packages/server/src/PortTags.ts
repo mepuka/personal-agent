@@ -1,4 +1,4 @@
-import type { AgentStatePort, GovernancePort, SchedulePort, SessionTurnPort } from "@template/domain/ports"
+import type { AgentStatePort, GovernancePort, MemoryPort, SchedulePort, SessionTurnPort } from "@template/domain/ports"
 import { ServiceMap } from "effect"
 
 export const AgentStatePortTag = ServiceMap.Service<AgentStatePort>(
@@ -12,3 +12,5 @@ export const SessionTurnPortTag = ServiceMap.Service<SessionTurnPort>(
 export const SchedulePortTag = ServiceMap.Service<SchedulePort>("server/ports/SchedulePort")
 
 export const GovernancePortTag = ServiceMap.Service<GovernancePort>("server/ports/GovernancePort")
+
+export const MemoryPortTag = ServiceMap.Service<MemoryPort>("server/ports/MemoryPort")

@@ -1,17 +1,26 @@
-import { DateTime, Effect, Layer, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
+import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import { TokenBudgetExceeded } from "../../domain/src/errors.js"
 import type { AgentId } from "../../domain/src/ids.js"
 import type { AgentState, AgentStatePort, Instant } from "../../domain/src/ports.js"
+import { PermissionMode, QuotaPeriod } from "../../domain/src/status.js"
 
-interface AgentStateRow {
-  readonly agent_id: string
-  readonly permission_mode: AgentState["permissionMode"]
-  readonly token_budget: number
-  readonly quota_period: AgentState["quotaPeriod"]
-  readonly tokens_consumed: number
-  readonly budget_reset_at: string | null
-}
+const AgentStateRowSchema = Schema.Struct({
+  agent_id: Schema.String,
+  permission_mode: PermissionMode,
+  token_budget: Schema.Number,
+  quota_period: QuotaPeriod,
+  tokens_consumed: Schema.Number,
+  budget_reset_at: Schema.Union([Schema.String, Schema.Null])
+})
+type AgentStateRow = typeof AgentStateRowSchema.Type
+
+const AgentIdRequest = Schema.Struct({ agentId: Schema.String })
+const EmptyRequest = Schema.Struct({})
+const InstantFromSqlString = Schema.DateTimeUtcFromString
+const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
 export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlite>()(
   "server/AgentStatePortSqlite",
@@ -19,8 +28,54 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
 
+      const findAgentStateById = SqlSchema.findOneOption({
+        Request: AgentIdRequest,
+        Result: AgentStateRowSchema,
+        execute: ({ agentId }) =>
+          sql`
+            SELECT
+              agent_id,
+              permission_mode,
+              token_budget,
+              quota_period,
+              tokens_consumed,
+              budget_reset_at
+            FROM agents
+            WHERE agent_id = ${agentId}
+            LIMIT 1
+          `.withoutTransform
+      })
+
+      const findAllAgentStates = SqlSchema.findAll({
+        Request: EmptyRequest,
+        Result: AgentStateRowSchema,
+        execute: () =>
+          sql`
+            SELECT
+              agent_id,
+              permission_mode,
+              token_budget,
+              quota_period,
+              tokens_consumed,
+              budget_reset_at
+            FROM agents
+            ORDER BY agent_id ASC
+          `.withoutTransform
+      })
+
+      const readAgentState = (agentId: AgentId) =>
+        findAgentStateById({ agentId }).pipe(
+          Effect.map(
+            Option.match({
+              onNone: () => null,
+              onSome: decodeAgentStateRow
+            })
+          ),
+          Effect.orDie
+        )
+
       const get: AgentStatePort["get"] = (agentId) =>
-        readAgentState(sql, agentId).pipe(
+        readAgentState(agentId).pipe(
           Effect.map((state) => state === null ? null : state),
           Effect.orDie
         )
@@ -59,7 +114,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
       const consumeTokenBudget: AgentStatePort["consumeTokenBudget"] = (agentId, requestedTokens, now) =>
         sql.withTransaction(
           Effect.gen(function*() {
-            const existing = yield* readAgentState(sql, agentId)
+            const existing = yield* readAgentState(agentId)
             if (existing === null) {
               return yield* new TokenBudgetExceeded({
                 agentId,
@@ -108,17 +163,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
         )
 
       const listAgentStates = () =>
-        sql<AgentStateRow>`
-          SELECT
-            agent_id,
-            permission_mode,
-            token_budget,
-            quota_period,
-            tokens_consumed,
-            budget_reset_at
-          FROM agents
-          ORDER BY agent_id ASC
-        `.withoutTransform.pipe(
+        findAllAgentStates({}).pipe(
           Effect.map((rows) => rows.map(decodeAgentStateRow)),
           Effect.orDie
         )
@@ -134,25 +179,6 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
 ) {
   static layer = Layer.effect(this, this.make)
 }
-
-const readAgentState = (
-  sql: SqlClient.SqlClient,
-  agentId: AgentId
-) =>
-  sql<AgentStateRow>`
-    SELECT
-      agent_id,
-      permission_mode,
-      token_budget,
-      quota_period,
-      tokens_consumed,
-      budget_reset_at
-    FROM agents
-    WHERE agent_id = ${agentId}
-    LIMIT 1
-  `.withoutTransform.pipe(
-    Effect.map((rows) => rows[0] === undefined ? null : decodeAgentStateRow(rows[0]))
-  )
 
 const decodeAgentStateRow = (row: AgentStateRow): AgentState => ({
   agentId: row.agent_id as AgentId,
@@ -203,7 +229,6 @@ const nextBudgetReset = (from: Instant, period: AgentState["quotaPeriod"]): Inst
   }
 }
 
-const fromSqlInstant = (value: string | null): Instant | null =>
-  value === null ? null : DateTime.fromDateUnsafe(new Date(value))
+const fromSqlInstant = (value: string | null): Instant | null => value === null ? null : decodeSqlInstant(value)
 
-const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : DateTime.formatIso(instant)
+const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : encodeSqlInstant(instant)
