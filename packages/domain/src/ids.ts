@@ -1,0 +1,34 @@
+import { Schema } from "effect"
+
+export const AgentId = Schema.String.pipe(Schema.brand("AgentId"))
+export type AgentId = typeof AgentId.Type
+
+export const SessionId = Schema.String.pipe(Schema.brand("SessionId"))
+export type SessionId = typeof SessionId.Type
+
+export const ConversationId = Schema.String.pipe(Schema.brand("ConversationId"))
+export type ConversationId = typeof ConversationId.Type
+
+export const TurnId = Schema.String.pipe(Schema.brand("TurnId"))
+export type TurnId = typeof TurnId.Type
+
+export const MemoryItemId = Schema.String.pipe(Schema.brand("MemoryItemId"))
+export type MemoryItemId = typeof MemoryItemId.Type
+
+export const ScheduleId = Schema.String.pipe(Schema.brand("ScheduleId"))
+export type ScheduleId = typeof ScheduleId.Type
+
+export const ScheduledExecutionId = Schema.String.pipe(Schema.brand("ScheduledExecutionId"))
+export type ScheduledExecutionId = typeof ScheduledExecutionId.Type
+
+export const WorkflowExecutionId = Schema.String.pipe(Schema.brand("WorkflowExecutionId"))
+export type WorkflowExecutionId = typeof WorkflowExecutionId.Type
+
+export const PolicyId = Schema.String.pipe(Schema.brand("PolicyId"))
+export type PolicyId = typeof PolicyId.Type
+
+export const AuditEntryId = Schema.String.pipe(Schema.brand("AuditEntryId"))
+export type AuditEntryId = typeof AuditEntryId.Type
+
+export const ToolName = Schema.String.pipe(Schema.brand("ToolName"))
+export type ToolName = typeof ToolName.Type

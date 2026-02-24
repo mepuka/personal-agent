@@ -3,9 +3,9 @@
 import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { cli } from "./Cli.js"
-import { TodosClient } from "./TodosClient.js"
+import { RuntimeClient } from "./RuntimeClient.js"
 
-const MainLive = TodosClient.layer.pipe(
+const MainLive = RuntimeClient.layer.pipe(
   Layer.provide(BunHttpClient.layer),
   Layer.merge(BunServices.layer)
 )

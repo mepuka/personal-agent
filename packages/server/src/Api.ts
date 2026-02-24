@@ -1,19 +1,19 @@
-import { TodosApi } from "@template/domain/TodosApi"
+import { RuntimeApi, RuntimeStatus } from "@template/domain/RuntimeApi"
 import { Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { TodosRepository } from "./TodosRepository.js"
 
-const TodosApiLive = HttpApiBuilder.group(TodosApi, "todos", (handlers) =>
-  Effect.gen(function*() {
-    const todos = yield* TodosRepository
-    return handlers
-      .handle("getAllTodos", () => todos.getAll)
-      .handle("getTodoById", (_) => todos.getById(_.params.id))
-      .handle("createTodo", (_) => todos.create(_.payload.text))
-      .handle("completeTodo", (_) => todos.complete(_.params.id))
-      .handle("removeTodo", (_) => todos.remove(_.params.id))
-  }))
+const RuntimeApiLive = HttpApiBuilder.group(RuntimeApi, "runtime", (handlers) =>
+  handlers.handle("getStatus", () =>
+    Effect.succeed(new RuntimeStatus({
+      service: "personal-agent",
+      phase: "mvp-kickoff",
+      ontologyVersion: "PAO v0.8.0",
+      architectureVersion: "0.3.0-draft",
+      branch: "codex/mvp-implementation-kickoff"
+    }))
+  )
+)
 
-export const ApiLive = HttpApiBuilder.layer(TodosApi).pipe(
-  Layer.provide(TodosApiLive)
+export const ApiLive = HttpApiBuilder.layer(RuntimeApi).pipe(
+  Layer.provide(RuntimeApiLive)
 )
