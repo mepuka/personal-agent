@@ -1,12 +1,12 @@
 import { ToolQuotaExceeded } from "@template/domain/errors"
 import type { AgentId, ToolName } from "@template/domain/ids"
-import type { AuditEntryRecord, GovernancePort, PolicyDecision } from "@template/domain/ports"
-import { Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import type { AuditEntryRecord, GovernancePort, Instant, PolicyDecision } from "@template/domain/ports"
+import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 interface ToolQuotaState {
   readonly maxPerDay: number
   readonly usedToday: number
-  readonly resetAt: Date
+  readonly resetAt: Instant
 }
 
 export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemory>()("server/GovernancePortMemory", {
@@ -30,22 +30,27 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
             return Effect.void
           }
 
-          const normalized = now >= current.value.resetAt
+          const normalized = DateTime.toEpochMillis(now) >= DateTime.toEpochMillis(current.value.resetAt)
             ? { ...current.value, usedToday: 0, resetAt: endOfUtcDay(now) }
             : current.value
 
           if (normalized.usedToday >= normalized.maxPerDay) {
-            return Effect.fail(new ToolQuotaExceeded({
-              agentId,
-              toolName,
-              remainingInvocations: 0
-            }))
+            return Effect.fail(
+              new ToolQuotaExceeded({
+                agentId,
+                toolName,
+                remainingInvocations: 0
+              })
+            )
           }
 
-          return Ref.set(toolQuotaState, HashMap.set(map, key, {
-            ...normalized,
-            usedToday: normalized.usedToday + 1
-          }))
+          return Ref.set(
+            toolQuotaState,
+            HashMap.set(map, key, {
+              ...normalized,
+              usedToday: normalized.usedToday + 1
+            })
+          )
         })
       )
 
@@ -67,14 +72,4 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
 
 const quotaKey = (agentId: AgentId, toolName: ToolName): string => `${agentId}:${toolName}`
 
-const endOfUtcDay = (from: Date): Date => {
-  return new Date(Date.UTC(
-    from.getUTCFullYear(),
-    from.getUTCMonth(),
-    from.getUTCDate() + 1,
-    0,
-    0,
-    0,
-    0
-  ))
-}
+const endOfUtcDay = (from: Instant): Instant => DateTime.add(DateTime.removeTime(from), { days: 1 })

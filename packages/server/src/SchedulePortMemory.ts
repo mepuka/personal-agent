@@ -1,6 +1,6 @@
 import type { ScheduleId } from "@template/domain/ids"
-import type { SchedulePort, ScheduleRecord, ScheduledExecutionRecord } from "@template/domain/ports"
-import { Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import type { ScheduledExecutionRecord, SchedulePort, ScheduleRecord } from "@template/domain/ports"
+import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 export class SchedulePortMemory extends ServiceMap.Service<SchedulePortMemory>()("server/SchedulePortMemory", {
   make: Effect.gen(function*() {
@@ -16,7 +16,7 @@ export class SchedulePortMemory extends ServiceMap.Service<SchedulePortMemory>()
           Array.from(HashMap.values(map)).filter((schedule) =>
             schedule.scheduleStatus === "ScheduleActive" &&
             schedule.nextExecutionAt !== null &&
-            schedule.nextExecutionAt <= now
+            DateTime.toEpochMillis(schedule.nextExecutionAt) <= DateTime.toEpochMillis(now)
           )
         )
       )

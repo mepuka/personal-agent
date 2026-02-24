@@ -1,7 +1,7 @@
-import type { AgentStatePort, AgentState } from "@template/domain/ports"
-import type { AgentId } from "@template/domain/ids"
 import { TokenBudgetExceeded } from "@template/domain/errors"
-import { Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import type { AgentId } from "@template/domain/ids"
+import type { AgentState, AgentStatePort, Instant } from "@template/domain/ports"
+import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 export class AgentStatePortMemory extends ServiceMap.Service<AgentStatePortMemory>()(
   "server/AgentStatePortMemory",
@@ -22,21 +22,25 @@ export class AgentStatePortMemory extends ServiceMap.Service<AgentStatePortMemor
           Effect.flatMap((map) => {
             const existing = HashMap.get(map, agentId)
             if (Option.isNone(existing)) {
-              return Effect.fail(new TokenBudgetExceeded({
-                agentId,
-                requestedTokens,
-                remainingTokens: 0
-              }))
+              return Effect.fail(
+                new TokenBudgetExceeded({
+                  agentId,
+                  requestedTokens,
+                  remainingTokens: 0
+                })
+              )
             }
 
             const normalized = normalizeBudgetWindow(existing.value, now)
             const remainingTokens = Math.max(normalized.tokenBudget - normalized.tokensConsumed, 0)
             if (requestedTokens > remainingTokens) {
-              return Effect.fail(new TokenBudgetExceeded({
-                agentId,
-                requestedTokens,
-                remainingTokens
-              }))
+              return Effect.fail(
+                new TokenBudgetExceeded({
+                  agentId,
+                  requestedTokens,
+                  remainingTokens
+                })
+              )
             }
 
             const updated: AgentState = {
@@ -59,7 +63,7 @@ export class AgentStatePortMemory extends ServiceMap.Service<AgentStatePortMemor
   static layer = Layer.effect(this, this.make)
 }
 
-const normalizeBudgetWindow = (state: AgentState, now: Date): AgentState => {
+const normalizeBudgetWindow = (state: AgentState, now: Instant): AgentState => {
   if (state.quotaPeriod === "Lifetime") {
     return state
   }
@@ -69,7 +73,7 @@ const normalizeBudgetWindow = (state: AgentState, now: Date): AgentState => {
       budgetResetAt: nextBudgetReset(now, state.quotaPeriod)
     }
   }
-  if (now < state.budgetResetAt) {
+  if (DateTime.toEpochMillis(now) < DateTime.toEpochMillis(state.budgetResetAt)) {
     return state
   }
   return {
@@ -79,16 +83,16 @@ const normalizeBudgetWindow = (state: AgentState, now: Date): AgentState => {
   }
 }
 
-const nextBudgetReset = (from: Date, period: AgentState["quotaPeriod"]): Date | null => {
+const nextBudgetReset = (from: Instant, period: AgentState["quotaPeriod"]): Instant | null => {
   switch (period) {
     case "Daily": {
-      return new Date(from.getTime() + 24 * 60 * 60 * 1000)
+      return DateTime.add(from, { days: 1 })
     }
     case "Monthly": {
-      return new Date(from.getFullYear(), from.getMonth() + 1, from.getDate(), from.getHours(), from.getMinutes(), from.getSeconds(), from.getMilliseconds())
+      return DateTime.add(from, { months: 1 })
     }
     case "Yearly": {
-      return new Date(from.getFullYear() + 1, from.getMonth(), from.getDate(), from.getHours(), from.getMinutes(), from.getSeconds(), from.getMilliseconds())
+      return DateTime.add(from, { years: 1 })
     }
     case "Lifetime": {
       return null

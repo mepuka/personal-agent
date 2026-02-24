@@ -1,6 +1,6 @@
 import type { AgentId } from "@template/domain/ids"
 import type { MemoryItemRecord, MemoryPort } from "@template/domain/ports"
-import { Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 export class MemoryPortMemory extends ServiceMap.Service<MemoryPortMemory>()("server/MemoryPortMemory", {
   make: Effect.gen(function*() {
@@ -32,7 +32,8 @@ export class MemoryPortMemory extends ServiceMap.Service<MemoryPortMemory>()("se
     const forget: MemoryPort["forget"] = (agentId, cutoff) =>
       Ref.modify(itemsByAgent, (map) => {
         const current = Option.getOrElse(HashMap.get(map, agentId), () => [])
-        const retained = current.filter((item) => item.createdAt >= cutoff)
+        const cutoffEpochMillis = DateTime.toEpochMillis(cutoff)
+        const retained = current.filter((item) => DateTime.toEpochMillis(item.createdAt) >= cutoffEpochMillis)
         const deletedCount = current.length - retained.length
         return [deletedCount, HashMap.set(map, agentId, retained)] as const
       })

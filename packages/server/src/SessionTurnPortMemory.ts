@@ -1,6 +1,6 @@
 import { ContextWindowExceeded, SessionNotFound } from "@template/domain/errors"
 import type { SessionId } from "@template/domain/ids"
-import type { SessionTurnPort, SessionState, TurnRecord } from "@template/domain/ports"
+import type { SessionState, SessionTurnPort, TurnRecord } from "@template/domain/ports"
 import { Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMemory>()(
@@ -35,11 +35,13 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
 
             const attemptedTokensUsed = Math.max(current.value.tokensUsed + deltaTokens, 0)
             if (attemptedTokensUsed > current.value.tokenCapacity) {
-              return Effect.fail<ContextWindowExceeded | SessionNotFound>(new ContextWindowExceeded({
-                sessionId,
-                tokenCapacity: current.value.tokenCapacity,
-                attemptedTokensUsed
-              }))
+              return Effect.fail<ContextWindowExceeded | SessionNotFound>(
+                new ContextWindowExceeded({
+                  sessionId,
+                  tokenCapacity: current.value.tokenCapacity,
+                  attemptedTokensUsed
+                })
+              )
             }
 
             const updated: SessionState = {

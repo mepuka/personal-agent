@@ -1,24 +1,25 @@
-import { Effect } from "effect"
-import {
+import type { Effect } from "effect"
+import { Schema } from "effect"
+import type {
   ContextWindowExceeded,
   SandboxViolation,
   SessionNotFound,
   TokenBudgetExceeded,
   ToolQuotaExceeded
 } from "./errors.js"
-import {
+import type {
   AgentId,
   AuditEntryId,
   ConversationId,
   MemoryItemId,
   PolicyId,
-  ScheduleId,
   ScheduledExecutionId,
+  ScheduleId,
   SessionId,
   ToolName,
   TurnId
 } from "./ids.js"
-import {
+import type {
   AuthorizationDecision,
   ConcurrencyPolicy,
   ExecutionOutcome,
@@ -27,13 +28,16 @@ import {
   ScheduleStatus
 } from "./status.js"
 
+export const Instant = Schema.DateTimeUtc
+export type Instant = typeof Instant.Type
+
 export interface AgentState {
   readonly agentId: AgentId
   readonly permissionMode: PermissionMode
   readonly tokenBudget: number
   readonly quotaPeriod: QuotaPeriod
   readonly tokensConsumed: number
-  readonly budgetResetAt: Date | null
+  readonly budgetResetAt: Instant | null
 }
 
 export interface SessionState {
@@ -49,7 +53,7 @@ export interface TurnRecord {
   readonly conversationId: ConversationId
   readonly agentId: AgentId
   readonly content: string
-  readonly createdAt: Date
+  readonly createdAt: Instant
 }
 
 export interface MemoryQuery {
@@ -65,7 +69,7 @@ export interface MemoryItemRecord {
   readonly tier: "WorkingMemory" | "EpisodicMemory" | "SemanticMemory" | "ProceduralMemory"
   readonly content: string
   readonly generatedByTurnId: TurnId | null
-  readonly createdAt: Date
+  readonly createdAt: Instant
 }
 
 export interface PolicyInput {
@@ -87,7 +91,7 @@ export interface AuditEntryRecord {
   readonly sessionId: SessionId | null
   readonly decision: AuthorizationDecision
   readonly reason: string
-  readonly createdAt: Date
+  readonly createdAt: Instant
 }
 
 export interface ScheduleRecord {
@@ -99,15 +103,15 @@ export interface ScheduleRecord {
   readonly autoDisableAfterRun: boolean
   readonly catchUpWindowSeconds: number
   readonly maxCatchUpRunsPerTick: number
-  readonly nextExecutionAt: Date | null
+  readonly nextExecutionAt: Instant | null
 }
 
 export interface ScheduledExecutionRecord {
   readonly executionId: ScheduledExecutionId
   readonly scheduleId: ScheduleId
   readonly outcome: ExecutionOutcome
-  readonly startedAt: Date
-  readonly endedAt: Date | null
+  readonly startedAt: Instant
+  readonly endedAt: Instant | null
   readonly skipReason: string | null
 }
 
@@ -118,7 +122,7 @@ export interface AgentStatePort {
   readonly consumeTokenBudget: (
     agentId: AgentId,
     requestedTokens: number,
-    now: Date
+    now: Instant
   ) => Effect.Effect<void, TokenBudgetExceeded>
 }
 
@@ -135,9 +139,9 @@ export interface MemoryPort {
   readonly retrieve: (query: MemoryQuery) => Effect.Effect<ReadonlyArray<MemoryItemRecord>>
   readonly encode: (
     items: ReadonlyArray<MemoryItemRecord>,
-    now: Date
+    now: Instant
   ) => Effect.Effect<ReadonlyArray<MemoryItemId>>
-  readonly forget: (agentId: AgentId, cutoff: Date) => Effect.Effect<number>
+  readonly forget: (agentId: AgentId, cutoff: Instant) => Effect.Effect<number>
 }
 
 export interface GovernancePort {
@@ -145,7 +149,7 @@ export interface GovernancePort {
   readonly checkToolQuota: (
     agentId: AgentId,
     toolName: ToolName,
-    now: Date
+    now: Instant
   ) => Effect.Effect<void, ToolQuotaExceeded>
   readonly writeAudit: (entry: AuditEntryRecord) => Effect.Effect<void>
   readonly enforceSandbox: <A, E, R>(
@@ -156,6 +160,6 @@ export interface GovernancePort {
 
 export interface SchedulePort {
   readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void>
-  readonly listDue: (now: Date) => Effect.Effect<ReadonlyArray<ScheduleRecord>>
+  readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<ScheduleRecord>>
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
 }
