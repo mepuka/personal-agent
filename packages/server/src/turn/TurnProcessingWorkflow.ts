@@ -16,6 +16,7 @@ import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry } from "../ai/ToolRegistry.js"
+import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
 
 export const TurnAuditReasonCode = Schema.Literals([
@@ -100,6 +101,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const chatPersistence = yield* Chat.Persistence
     const agentConfig = yield* AgentConfig
     const modelRegistry = yield* ModelRegistry
+    const memoryPort = yield* MemoryPortSqlite
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -170,6 +172,12 @@ export const layer = TurnProcessingWorkflow.toLayer(
       })
     }).asEffect()
 
+    // Retrieve semantic memories for context injection (snapshot read, not an Activity)
+    const semanticMemories = yield* memoryPort.retrieve(
+      payload.agentId as AgentId,
+      { query: payload.content, tier: "SemanticMemory", limit: 20 }
+    ).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ content: string }>)))
+
     const modelResponse = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
@@ -192,6 +200,18 @@ export const layer = TurnProcessingWorkflow.toLayer(
       if (currentHistory.content.length === 0) {
         const withSystem = Prompt.setSystem(currentHistory, profile.persona.systemPrompt)
         yield* Ref.set(chat.history, withSystem)
+      }
+
+      // Inject semantic memory context into system prompt
+      if (semanticMemories.length > 0) {
+        const memoryBlock = "\n\n[Relevant Memory]\n"
+          + semanticMemories.map((m) => `- ${m.content}`).join("\n")
+        const historyWithMemory = yield* Ref.get(chat.history)
+        const systemMsg = historyWithMemory.content.find((m) => m.role === "system")
+        if (systemMsg) {
+          const updated = Prompt.setSystem(historyWithMemory, systemMsg.content + memoryBlock)
+          yield* Ref.set(chat.history, updated)
+        }
       }
 
       return yield* chat.generateText({

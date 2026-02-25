@@ -22,6 +22,7 @@ import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../src/PortTags.js"
@@ -385,6 +386,10 @@ const makeTurnProcessingLayer = (
     })
   )
 
+  const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
   const chatPersistenceLayer = ChatPersistence.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
@@ -410,7 +415,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
-    Layer.provide(mockModelRegistryLayer)
+    Layer.provide(mockModelRegistryLayer),
+    Layer.provide(memoryPortSqliteLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -431,7 +437,8 @@ const makeTurnProcessingLayer = (
     toolRegistryLayer,
     workflowEngineLayer,
     turnWorkflowLayer,
-    turnRuntimeLayer
+    turnRuntimeLayer,
+    memoryPortSqliteLayer
   ).pipe(
     Layer.provideMerge(clusterLayer)
   )
