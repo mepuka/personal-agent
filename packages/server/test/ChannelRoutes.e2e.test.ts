@@ -2,7 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
 import { TurnStreamEvent } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
-import type { ChannelPort, SessionTurnPort } from "@template/domain/ports"
+import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
 import { Effect, Layer, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { SingleRunner } from "effect/unstable/cluster"
@@ -13,13 +13,14 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { layer as ChannelEntityLayer } from "../src/entities/ChannelEntity.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
@@ -78,6 +79,16 @@ const makeAppLayer = (dbPath: string) => {
   const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
 
+  const agentStateSqliteLayer = AgentStatePortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const agentStateTagLayer = Layer.effect(
+    AgentStatePortTag,
+    Effect.gen(function*() {
+      return (yield* AgentStatePortSqlite) as AgentStatePort
+    })
+  ).pipe(Layer.provide(agentStateSqliteLayer))
+
   const sessionTurnSqliteLayer = SessionTurnPortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
@@ -112,6 +123,7 @@ const makeAppLayer = (dbPath: string) => {
 
   const channelEntityLayer = ChannelEntityLayer.pipe(
     Layer.provide(clusterLayer),
+    Layer.provide(agentStateTagLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
@@ -120,6 +132,8 @@ const makeAppLayer = (dbPath: string) => {
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
+    agentStateSqliteLayer,
+    agentStateTagLayer,
     sessionTurnSqliteLayer,
     sessionTurnTagLayer,
     channelPortSqliteLayer,
