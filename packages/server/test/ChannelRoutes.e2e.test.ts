@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { layer as ChannelEntityLayer } from "../src/entities/ChannelEntity.js"
+import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
@@ -100,11 +101,19 @@ const makeTestLayer = (dbPath: string) => {
     Layer.orDie
   )
 
+  const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const sessionEntityLayer = SessionEntityLayer.pipe(
+    Layer.provide(clusterLayer),
+    Layer.provide(sessionTurnTagLayer),
+    Layer.provide(mockTurnProcessingRuntimeLayer)
+  )
+
   const channelEntityLayer = ChannelEntityLayer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
-    Layer.provide(makeMockTurnProcessingRuntime())
+    Layer.provide(mockTurnProcessingRuntimeLayer),
+    Layer.provide(sessionEntityLayer)
   )
 
   const portsAndEntityLayer = Layer.mergeAll(
@@ -113,7 +122,8 @@ const makeTestLayer = (dbPath: string) => {
     sessionTurnTagLayer,
     channelPortSqliteLayer,
     channelPortTagLayer,
-    makeMockTurnProcessingRuntime(),
+    mockTurnProcessingRuntimeLayer,
+    sessionEntityLayer,
     channelEntityLayer
   ).pipe(
     Layer.provideMerge(clusterLayer)

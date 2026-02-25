@@ -222,7 +222,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
             Effect.fail(
               new TurnModelFailure({
                 turnId: payload.turnId,
-                reason: toErrorMessage(error)
+                reason: `encoding_error: ${toErrorMessage(error)}`
               })
             )
           )
@@ -283,7 +283,7 @@ const writeAuditEntry = (
         createdAt: payload.createdAt
       })
     })
-  }).asEffect()
+  }).asEffect().pipe(Effect.ignore)
 
 const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
   turnId: payload.turnId as TurnId,

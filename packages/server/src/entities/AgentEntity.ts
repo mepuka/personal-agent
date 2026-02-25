@@ -19,9 +19,8 @@ const AgentStateOrNull = Schema.Union([AgentStateSchema, Schema.Null])
 
 const GetStateRpc = Rpc.make("getState", {
   payload: { agentId: Schema.String },
-  success: AgentStateOrNull,
-  primaryKey: ({ agentId }) => agentId
-}).annotate(ClusterSchema.Persisted, true)
+  success: AgentStateOrNull
+})
 
 const UpsertStateRpc = Rpc.make("upsertState", {
   payload: AgentStateFields,
@@ -50,19 +49,26 @@ export const layer = AgentEntity.toLayer(Effect.gen(function*() {
   const port = yield* AgentStatePortTag
 
   return {
-    getState: ({ payload }) => port.get(payload.agentId as AgentId),
+    getState: ({ address }) => {
+      const agentId = String(address.entityId) as AgentId
+      return port.get(agentId)
+    },
 
-    upsertState: ({ payload }) =>
-      port.upsert({
+    upsertState: ({ address, payload }) => {
+      const agentId = String(address.entityId) as AgentId
+      return port.upsert({
         ...payload,
-        agentId: payload.agentId as AgentId
-      }),
+        agentId
+      })
+    },
 
-    consumeTokenBudget: ({ payload }) =>
-      port.consumeTokenBudget(
-        payload.agentId as AgentId,
+    consumeTokenBudget: ({ address, payload }) => {
+      const agentId = String(address.entityId) as AgentId
+      return port.consumeTokenBudget(
+        agentId,
         payload.requestedTokens,
         payload.now
       )
+    }
   }
 }))
