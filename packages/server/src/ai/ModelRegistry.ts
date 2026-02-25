@@ -27,7 +27,7 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
         if (!providerConfig) {
           return Effect.die(new Error(`No provider config for: ${provider}`))
         }
-        return Config.redacted(providerConfig.apiKeyEnv).pipe(Effect.orDie)
+        return Config.redacted(providerConfig.apiKeyEnv).asEffect().pipe(Effect.orDie)
       }
 
       const buildLayer = (

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Schema } from "effect"
-import { ClusterSchema, Entity, SingleRunner } from "effect/unstable/cluster"
+import { ClusterSchema, Entity, Sharding, SingleRunner } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -82,7 +82,7 @@ const plainEntityLayer = PlainEntity.toLayer(Effect.succeed({
 // Layer factory
 // ---------------------------------------------------------------------------
 
-const makeTestLayer = (entityLayer: Layer.Layer<never>) => {
+const makeTestLayer = (entityLayer: Layer.Layer<never, never, Sharding.Sharding>) => {
   const dbPath = join(tmpdir(), `pa-repro-${crypto.randomUUID()}.sqlite`)
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
