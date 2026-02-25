@@ -133,6 +133,37 @@ const loader = SqliteMigrator.fromRecord({
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `.unprepared
+  }),
+  "0004_memory_tables": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS memory_items (
+        memory_item_id    TEXT PRIMARY KEY,
+        agent_id          TEXT NOT NULL,
+        tier              TEXT NOT NULL CHECK (tier IN ('SemanticMemory', 'EpisodicMemory')),
+        scope             TEXT NOT NULL CHECK (scope IN ('SessionScope', 'ProjectScope', 'GlobalScope')),
+        source            TEXT NOT NULL CHECK (source IN ('UserSource', 'SystemSource', 'AgentSource')),
+        content           TEXT NOT NULL,
+        metadata_json     TEXT,
+        generated_by_turn_id TEXT,
+        session_id        TEXT,
+        sensitivity       TEXT NOT NULL DEFAULT 'Internal'
+                          CHECK (sensitivity IN ('Public', 'Internal', 'Confidential', 'Restricted')),
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_memory_items_agent_tier
+      ON memory_items(agent_id, tier)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_memory_items_agent_scope
+      ON memory_items(agent_id, scope)
+    `.unprepared
   })
 })
 
