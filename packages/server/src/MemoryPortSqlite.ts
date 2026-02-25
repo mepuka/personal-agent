@@ -1,7 +1,7 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
 import type { Instant, MemoryItemRecord, MemoryPort, MemorySearchResult } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
+import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
 const InstantFromSqlString = Schema.DateTimeUtcFromString
