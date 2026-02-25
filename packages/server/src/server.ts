@@ -252,11 +252,18 @@ const HttpApiAndRoutesLive = Layer.mergeAll(
   Layer.provide(clusterLayer)
 )
 
+const HttpServerLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    return BunHttpServer.layer({ port: config.server.port })
+  }).pipe(Effect.provide(agentConfigLayer))
+)
+
 const HttpLive = HttpRouter.serve(
   HttpApiAndRoutesLive
 ).pipe(
   Layer.provide(clusterLayer),
-  Layer.provideMerge(BunHttpServer.layer({ port: 3000 }))
+  Layer.provideMerge(HttpServerLayer)
 )
 
 Layer.launch(HttpLive).pipe(

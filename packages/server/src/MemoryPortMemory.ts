@@ -1,7 +1,6 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
-import type { MemoryItemRecord, MemoryPort, MemorySearchQuery, MemorySearchResult } from "@template/domain/ports"
-import type { Instant } from "@template/domain/ports"
+import type { MemoryItemRecord, MemoryPort, MemorySearchResult } from "@template/domain/ports"
 import { DateTime, Effect, HashMap, Layer, Option, Ref, Schema, ServiceMap } from "effect"
 
 // --- Offset cursor codec via Schema ---

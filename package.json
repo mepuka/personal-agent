@@ -13,6 +13,8 @@
     "check-recursive": "bun --filter '*' run check",
     "lint": "eslint \"**/{src,test,examples,scripts,dtslint}/**/*.{ts,mjs}\"",
     "lint-fix": "bun run lint --fix",
+    "start": "bun packages/server/src/server.ts",
+    "dev": "bun --watch packages/server/src/server.ts",
     "test": "vitest",
     "coverage": "vitest --coverage",
     "changeset-version": "changeset version && node scripts/version.mjs",
