@@ -33,8 +33,7 @@ export class ContextWindowExceeded extends Schema.ErrorClass<ContextWindowExceed
   attemptedTokensUsed: Schema.Number
 }) {}
 
-export class ClusterEntityError extends Schema.ErrorClass<ClusterEntityError>("ClusterEntityError")({
-  _tag: Schema.tag("ClusterEntityError"),
-  entityType: Schema.String,
-  reason: Schema.String
+export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("ChannelNotFound")({
+  _tag: Schema.tag("ChannelNotFound"),
+  channelId: Schema.String
 }) {}

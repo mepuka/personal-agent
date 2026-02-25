@@ -1,6 +1,6 @@
+import { TurnStreamEvent } from "@template/domain/events"
 import type { ConversationId, SessionId } from "@template/domain/ids"
 import { ContentBlock } from "@template/domain/ports"
-import { TurnStreamEvent } from "@template/domain/RuntimeApi"
 import { Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -58,7 +58,6 @@ export const layer = SessionEntity.toLayer(Effect.gen(function*() {
         tokensUsed: payload.tokensUsed
       }),
 
-    processTurn: ({ payload }) =>
-      runtime.processTurnStream(payload)
+    processTurn: ({ payload }) => runtime.processTurnStream(payload)
   }
 }))

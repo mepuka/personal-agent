@@ -59,3 +59,9 @@ export const QuotaPeriod = Schema.Literals([
   "Lifetime"
 ])
 export type QuotaPeriod = typeof QuotaPeriod.Type
+
+export const ChannelType = Schema.Literals([
+  "CLI",
+  "HTTP"
+])
+export type ChannelType = typeof ChannelType.Type
