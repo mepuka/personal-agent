@@ -17,3 +17,4 @@ scratchpad/*
 .env.production.local
 .reference/
 .worktrees/
+agent.yaml

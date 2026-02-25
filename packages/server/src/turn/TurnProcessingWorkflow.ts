@@ -1,5 +1,6 @@
-import { Effect, Schema } from "effect"
+import { Effect, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
+import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Activity from "effect/unstable/workflow/Activity"
 import * as Workflow from "effect/unstable/workflow/Workflow"
 import { ContextWindowExceeded, SessionNotFound, TokenBudgetExceeded } from "../../../domain/src/errors.js"
@@ -11,7 +12,9 @@ import {
   type TurnRecord
 } from "../../../domain/src/ports.js"
 import { ModelFinishReason } from "../../../domain/src/status.js"
+import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
+import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry } from "../ai/ToolRegistry.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
 
@@ -95,6 +98,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const governancePort = yield* GovernancePortTag
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
+    const agentConfig = yield* AgentConfig
+    const modelRegistry = yield* ModelRegistry
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -166,19 +171,35 @@ export const layer = TurnProcessingWorkflow.toLayer(
     }).asEffect()
 
     const modelResponse = yield* Effect.gen(function*() {
+      // Resolve agent profile and model layer
+      const profile = yield* agentConfig.getAgent(payload.agentId)
+      const lmLayer = yield* modelRegistry.get(
+        profile.model.provider,
+        profile.model.modelId
+      )
+
       const toolkitBundle = yield* toolRegistry.makeToolkit({
         agentId: payload.agentId as AgentId,
         sessionId: payload.sessionId as SessionId,
         turnId: payload.turnId as TurnId,
         now: payload.createdAt
       })
+
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
+
+      // Inject system prompt on first turn
+      const currentHistory = yield* Ref.get(chat.history)
+      if (currentHistory.content.length === 0) {
+        const withSystem = Prompt.setSystem(currentHistory, profile.persona.systemPrompt)
+        yield* Ref.set(chat.history, withSystem)
+      }
 
       return yield* chat.generateText({
         prompt: toPromptText(payload.content, payload.contentBlocks),
         toolkit: toolkitBundle.toolkit
       }).pipe(
-        Effect.provide(toolkitBundle.handlerLayer)
+        Effect.provide(toolkitBundle.handlerLayer),
+        Effect.provide(lmLayer)
       )
     }).pipe(
       Effect.catch((error) =>

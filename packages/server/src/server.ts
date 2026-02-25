@@ -12,9 +12,9 @@ import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentStatePortSqlite } from "./AgentStatePortSqlite.js"
-import { AiConfig } from "./ai/AiConfig.js"
+import { AgentConfig } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
-import * as LanguageModelLive from "./ai/LanguageModelLive.js"
+import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
@@ -152,12 +152,12 @@ const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
   Layer.provide(clusterLayer)
 )
 
-const aiConfigLayer = AiConfig.layer.pipe(
+const agentConfigLayer = AgentConfig.layer.pipe(
   Layer.orDie
 )
 
-const languageModelLayer = LanguageModelLive.layer.pipe(
-  Layer.provide(aiConfigLayer)
+const modelRegistryLayer = ModelRegistry.layer.pipe(
+  Layer.provide(agentConfigLayer)
 )
 
 const chatPersistenceLayer = ChatPersistence.layer.pipe(
@@ -175,7 +175,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(governancePortTagLayer),
   Layer.provide(toolRegistryLayer),
   Layer.provide(chatPersistenceLayer),
-  Layer.provide(languageModelLayer)
+  Layer.provide(agentConfigLayer),
+  Layer.provide(modelRegistryLayer)
 )
 
 const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -209,8 +210,8 @@ const PortsLive = Layer.mergeAll(
   schedulerCommandLayer,
   schedulerDispatchLayer,
   schedulerTickLayer,
-  aiConfigLayer,
-  languageModelLayer,
+  agentConfigLayer,
+  modelRegistryLayer,
   chatPersistenceLayer,
   toolRegistryLayer,
   turnProcessingWorkflowLayer,

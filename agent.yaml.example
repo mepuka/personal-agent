@@ -1,0 +1,44 @@
+# agent.yaml — Personal Agent Configuration
+# Copy this to agent.yaml and customize.
+# API keys are loaded from environment variables (never put secrets in this file).
+
+providers:
+  anthropic:
+    apiKeyEnv: PA_ANTHROPIC_API_KEY
+  openai:
+    apiKeyEnv: PA_OPENAI_API_KEY
+  # openrouter:
+  #   apiKeyEnv: PA_OPENROUTER_API_KEY
+  # google:
+  #   apiKeyEnv: PA_GOOGLE_API_KEY
+
+agents:
+  default:
+    persona:
+      name: "Personal Assistant"
+      systemPrompt: |
+        You are a helpful personal assistant.
+        You have access to tools for time, math, and text processing.
+        Be concise and direct in your responses.
+    model:
+      provider: anthropic
+      modelId: claude-sonnet-4-20250514
+    generation:
+      temperature: 0.7
+      maxOutputTokens: 4096
+
+  # Example: background workflow agent
+  # summarizer:
+  #   persona:
+  #     name: "Summarizer"
+  #     systemPrompt: |
+  #       You produce concise summaries. Output only the summary.
+  #   model:
+  #     provider: openai
+  #     modelId: gpt-4o-mini
+  #   generation:
+  #     temperature: 0.2
+  #     maxOutputTokens: 1024
+
+server:
+  port: 3000

@@ -17,7 +17,9 @@ import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
+import { AgentConfig } from "../src/ai/AgentConfig.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
+import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
@@ -361,9 +363,26 @@ const makeTurnProcessingLayer = (
     })
   ).pipe(Layer.provide(governanceSqliteLayer))
 
-  const mockLanguageModelLayer = Layer.succeed(
-    LanguageModel.LanguageModel,
-    makeMockLanguageModel()
+  const agentConfigLayer = AgentConfig.layerFromParsed({
+    providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
+    agents: {
+      default: {
+        persona: { name: "Test", systemPrompt: "Test system prompt." },
+        model: { provider: "anthropic", modelId: "test" },
+        generation: { temperature: 0.7, maxOutputTokens: 4096 }
+      }
+    },
+    server: { port: 3000 }
+  })
+
+  const mockModelRegistryLayer = Layer.effect(
+    ModelRegistry,
+    Effect.succeed({
+      get: (_provider: string, _modelId: string) =>
+        Effect.succeed(
+          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel())
+        )
+    })
   )
 
   const chatPersistenceLayer = ChatPersistence.layer.pipe(
@@ -390,7 +409,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(governanceTagLayer),
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
-    Layer.provide(mockLanguageModelLayer)
+    Layer.provide(agentConfigLayer),
+    Layer.provide(mockModelRegistryLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -405,7 +425,8 @@ const makeTurnProcessingLayer = (
     agentStateTagLayer,
     sessionTurnTagLayer,
     governanceTagLayer,
-    mockLanguageModelLayer,
+    agentConfigLayer,
+    mockModelRegistryLayer,
     chatPersistenceLayer,
     toolRegistryLayer,
     workflowEngineLayer,
