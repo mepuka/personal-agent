@@ -27,10 +27,12 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
             conditions.push(`content LIKE '%${escapeSql(escaped)}%' ESCAPE '\\'`)
           }
 
-          const cursorRowId = query.cursor ? decodeCursor(query.cursor) : null
-          if (cursorRowId !== null) {
-            const direction = query.sort === "CreatedAsc" ? ">" : "<"
-            conditions.push(`rowid ${direction} ${cursorRowId}`)
+          const cursor = query.cursor ? decodeCursor(query.cursor) : null
+          if (cursor !== null) {
+            const op = query.sort === "CreatedAsc" ? ">" : "<"
+            conditions.push(
+              `(created_at ${op} '${escapeSql(cursor.createdAt)}' OR (created_at = '${escapeSql(cursor.createdAt)}' AND rowid ${op} ${cursor.rowid}))`
+            )
           }
 
           const whereClause = conditions.join(" AND ")
@@ -40,7 +42,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           const limit = query.limit ?? 20
 
           // Count total matching (without cursor/limit)
-          const countConditions = conditions.filter((c) => !c.startsWith("rowid "))
+          const countConditions = conditions.filter((c) => !c.startsWith("(created_at"))
           const countWhere = countConditions.join(" AND ")
           const countResult = yield* sql`
             SELECT COUNT(*) as cnt FROM memory_items
@@ -61,7 +63,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
 
           const items = rows.map(parseRow)
           const nextCursor = rows.length === limit
-            ? encodeCursor(Number(rows[rows.length - 1].rowid))
+            ? encodeCursor(rows[rows.length - 1].created_at as string, Number(rows[rows.length - 1].rowid))
             : null
 
           return { items, cursor: nextCursor, totalCount } as MemorySearchResult
@@ -73,7 +75,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           const ids: Array<MemoryItemId> = []
 
           for (const item of items) {
-            const id = (`mem:${agentId}:${DateTime.toEpochMillis(now)}:${ids.length}`) as MemoryItemId
+            const id = (`mem:${agentId}:${crypto.randomUUID()}`) as MemoryItemId
             ids.push(id)
 
             yield* sql`
@@ -139,12 +141,27 @@ const parseRow = (row: any): MemoryItemRecord => ({
   updatedAt: decodeSqlInstant(row.updated_at)
 })
 
-const encodeCursor = (rowId: number): string =>
-  Buffer.from(String(rowId)).toString("base64url")
+interface CursorData {
+  readonly createdAt: string
+  readonly rowid: number
+}
 
-const decodeCursor = (cursor: string): number | null => {
+const encodeCursor = (createdAt: string, rowid: number): string =>
+  Buffer.from(JSON.stringify({ createdAt, rowid })).toString("base64url")
+
+const decodeCursor = (cursor: string): CursorData | null => {
   try {
-    return Number(Buffer.from(cursor, "base64url").toString())
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString())
+    if (
+      typeof parsed !== "object" || parsed === null ||
+      typeof parsed.createdAt !== "string" ||
+      typeof parsed.rowid !== "number" ||
+      !Number.isFinite(parsed.rowid) ||
+      !Number.isInteger(parsed.rowid)
+    ) {
+      return null
+    }
+    return { createdAt: parsed.createdAt, rowid: parsed.rowid }
   } catch {
     return null
   }

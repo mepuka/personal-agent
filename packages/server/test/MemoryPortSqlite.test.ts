@@ -296,6 +296,140 @@ describe("MemoryPortSqlite", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("cursor pagination works with non-monotonic created_at", () => {
+    const dbPath = testDatabasePath("mem-nonmono")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+
+      // Insert out of order: newest first by created_at, but oldest rowid
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Newest" }
+      ], instant("2026-02-25T14:00:00.000Z"))
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Oldest" }
+      ], instant("2026-02-25T10:00:00.000Z"))
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Middle" }
+      ], instant("2026-02-25T12:00:00.000Z"))
+
+      // CreatedAsc: should be Oldest, Middle, Newest regardless of rowid order
+      const page1 = yield* port.search(AGENT_ID, { sort: "CreatedAsc", limit: 2 })
+      expect(page1.items.map((i) => i.content)).toEqual(["Oldest", "Middle"])
+      expect(page1.cursor).not.toBeNull()
+
+      const page2 = yield* port.search(AGENT_ID, { sort: "CreatedAsc", limit: 2, cursor: page1.cursor! })
+      expect(page2.items.map((i) => i.content)).toEqual(["Newest"])
+      expect(page2.cursor).toBeNull()
+
+      // CreatedDesc: should be Newest, Middle, Oldest
+      const descPage1 = yield* port.search(AGENT_ID, { sort: "CreatedDesc", limit: 2 })
+      expect(descPage1.items.map((i) => i.content)).toEqual(["Newest", "Middle"])
+      expect(descPage1.cursor).not.toBeNull()
+
+      const descPage2 = yield* port.search(AGENT_ID, { sort: "CreatedDesc", limit: 2, cursor: descPage1.cursor! })
+      expect(descPage2.items.map((i) => i.content)).toEqual(["Oldest"])
+      expect(descPage2.cursor).toBeNull()
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("malformed cursor is ignored (treated as no cursor)", () => {
+    const dbPath = testDatabasePath("mem-badcursor")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Item A" },
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Item B" }
+      ], now)
+
+      // Garbage cursor
+      const result1 = yield* port.search(AGENT_ID, { limit: 10, cursor: "not-valid-base64!!!" })
+      expect(result1.items).toHaveLength(2)
+
+      // Empty string cursor
+      const result2 = yield* port.search(AGENT_ID, { limit: 10, cursor: "" })
+      expect(result2.items).toHaveLength(2)
+
+      // Valid base64 but wrong JSON shape
+      const badJson = Buffer.from('{"wrong":"shape"}').toString("base64url")
+      const result3 = yield* port.search(AGENT_ID, { limit: 10, cursor: badJson })
+      expect(result3.items).toHaveLength(2)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("encode generates unique IDs across same-millisecond calls", () => {
+    const dbPath = testDatabasePath("mem-ids")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      const ids1 = yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "First" }
+      ], now)
+
+      const ids2 = yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Second" }
+      ], now)
+
+      expect(ids1[0]).not.toBe(ids2[0])
+
+      const result = yield* port.search(AGENT_ID, { limit: 10 })
+      expect(result.items).toHaveLength(2)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("CreatedDesc cursor walk returns all items", () => {
+    const dbPath = testDatabasePath("mem-desc-walk")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+
+      for (let i = 0; i < 5; i++) {
+        yield* port.encode(AGENT_ID, [
+          { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: `Item ${i}` }
+        ], instant(`2026-02-25T1${i}:00:00.000Z`))
+      }
+
+      // Walk all pages with limit 2, CreatedDesc
+      const allItems: Array<string> = []
+      let cursor: string | null = null
+      for (let page = 0; page < 5; page++) {
+        const result = yield* port.search(AGENT_ID, {
+          sort: "CreatedDesc",
+          limit: 2,
+          ...(cursor ? { cursor } : {})
+        })
+        allItems.push(...result.items.map((i) => i.content))
+        cursor = result.cursor
+        if (cursor === null) break
+      }
+
+      expect(allItems).toEqual(["Item 4", "Item 3", "Item 2", "Item 1", "Item 0"])
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeMemoryLayer = (dbPath: string) => {

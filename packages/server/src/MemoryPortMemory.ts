@@ -39,21 +39,20 @@ export class MemoryPortMemory extends ServiceMap.Service<MemoryPortMemory>()("se
 
           const totalCount = items.length
           const limit = query.limit ?? 20
-          const paged = items.slice(0, limit)
+          const offset = query.cursor ? decodeMemoryCursor(query.cursor) : 0
+          const paged = items.slice(offset, offset + limit)
+          const nextOffset = offset + paged.length
+          const nextCursor = nextOffset < totalCount ? encodeMemoryCursor(nextOffset) : null
 
-          return {
-            items: paged,
-            cursor: paged.length === limit && paged.length < totalCount ? "in-memory-cursor" : null,
-            totalCount
-          } as MemorySearchResult
+          return { items: paged, cursor: nextCursor, totalCount } as MemorySearchResult
         })
       )
 
     const encode: MemoryPort["encode"] = (agentId, items, now) =>
       Ref.modify(itemsByAgent, (map) => {
         const current = Option.getOrElse(HashMap.get(map, agentId), () => [] as Array<MemoryItemRecord>)
-        const newRecords: Array<MemoryItemRecord> = items.map((item, i) => ({
-          memoryItemId: (`mem:${DateTime.toEpochMillis(now)}:${i}`) as MemoryItemId,
+        const newRecords: Array<MemoryItemRecord> = items.map((item) => ({
+          memoryItemId: (`mem:${crypto.randomUUID()}`) as MemoryItemId,
           agentId,
           tier: item.tier as MemoryTier,
           scope: item.scope as MemoryScope,
@@ -87,4 +86,16 @@ export class MemoryPortMemory extends ServiceMap.Service<MemoryPortMemory>()("se
   })
 }) {
   static layer = Layer.effect(this, this.make)
+}
+
+const encodeMemoryCursor = (offset: number): string =>
+  Buffer.from(String(offset)).toString("base64url")
+
+const decodeMemoryCursor = (cursor: string): number => {
+  try {
+    const n = Number(Buffer.from(cursor, "base64url").toString())
+    return Number.isFinite(n) && Number.isInteger(n) && n >= 0 ? n : 0
+  } catch {
+    return 0
+  }
 }
