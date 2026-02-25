@@ -1,32 +1,5 @@
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
-import { ClusterEntityError } from "./errors.js"
 import { ContentBlock } from "./ports.js"
-
-export class RuntimeStatus extends Schema.Class<RuntimeStatus>("RuntimeStatus")({
-  service: Schema.String,
-  phase: Schema.String,
-  ontologyVersion: Schema.String,
-  architectureVersion: Schema.String,
-  branch: Schema.String
-}) {}
-
-export class CreateSessionRequest extends Schema.Class<CreateSessionRequest>(
-  "CreateSessionRequest"
-)({
-  sessionId: Schema.String,
-  conversationId: Schema.String,
-  tokenCapacity: Schema.Number
-}) {}
-
-export class CreateSessionResponse extends Schema.Class<CreateSessionResponse>(
-  "CreateSessionResponse"
-)({
-  sessionId: Schema.String,
-  conversationId: Schema.String,
-  tokenCapacity: Schema.Number,
-  tokensUsed: Schema.Number
-}) {}
 
 export class SubmitTurnRequest extends Schema.Class<SubmitTurnRequest>("SubmitTurnRequest")({
   turnId: Schema.String,
@@ -106,17 +79,3 @@ export const TurnStreamEvent = Schema.Union([
   TurnFailedEvent
 ])
 export type TurnStreamEvent = typeof TurnStreamEvent.Type
-
-export class RuntimeApiGroup extends HttpApiGroup.make("runtime")
-  .add(HttpApiEndpoint.get("getStatus", "/status", {
-    success: RuntimeStatus,
-    error: ClusterEntityError
-  }))
-  .add(HttpApiEndpoint.post("createSession", "/sessions", {
-    payload: CreateSessionRequest,
-    success: CreateSessionResponse,
-    error: ClusterEntityError
-  }))
-{}
-
-export class RuntimeApi extends HttpApi.make("api").add(RuntimeApiGroup) {}

@@ -10,6 +10,7 @@ import type {
 import type {
   AgentId,
   AuditEntryId,
+  ChannelId,
   ConversationId,
   MemoryItemId,
   PolicyId,
@@ -22,6 +23,7 @@ import type {
 import { MessageId } from "./ids.js"
 import type {
   AuthorizationDecision,
+  ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
   PermissionMode,
@@ -233,6 +235,9 @@ export interface SessionTurnPort {
     sessionId: SessionId,
     deltaTokens: number
   ) => Effect.Effect<void, ContextWindowExceeded | SessionNotFound>
+  readonly listTurns: (
+    sessionId: SessionId
+  ) => Effect.Effect<ReadonlyArray<TurnRecord>>
 }
 
 export interface MemoryPort {
@@ -262,4 +267,18 @@ export interface SchedulePort {
   readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void>
   readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<DueScheduleRecord>>
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
+}
+
+export interface ChannelRecord {
+  readonly channelId: ChannelId
+  readonly channelType: ChannelType
+  readonly agentId: AgentId
+  readonly activeSessionId: SessionId
+  readonly activeConversationId: ConversationId
+  readonly createdAt: Instant
+}
+
+export interface ChannelPort {
+  readonly create: (channel: ChannelRecord) => Effect.Effect<void>
+  readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
 }

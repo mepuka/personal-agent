@@ -1,31 +1,46 @@
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import type { AgentStatePort, GovernancePort, MemoryPort, SchedulePort, SessionTurnPort } from "@template/domain/ports"
+import type {
+  AgentStatePort,
+  ChannelPort,
+  GovernancePort,
+  MemoryPort,
+  SchedulePort,
+  SessionTurnPort
+} from "@template/domain/ports"
 import { Effect, Layer } from "effect"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentStatePortSqlite } from "./AgentStatePortSqlite.js"
 import { AiConfig } from "./ai/AiConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import * as LanguageModelLive from "./ai/LanguageModelLive.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
-import { ApiLive } from "./Api.js"
+import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
+import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
+import { layer as ChannelEntityLayer } from "./entities/ChannelEntity.js"
+import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
+import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
 import { MemoryPortMemory } from "./MemoryPortMemory.js"
 import * as DomainMigrator from "./persistence/DomainMigrator.js"
 import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
-import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SchedulePortTag, SessionTurnPortTag } from "./PortTags.js"
+import {
+  AgentStatePortTag,
+  ChannelPortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SchedulePortTag,
+  SessionTurnPortTag
+} from "./PortTags.js"
 import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
-import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
-import { layer as GovernanceEntityLayer } from "./entities/GovernanceEntity.js"
-import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
-import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as SchedulerCommandLayer } from "./scheduler/SchedulerCommandEntity.js"
 import { SchedulerDispatchLoop } from "./scheduler/SchedulerDispatchLoop.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "./turn/TurnProcessingWorkflow.js"
-import { layer as TurnStreamingLayer } from "./TurnStreamingRouter.js"
 
 const sqliteLayer = SqliteRuntime.layer()
 const migrationLayer = DomainMigrator.layer.pipe(
@@ -78,6 +93,17 @@ const governancePortTagLayer = Layer.effect(
   })
 ).pipe(Layer.provide(governancePortSqliteLayer))
 
+const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
+const channelPortTagLayer = Layer.effect(
+  ChannelPortTag,
+  Effect.gen(function*() {
+    return (yield* ChannelPortSqlite) as ChannelPort
+  })
+).pipe(Layer.provide(channelPortSqliteLayer))
+
 const schedulerRuntimeLayer = SchedulerRuntime.layer.pipe(
   Layer.provide(schedulePortTagLayer)
 )
@@ -109,16 +135,6 @@ const memoryPortTagLayer = Layer.effect(
 const agentEntityLayer = AgentEntityLayer.pipe(
   Layer.provide(clusterLayer),
   Layer.provide(agentStatePortTagLayer)
-)
-
-const governanceEntityLayer = GovernanceEntityLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(governancePortTagLayer)
-)
-
-const memoryEntityLayer = MemoryEntityLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(memoryPortTagLayer)
 )
 
 const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
@@ -161,6 +177,14 @@ const sessionEntityLayer = SessionEntityLayer.pipe(
   Layer.provide(turnProcessingRuntimeLayer)
 )
 
+const channelEntityLayer = ChannelEntityLayer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(channelPortTagLayer),
+  Layer.provide(sessionTurnPortTagLayer),
+  Layer.provide(turnProcessingRuntimeLayer),
+  Layer.provide(sessionEntityLayer)
+)
+
 const PortsLive = Layer.mergeAll(
   MemoryPortMemory.layer,
   memoryPortTagLayer,
@@ -168,6 +192,7 @@ const PortsLive = Layer.mergeAll(
   sessionTurnPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
+  channelPortTagLayer,
   schedulerRuntimeLayer,
   schedulerCommandLayer,
   schedulerDispatchLayer,
@@ -179,22 +204,25 @@ const PortsLive = Layer.mergeAll(
   turnProcessingRuntimeLayer,
   agentEntityLayer,
   sessionEntityLayer,
-  governanceEntityLayer,
-  memoryEntityLayer
+  channelEntityLayer
 ).pipe(
   Layer.provideMerge(clusterLayer)
 )
 
-const HttpApiAndStreamingLive = Layer.mergeAll(
-  ApiLive,
-  TurnStreamingLayer
+const ProxyApiLive = HttpApiBuilder.layer(ProxyApi).pipe(
+  Layer.provide(ProxyHandlersLive)
+)
+
+const HttpApiAndRoutesLive = Layer.mergeAll(
+  ProxyApiLive,
+  ChannelRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
 )
 
 const HttpLive = HttpRouter.serve(
-  HttpApiAndStreamingLive
+  HttpApiAndRoutesLive
 ).pipe(
   Layer.provide(clusterLayer),
   Layer.provideMerge(BunHttpServer.layer({ port: 3000 }))

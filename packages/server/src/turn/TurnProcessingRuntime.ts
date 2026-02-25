@@ -1,4 +1,4 @@
-import type { TurnStreamEvent } from "@template/domain/RuntimeApi"
+import type { TurnStreamEvent } from "@template/domain/events"
 import { Effect, Layer, ServiceMap, Stream } from "effect"
 import * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
 import {

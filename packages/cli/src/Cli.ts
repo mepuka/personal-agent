@@ -1,13 +1,99 @@
-import { Command } from "effect/unstable/cli"
-import { RuntimeClient } from "./RuntimeClient.js"
+import { Console, Effect, Option, Stream } from "effect"
+import { Command, Flag } from "effect/unstable/cli"
+import * as readline from "node:readline"
+import { ChatClient } from "./RuntimeClient.js"
 
-const status = Command.make("status").pipe(
-  Command.withDescription("Show runtime kickoff status"),
-  Command.withHandler(() => RuntimeClient.use((client) => client.status))
+// ---------------------------------------------------------------------------
+// Flags
+// ---------------------------------------------------------------------------
+
+const channelFlag = Flag.optional(
+  Flag.string("channel").pipe(
+    Flag.withDescription("Resume an existing channel by ID")
+  )
 )
 
+// ---------------------------------------------------------------------------
+// chat command
+// ---------------------------------------------------------------------------
+
+const chat = Command.make("chat", { channel: channelFlag }).pipe(
+  Command.withDescription("Interactive chat with the agent"),
+  Command.withHandler(({ channel }) =>
+    ChatClient.use((client) =>
+      Effect.gen(function*() {
+        const channelId = Option.isSome(channel)
+          ? channel.value
+          : `channel:${crypto.randomUUID()}`
+
+        yield* Effect.logInfo(`Channel: ${channelId}`)
+        yield* client.createChannel(channelId, "agent:bootstrap")
+        yield* Effect.logInfo("Ready. Type your message (Ctrl+C to exit).\n")
+
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout
+        })
+
+        const prompt = () =>
+          Effect.callback<string>((resume) => {
+            rl.question("> ", (answer) => {
+              resume(Effect.succeed(answer))
+            })
+          })
+
+        let running = true
+        rl.on("close", () => {
+          running = false
+        })
+
+        while (running) {
+          const input = yield* prompt()
+          if (!input.trim()) continue
+
+          const eventStream = yield* client.sendMessage(channelId, input)
+          yield* eventStream.pipe(
+            Stream.tap((event) => {
+              switch (event.type) {
+                case "turn.started":
+                  return Console.log("")
+                case "assistant.delta":
+                  return Effect.sync(() => process.stdout.write(event.delta))
+                case "tool.call":
+                  return Console.log(`\n[tool: ${event.toolName}]`)
+                case "tool.result":
+                  return Console.log(`[result: ${event.outputJson}]`)
+                case "turn.completed":
+                  return Console.log("\n")
+                case "turn.failed":
+                  return Console.log(`\n[error: ${event.errorCode}: ${event.message}]\n`)
+              }
+            }),
+            Stream.runDrain
+          )
+        }
+
+        rl.close()
+      })
+    )
+  )
+)
+
+// ---------------------------------------------------------------------------
+// status command
+// ---------------------------------------------------------------------------
+
+const status = Command.make("status").pipe(
+  Command.withDescription("Check server health"),
+  Command.withHandler(() => ChatClient.use((client) => client.health))
+)
+
+// ---------------------------------------------------------------------------
+// root command
+// ---------------------------------------------------------------------------
+
 const command = Command.make("agent").pipe(
-  Command.withSubcommands([status])
+  Command.withSubcommands([chat, status])
 )
 
 export const cli = Command.run(command, {

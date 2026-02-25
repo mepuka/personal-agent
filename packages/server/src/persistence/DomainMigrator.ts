@@ -119,6 +119,20 @@ const loader = SqliteMigrator.fromRecord({
       CREATE UNIQUE INDEX IF NOT EXISTS turns_session_turn_index_idx
       ON turns (session_id, turn_index)
     `.unprepared
+  }),
+  "0003_channel_tables": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS channels (
+        channel_id TEXT PRIMARY KEY,
+        channel_type TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        active_session_id TEXT NOT NULL,
+        active_conversation_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `.unprepared
   })
 })
 
