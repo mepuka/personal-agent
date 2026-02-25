@@ -1,7 +1,7 @@
+import { FileSystem } from "@effect/platform"
 import type { AgentProfile, ProviderConfig } from "@template/domain/config"
 import { AgentConfigFileSchema } from "@template/domain/config"
 import { Effect, Layer, Schema, ServiceMap } from "effect"
-import { readFileSync } from "node:fs"
 
 export class AgentProfileNotFound extends Schema.ErrorClass<AgentProfileNotFound>(
   "AgentProfileNotFound"
@@ -34,12 +34,8 @@ const makeFromParsed = (raw: unknown): Effect.Effect<AgentConfigService> =>
     }
 
     const getAgent = (agentId: string): Effect.Effect<AgentProfile, AgentProfileNotFound> => {
-      // Exact match first, then map well-known bootstrap ID to default
-      const profile = agents.get(agentId)
-        ?? (agentId === "agent:bootstrap" ? agents.get("default") : undefined)
-      if (!profile) {
-        return Effect.fail(new AgentProfileNotFound({ agentId }))
-      }
+      // Exact match first, then fall back to default profile
+      const profile = agents.get(agentId) ?? defaultAgent
       return Effect.succeed(profile)
     }
 
@@ -56,10 +52,9 @@ export class AgentConfig extends ServiceMap.Service<AgentConfig>()(
   "server/ai/AgentConfig",
   {
     make: Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
       const configPath = process.env.PA_CONFIG_PATH ?? "agent.yaml"
-      const yamlContent = yield* Effect.try(() =>
-        readFileSync(configPath, "utf-8")
-      ).pipe(
+      const yamlContent = yield* fs.readFileString(configPath).pipe(
         Effect.mapError(() =>
           new Error(
             `Could not read ${configPath}. Run 'agent init' to create one.`

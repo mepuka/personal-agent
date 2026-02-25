@@ -1,3 +1,4 @@
+import { FileSystem } from "@effect/platform"
 import { Console, Effect, Option, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as readline from "node:readline"
@@ -89,11 +90,33 @@ const status = Command.make("status").pipe(
 )
 
 // ---------------------------------------------------------------------------
+// init command
+// ---------------------------------------------------------------------------
+
+const init = Command.make("init").pipe(
+  Command.withDescription("Generate a starter agent.yaml config file"),
+  Command.withHandler(() =>
+    Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
+      const path = "agent.yaml"
+      const alreadyExists = yield* fs.exists(path)
+      if (alreadyExists) {
+        yield* Console.log(`${path} already exists. Delete it first or edit it directly.`)
+        return
+      }
+      const template = yield* fs.readFileString("agent.yaml.example")
+      yield* fs.writeFileString(path, template)
+      yield* Console.log(`Created ${path}. Edit agents.default.persona.systemPrompt to customize your agent.`)
+    })
+  )
+)
+
+// ---------------------------------------------------------------------------
 // root command
 // ---------------------------------------------------------------------------
 
 const command = Command.make("agent").pipe(
-  Command.withSubcommands([chat, status])
+  Command.withSubcommands([chat, status, init])
 )
 
 export const cli = Command.run(command, {

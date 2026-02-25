@@ -1,4 +1,4 @@
-import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import { BunFileSystem, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import type {
   AgentStatePort,
   ChannelPort,
@@ -153,6 +153,7 @@ const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
 )
 
 const agentConfigLayer = AgentConfig.layer.pipe(
+  Layer.provide(BunFileSystem.layer),
   Layer.orDie
 )
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { AgentConfig, AgentProfileNotFound } from "../src/ai/AgentConfig.js"
+import { AgentConfig } from "../src/ai/AgentConfig.js"
 
 const testYaml = {
   providers: {
@@ -51,11 +51,11 @@ describe("AgentConfig", () => {
     }).pipe(Effect.provide(testLayer))
   )
 
-  it.effect("getAgent fails for unknown agent", () =>
+  it.effect("getAgent falls back to default for unknown agent", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
-      const exit = yield* config.getAgent("nonexistent").pipe(Effect.flip)
-      expect(exit).toBeInstanceOf(AgentProfileNotFound)
+      const profile = yield* config.getAgent("nonexistent")
+      expect(profile.persona.name).toBe("Test Assistant")
     }).pipe(Effect.provide(testLayer))
   )
 
