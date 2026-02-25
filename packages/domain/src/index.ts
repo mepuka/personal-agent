@@ -1,5 +1,6 @@
 export * from "./errors.js"
 export * from "./events.js"
 export * from "./ids.js"
+export * from "./memory.js"
 export * from "./ports.js"
 export * from "./status.js"
