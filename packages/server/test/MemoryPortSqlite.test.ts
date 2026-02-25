@@ -5,7 +5,7 @@ import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AgentId } from "../../domain/src/ids.js"
-import type { Instant } from "../../domain/src/ports.js"
+import type { Instant, MemorySearchQuery } from "../../domain/src/ports.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
@@ -413,16 +413,15 @@ describe("MemoryPortSqlite", () => {
 
       // Walk all pages with limit 2, CreatedDesc
       const allItems: Array<string> = []
-      let cursor: string | null = null
+      let nextCursor: string | null = null
       for (let page = 0; page < 5; page++) {
-        const result = yield* port.search(AGENT_ID, {
-          sort: "CreatedDesc",
-          limit: 2,
-          ...(cursor ? { cursor } : {})
-        })
-        allItems.push(...result.items.map((i) => i.content))
-        cursor = result.cursor
-        if (cursor === null) break
+        const q: MemorySearchQuery = nextCursor
+          ? { sort: "CreatedDesc", limit: 2, cursor: nextCursor }
+          : { sort: "CreatedDesc", limit: 2 }
+        const result = yield* port.search(AGENT_ID, q)
+        for (const item of result.items) allItems.push(item.content)
+        nextCursor = result.cursor
+        if (nextCursor === null) break
       }
 
       expect(allItems).toEqual(["Item 4", "Item 3", "Item 2", "Item 1", "Item 0"])
@@ -441,7 +440,7 @@ describe("MemoryPortSqlite property-based tests", () => {
   const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
 
   it("cursor roundtrip: encode → decode is identity for arbitrary CursorData", () => {
-    const arb = Schema.toArbitrary(CursorSchema)
+    const arb = Schema.toArbitrary(CursorSchema) as fc.Arbitrary<{ readonly createdAt: string; readonly rowid: number }>
 
     fc.assert(
       fc.property(arb, (data) => {
@@ -495,20 +494,19 @@ describe("MemoryPortSqlite property-based tests", () => {
       for (const limit of [1, 2, 3, 5, 7, 10, 20]) {
         for (const sort of ["CreatedAsc", "CreatedDesc"] as const) {
           const allItems: Array<string> = []
-          let cursor: string | null = null
+          let nextCursor: string | null = null
           let pages = 0
 
           do {
-            const result = yield* port.search(AGENT_ID, {
-              sort,
-              limit,
-              ...(cursor ? { cursor } : {})
-            })
-            allItems.push(...result.items.map((i) => i.content))
-            cursor = result.cursor
+            const q: MemorySearchQuery = nextCursor
+              ? { sort, limit, cursor: nextCursor }
+              : { sort, limit }
+            const result = yield* port.search(AGENT_ID, q)
+            for (const item of result.items) allItems.push(item.content)
+            nextCursor = result.cursor
             pages++
             if (pages > 20) break
-          } while (cursor !== null)
+          } while (nextCursor !== null)
 
           expect(allItems).toHaveLength(itemCount)
           expect(new Set(allItems).size).toBe(itemCount)
