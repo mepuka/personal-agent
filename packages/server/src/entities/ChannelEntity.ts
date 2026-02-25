@@ -77,21 +77,21 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
         return
       }
 
-      yield* agentStatePort.upsert({
-        agentId,
-        permissionMode: "Standard",
-        tokenBudget: 200_000,
-        quotaPeriod: "Daily",
-        tokensConsumed: 0,
-        budgetResetAt: null
-      } satisfies AgentState)
+      yield* agentStatePort.upsert(
+        {
+          agentId,
+          permissionMode: "Standard",
+          tokenBudget: 200_000,
+          quotaPeriod: "Daily",
+          tokensConsumed: 0,
+          budgetResetAt: null
+        } satisfies AgentState
+      )
     })
 
-  const toSessionId = (channelId: ChannelId): SessionId =>
-    (`session:${channelId}`) as SessionId
+  const toSessionId = (channelId: ChannelId): SessionId => (`session:${channelId}`) as SessionId
 
-  const toConversationId = (channelId: ChannelId): ConversationId =>
-    (`conv:${channelId}`) as ConversationId
+  const toConversationId = (channelId: ChannelId): ConversationId => (`conv:${channelId}`) as ConversationId
 
   return {
     createChannel: (request) =>

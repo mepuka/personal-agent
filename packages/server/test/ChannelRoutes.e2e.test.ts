@@ -1,11 +1,11 @@
 import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
-import { TurnStreamEvent } from "@template/domain/events"
+import type { TurnStreamEvent } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
 import { Effect, Layer, Stream } from "effect"
-import * as Sse from "effect/unstable/encoding/Sse"
 import { SingleRunner } from "effect/unstable/cluster"
+import * as Sse from "effect/unstable/encoding/Sse"
 import { HttpRouter } from "effect/unstable/http"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -185,9 +185,24 @@ describe("ChannelRoutes e2e", () => {
       // Tests the full SSE encoding pipeline: events → Sse.encode → encodeText → HTTP stream
       // Uses HttpRouter.route (not add) for proper streaming scope transfer
       const mockEvents: Array<TurnStreamEvent> = [
-        { type: "turn.started", sequence: 1, turnId: "turn:test", sessionId: "session:test", createdAt: new Date().toISOString() as any },
+        {
+          type: "turn.started",
+          sequence: 1,
+          turnId: "turn:test",
+          sessionId: "session:test",
+          createdAt: new Date().toISOString() as any
+        },
         { type: "assistant.delta", sequence: 2, turnId: "turn:test", sessionId: "session:test", delta: "hello" },
-        { type: "turn.completed", sequence: 3, turnId: "turn:test", sessionId: "session:test", accepted: true, auditReasonCode: "turn_processing_accepted", modelFinishReason: "stop", modelUsageJson: "{}" }
+        {
+          type: "turn.completed",
+          sequence: 3,
+          turnId: "turn:test",
+          sessionId: "session:test",
+          accepted: true,
+          auditReasonCode: "turn_processing_accepted",
+          modelFinishReason: "stop",
+          modelUsageJson: "{}"
+        }
       ]
 
       const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
@@ -201,18 +216,19 @@ describe("ChannelRoutes e2e", () => {
         HttpRouter.route(
           "POST",
           "/test-sse",
-          (_request) =>
-            Effect.gen(function*() {
-              const stream = Stream.fromIterable(mockEvents).pipe(
-                Stream.map(toSseEvent),
-                Stream.pipeThroughChannel(Sse.encode()),
-                Stream.encodeText
-              )
-              return HttpServerResponse.stream(stream, {
+          (_request) => {
+            const stream = Stream.fromIterable(mockEvents).pipe(
+              Stream.map(toSseEvent),
+              Stream.pipeThroughChannel(Sse.encode()),
+              Stream.encodeText
+            )
+            return Effect.succeed(
+              HttpServerResponse.stream(stream, {
                 contentType: "text/event-stream",
                 headers: { "cache-control": "no-cache", connection: "keep-alive" }
               })
-            })
+            )
+          }
         )
       ]).pipe(
         HttpRouter.serve,
@@ -230,8 +246,7 @@ describe("ChannelRoutes e2e", () => {
       expect(body).toContain("assistant.delta")
       expect(body).toContain("turn.completed")
       expect(body).toContain("hello")
-    }).pipe(Effect.provide(NodeHttpServer.layerTest))
-  )
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)))
 
   // TODO: SingleRunner streaming RPCs hang — entity client streaming through
   // SingleRunner never terminates. Non-streaming entity RPCs (createChannel,
