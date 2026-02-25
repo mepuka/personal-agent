@@ -21,9 +21,10 @@ import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
@@ -226,6 +227,16 @@ const makeChatFlowLayer = (dbPath: string) => {
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
+  const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
+  const memoryPortTagLayer = Layer.effect(
+    MemoryPortTag,
+    Effect.gen(function*() {
+      return (yield* MemoryPortSqlite) as import("@template/domain/ports").MemoryPort
+    })
+  ).pipe(Layer.provide(memoryPortSqliteLayer))
 
   const agentStateTagLayer = Layer.effect(
     AgentStatePortTag,
@@ -282,6 +293,7 @@ const makeChatFlowLayer = (dbPath: string) => {
     Layer.provide(agentStateTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(governanceTagLayer),
+    Layer.provide(memoryPortTagLayer),
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
@@ -306,12 +318,14 @@ const makeChatFlowLayer = (dbPath: string) => {
     Layer.provideMerge(Layer.mergeAll(
       agentStateTagLayer,
       sessionTurnTagLayer,
-      governanceTagLayer
+      governanceTagLayer,
+      memoryPortTagLayer
     )),
     Layer.provideMerge(Layer.mergeAll(
       agentStateSqliteLayer,
       sessionTurnSqliteLayer,
-      governanceSqliteLayer
+      governanceSqliteLayer,
+      memoryPortSqliteLayer
     )),
     Layer.provideMerge(clusterLayer),
     Layer.provideMerge(sqlInfrastructureLayer)

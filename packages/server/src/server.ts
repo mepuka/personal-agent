@@ -23,7 +23,7 @@ import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
-import { MemoryPortMemory } from "./MemoryPortMemory.js"
+import { MemoryPortSqlite } from "./MemoryPortSqlite.js"
 import * as DomainMigrator from "./persistence/DomainMigrator.js"
 import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
 import {
@@ -136,12 +136,16 @@ const schedulerTickLayer = SchedulerTickService.layer.pipe(
   Layer.provide(schedulerDispatchLayer)
 )
 
+const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
 const memoryPortTagLayer = Layer.effect(
   MemoryPortTag,
   Effect.gen(function*() {
-    return (yield* MemoryPortMemory) as MemoryPort
+    return (yield* MemoryPortSqlite) as MemoryPort
   })
-).pipe(Layer.provide(MemoryPortMemory.layer))
+).pipe(Layer.provide(memoryPortSqliteLayer))
 
 const agentEntityLayer = AgentEntityLayer.pipe(
   Layer.provide(clusterLayer),
@@ -174,6 +178,7 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(agentStatePortTagLayer),
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(governancePortTagLayer),
+  Layer.provide(memoryPortTagLayer),
   Layer.provide(toolRegistryLayer),
   Layer.provide(chatPersistenceLayer),
   Layer.provide(agentConfigLayer),
@@ -231,7 +236,7 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(agentConfigLayer),
   Layer.provideMerge(schedulerLayer),
   Layer.provideMerge(portTagsLayer),
-  Layer.provideMerge(MemoryPortMemory.layer),
+  Layer.provideMerge(memoryPortSqliteLayer),
   Layer.provideMerge(clusterLayer)
 )
 

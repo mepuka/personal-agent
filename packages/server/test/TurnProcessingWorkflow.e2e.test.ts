@@ -22,9 +22,10 @@ import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
@@ -266,6 +267,82 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("prepends retrieved memory context to prompt", () => {
+    const dbPath = testDatabasePath("turn-memory")
+    const capturedPrompts: Array<string> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", capturedPrompts)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const memoryPort = yield* MemoryPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      const agentId = "agent:memory" as AgentId
+      const agent = makeAgentState({
+        agentId,
+        tokenBudget: 200,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      })
+      const session = makeSessionState({
+        sessionId: "session:memory" as SessionId,
+        conversationId: "conversation:memory" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      })
+
+      yield* agentPort.upsert(agent)
+      yield* sessionPort.startSession(session)
+
+      // Store semantic memories for this agent
+      yield* memoryPort.encode(agentId, [
+        {
+          tier: "SemanticMemory",
+          scope: "GlobalScope",
+          source: "UserSource",
+          content: "User's name is Alex",
+          metadataJson: null,
+          generatedByTurnId: null,
+          sessionId: null
+        },
+        {
+          tier: "SemanticMemory",
+          scope: "GlobalScope",
+          source: "AgentSource",
+          content: "User prefers concise responses",
+          metadataJson: null,
+          generatedByTurnId: null,
+          sessionId: null
+        }
+      ], now)
+
+      const userContent = "Hello, what is my name?"
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:memory" as TurnId,
+        agentId,
+        sessionId: session.sessionId,
+        conversationId: session.conversationId,
+        createdAt: now,
+        inputTokens: 25,
+        content: userContent,
+        contentBlocks: [{ contentBlockType: "TextBlock", text: userContent }]
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(capturedPrompts.length).toBeGreaterThanOrEqual(1)
+      const allCaptured = capturedPrompts.join("\n")
+      expect(allCaptured).toContain("[Relevant Memory]")
+      expect(allCaptured).toContain("User's name is Alex")
+      expect(allCaptured).toContain("User prefers concise responses")
+      expect(allCaptured).toContain("Hello, what is my name?")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("exposes canonical stream events", () => {
     const dbPath = testDatabasePath("turn-stream")
     const layer = makeTurnProcessingLayer(dbPath)
@@ -310,7 +387,8 @@ describe("TurnProcessingWorkflow e2e", () => {
 
 const makeTurnProcessingLayer = (
   dbPath: string,
-  forcedDecision: AuthorizationDecision = "Allow"
+  forcedDecision: AuthorizationDecision = "Allow",
+  capturedPrompts?: Array<string>
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -328,6 +406,16 @@ const makeTurnProcessingLayer = (
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
+  const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
+  const memoryPortTagLayer = Layer.effect(
+    MemoryPortTag,
+    Effect.gen(function*() {
+      return (yield* MemoryPortSqlite) as import("@template/domain/ports").MemoryPort
+    })
+  ).pipe(Layer.provide(memoryPortSqliteLayer))
 
   const agentStateTagLayer = Layer.effect(
     AgentStatePortTag,
@@ -380,7 +468,7 @@ const makeTurnProcessingLayer = (
     Effect.succeed({
       get: (_provider: string, _modelId: string) =>
         Effect.succeed(
-          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel())
+          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel(capturedPrompts))
         )
     })
   )
@@ -407,6 +495,7 @@ const makeTurnProcessingLayer = (
     Layer.provide(agentStateTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(governanceTagLayer),
+    Layer.provide(memoryPortTagLayer),
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
@@ -431,12 +520,14 @@ const makeTurnProcessingLayer = (
     Layer.provideMerge(Layer.mergeAll(
       agentStateTagLayer,
       sessionTurnTagLayer,
-      governanceTagLayer
+      governanceTagLayer,
+      memoryPortTagLayer
     )),
     Layer.provideMerge(Layer.mergeAll(
       agentStateSqliteLayer,
       sessionTurnSqliteLayer,
-      governanceSqliteLayer
+      governanceSqliteLayer,
+      memoryPortSqliteLayer
     )),
     Layer.provideMerge(clusterLayer),
     Layer.provideMerge(sqlInfrastructureLayer)
@@ -474,9 +565,12 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
   inputTokens: overrides.inputTokens ?? 10
 })
 
-const makeMockLanguageModel = (): LanguageModel.Service => ({
-  generateText: (_options: any) =>
-    Effect.succeed(
+const makeMockLanguageModel = (capturedPrompts?: Array<string>): LanguageModel.Service => ({
+  generateText: (options: any) => {
+    if (capturedPrompts) {
+      capturedPrompts.push(JSON.stringify(options))
+    }
+    return Effect.succeed(
       new LanguageModel.GenerateTextResponse([
         Response.makePart("tool-call", {
           id: "call_echo_1",
@@ -514,7 +608,8 @@ const makeMockLanguageModel = (): LanguageModel.Service => ({
           response: undefined
         })
       ])
-    ) as any,
+    ) as any
+  },
   streamText: (_options: any) => Stream.empty as any,
   generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
 })

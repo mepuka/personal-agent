@@ -16,7 +16,7 @@ import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry } from "../ai/ToolRegistry.js"
-import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
+import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../PortTags.js"
 
 export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_accepted",
@@ -96,6 +96,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const agentStatePort = yield* AgentStatePortTag
     const sessionTurnPort = yield* SessionTurnPortTag
     const governancePort = yield* GovernancePortTag
+    const memoryPort = yield* MemoryPortTag
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
     const agentConfig = yield* AgentConfig
@@ -170,6 +171,16 @@ export const layer = TurnProcessingWorkflow.toLayer(
       })
     }).asEffect()
 
+    // Retrieve semantic memories (outside Activity — read-only snapshot).
+    // No query filter: inject all semantic memories as context, bounded by limit.
+    // Semantic search (vector/embedding) will replace this in a future slice.
+    const memoryContext = yield* memoryPort.search(
+      payload.agentId as AgentId,
+      { tier: "SemanticMemory", limit: 20 }
+    ).pipe(
+      Effect.map((result) => result.items)
+    )
+
     const modelResponse = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
@@ -194,8 +205,14 @@ export const layer = TurnProcessingWorkflow.toLayer(
         yield* Ref.set(chat.history, withSystem)
       }
 
+      // Build prompt with memory context prepended
+      const userPrompt = toPromptText(payload.content, payload.contentBlocks)
+      const enhancedPrompt = memoryContext.length > 0
+        ? formatMemoryBlock(memoryContext) + userPrompt
+        : userPrompt
+
       return yield* chat.generateText({
-        prompt: toPromptText(payload.content, payload.contentBlocks),
+        prompt: enhancedPrompt,
         toolkit: toolkitBundle.toolkit
       }).pipe(
         Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer))
@@ -363,6 +380,11 @@ const toPromptText = (
     .trim()
 
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
+}
+
+const formatMemoryBlock = (items: ReadonlyArray<{ content: string }>): string => {
+  const lines = items.map((item) => `- ${item.content}`).join("\n")
+  return `[Relevant Memory]\n${lines}\n\n`
 }
 
 const toErrorMessage = (error: unknown): string => {
