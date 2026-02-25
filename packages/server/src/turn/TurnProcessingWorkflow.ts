@@ -195,24 +195,18 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
-      // Inject system prompt on first turn
-      const currentHistory = yield* Ref.get(chat.history)
-      if (currentHistory.content.length === 0) {
-        const withSystem = Prompt.setSystem(currentHistory, profile.persona.systemPrompt)
-        yield* Ref.set(chat.history, withSystem)
-      }
-
-      // Inject semantic memory context into system prompt
-      if (semanticMemories.length > 0) {
-        const memoryBlock = "\n\n[Relevant Memory]\n"
+      // Build system prompt: base persona + fresh memory context each turn
+      const baseSystemPrompt = profile.persona.systemPrompt
+      const systemPromptWithMemory = semanticMemories.length > 0
+        ? baseSystemPrompt
+          + "\n\n[Relevant Memory]\n"
           + semanticMemories.map((m) => `- ${m.content}`).join("\n")
-        const historyWithMemory = yield* Ref.get(chat.history)
-        const systemMsg = historyWithMemory.content.find((m) => m.role === "system")
-        if (systemMsg) {
-          const updated = Prompt.setSystem(historyWithMemory, systemMsg.content + memoryBlock)
-          yield* Ref.set(chat.history, updated)
-        }
-      }
+        : baseSystemPrompt
+
+      // Set system prompt (always re-set to avoid stale memory accumulation)
+      const currentHistory = yield* Ref.get(chat.history)
+      const withSystem = Prompt.setSystem(currentHistory, systemPromptWithMemory)
+      yield* Ref.set(chat.history, withSystem)
 
       return yield* chat.generateText({
         prompt: toPromptText(payload.content, payload.contentBlocks),
