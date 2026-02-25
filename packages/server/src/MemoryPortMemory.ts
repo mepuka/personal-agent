@@ -2,7 +2,9 @@ import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
 import type { MemoryItemRecord, MemoryPort, MemorySearchQuery, MemorySearchResult } from "@template/domain/ports"
 import type { Instant } from "@template/domain/ports"
-import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import { DateTime, Effect, HashMap, Layer, Option, Ref, Schema, ServiceMap } from "effect"
+
+// --- Offset cursor codec via Schema ---
 
 export class MemoryPortMemory extends ServiceMap.Service<MemoryPortMemory>()("server/MemoryPortMemory", {
   make: Effect.gen(function*() {
@@ -92,10 +94,9 @@ const encodeMemoryCursor = (offset: number): string =>
   Buffer.from(String(offset)).toString("base64url")
 
 const decodeMemoryCursor = (cursor: string): number => {
-  try {
-    const n = Number(Buffer.from(cursor, "base64url").toString())
-    return Number.isFinite(n) && Number.isInteger(n) && n >= 0 ? n : 0
-  } catch {
-    return 0
-  }
+  const str = Buffer.from(cursor, "base64url").toString("utf8")
+  const opt = Schema.decodeOption(Schema.FiniteFromString)(str)
+  if (Option.isNone(opt)) return 0
+  const n = opt.value
+  return Number.isInteger(n) && n >= 0 ? n : 0
 }

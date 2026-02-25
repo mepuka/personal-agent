@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { DateTime, Effect, Layer } from "effect"
+import fc from "fast-check"
+import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -425,6 +426,118 @@ describe("MemoryPortSqlite", () => {
       }
 
       expect(allItems).toEqual(["Item 4", "Item 3", "Item 2", "Item 1", "Item 0"])
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+})
+
+describe("MemoryPortSqlite property-based tests", () => {
+  const CursorSchema = Schema.Struct({
+    createdAt: Schema.String,
+    rowid: Schema.Int
+  })
+  const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
+
+  it("cursor roundtrip: encode → decode is identity for arbitrary CursorData", () => {
+    const arb = Schema.toArbitrary(CursorSchema)
+
+    fc.assert(
+      fc.property(arb, (data) => {
+        const json = Schema.encodeSync(CursorFromJsonString)(data)
+        const base64 = Buffer.from(json).toString("base64url")
+        const decoded = Option.getOrNull(
+          Schema.decodeOption(CursorFromJsonString)(
+            Buffer.from(base64, "base64url").toString("utf8")
+          )
+        )
+        expect(decoded).not.toBeNull()
+        expect(decoded!.createdAt).toBe(data.createdAt)
+        expect(decoded!.rowid).toBe(data.rowid)
+      }),
+      { numRuns: 200 }
+    )
+  })
+
+  it("malformed cursors never crash, always decode to null", () => {
+    fc.assert(
+      fc.property(fc.string(), (randomString) => {
+        const decoded = Option.getOrNull(
+          Schema.decodeOption(CursorFromJsonString)(
+            Buffer.from(randomString, "base64url").toString("utf8")
+          )
+        )
+        // Either null (invalid) or a valid cursor shape
+        if (decoded !== null) {
+          expect(typeof decoded.createdAt).toBe("string")
+          expect(Number.isInteger(decoded.rowid)).toBe(true)
+        }
+      }),
+      { numRuns: 500 }
+    )
+  })
+
+  it.effect("pagination completeness: walking all pages yields all items for any limit", () => {
+    const dbPath = testDatabasePath("mem-prop-pagination")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const itemCount = 10
+
+      for (let i = 0; i < itemCount; i++) {
+        yield* port.encode(AGENT_ID, [
+          { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: `PropItem ${i}` }
+        ], instant(`2026-02-25T${String(10 + i).padStart(2, "0")}:00:00.000Z`))
+      }
+
+      for (const limit of [1, 2, 3, 5, 7, 10, 20]) {
+        for (const sort of ["CreatedAsc", "CreatedDesc"] as const) {
+          const allItems: Array<string> = []
+          let cursor: string | null = null
+          let pages = 0
+
+          do {
+            const result = yield* port.search(AGENT_ID, {
+              sort,
+              limit,
+              ...(cursor ? { cursor } : {})
+            })
+            allItems.push(...result.items.map((i) => i.content))
+            cursor = result.cursor
+            pages++
+            if (pages > 20) break
+          } while (cursor !== null)
+
+          expect(allItems).toHaveLength(itemCount)
+          expect(new Set(allItems).size).toBe(itemCount)
+        }
+      }
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("search handles arbitrary cursor strings without crashing", () => {
+    const dbPath = testDatabasePath("mem-prop-fuzz-cursor")
+    const layer = makeMemoryLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "Test item" }
+      ], now)
+
+      const samples = fc.sample(fc.string(), 100)
+      for (const randomCursor of samples) {
+        const result = yield* port.search(AGENT_ID, { limit: 10, cursor: randomCursor })
+        expect(result.items.length).toBeGreaterThanOrEqual(0)
+        expect(result.totalCount).toBeGreaterThanOrEqual(0)
+      }
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

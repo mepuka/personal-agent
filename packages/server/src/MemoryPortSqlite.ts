@@ -1,12 +1,21 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
 import type { Instant, MemoryItemRecord, MemoryPort, MemorySearchResult } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
 const InstantFromSqlString = Schema.DateTimeUtcFromString
 const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
 const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+
+// --- Cursor codec via Schema ---
+
+const CursorSchema = Schema.Struct({
+  createdAt: Schema.String,
+  rowid: Schema.Int
+})
+
+const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
 
 export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
   "server/MemoryPortSqlite",
@@ -141,31 +150,15 @@ const parseRow = (row: any): MemoryItemRecord => ({
   updatedAt: decodeSqlInstant(row.updated_at)
 })
 
-interface CursorData {
-  readonly createdAt: string
-  readonly rowid: number
-}
-
 const encodeCursor = (createdAt: string, rowid: number): string =>
-  Buffer.from(JSON.stringify({ createdAt, rowid })).toString("base64url")
+  Buffer.from(Schema.encodeSync(CursorFromJsonString)({ createdAt, rowid })).toString("base64url")
 
-const decodeCursor = (cursor: string): CursorData | null => {
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString())
-    if (
-      typeof parsed !== "object" || parsed === null ||
-      typeof parsed.createdAt !== "string" ||
-      typeof parsed.rowid !== "number" ||
-      !Number.isFinite(parsed.rowid) ||
-      !Number.isInteger(parsed.rowid)
-    ) {
-      return null
-    }
-    return { createdAt: parsed.createdAt, rowid: parsed.rowid }
-  } catch {
-    return null
-  }
-}
+const decodeCursor = (cursor: string): { readonly createdAt: string; readonly rowid: number } | null =>
+  Option.getOrNull(
+    Schema.decodeOption(CursorFromJsonString)(
+      Buffer.from(cursor, "base64url").toString("utf8")
+    )
+  )
 
 const escapeSql = (value: string): string =>
   value.replace(/'/g, "''")
