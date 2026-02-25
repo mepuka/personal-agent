@@ -1,5 +1,5 @@
-import type { AgentId } from "@template/domain/ids"
 import { TokenBudgetExceeded } from "@template/domain/errors"
+import type { AgentId } from "@template/domain/ids"
 import { Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -50,8 +50,7 @@ export const layer = AgentEntity.toLayer(Effect.gen(function*() {
   const port = yield* AgentStatePortTag
 
   return {
-    getState: ({ payload }) =>
-      port.get(payload.agentId as AgentId),
+    getState: ({ payload }) => port.get(payload.agentId as AgentId),
 
     upsertState: ({ payload }) =>
       port.upsert({

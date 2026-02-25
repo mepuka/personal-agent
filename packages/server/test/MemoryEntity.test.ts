@@ -2,10 +2,9 @@ import { describe, expect, it } from "@effect/vitest"
 import type { AgentId } from "@template/domain/ids"
 import type { Instant, MemoryPort } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
-import { ShardingConfig } from "effect/unstable/cluster"
-import { Entity } from "effect/unstable/cluster"
+import { Entity, ShardingConfig } from "effect/unstable/cluster"
+import { layer as MemoryEntityLayer, MemoryEntity } from "../src/entities/MemoryEntity.js"
 import { MemoryPortMemory } from "../src/MemoryPortMemory.js"
-import { MemoryEntity, layer as MemoryEntityLayer } from "../src/entities/MemoryEntity.js"
 import { MemoryPortTag } from "../src/PortTags.js"
 
 describe("MemoryEntity", () => {
@@ -22,8 +21,7 @@ describe("MemoryEntity", () => {
       })
 
       expect(results).toEqual([])
-    }).pipe(Effect.provide(makeTestLayer()))
-  )
+    }).pipe(Effect.provide(makeTestLayer())))
 
   it.effect("encode + retrieve round-trip", () =>
     Effect.gen(function*() {
@@ -57,8 +55,7 @@ describe("MemoryEntity", () => {
 
       expect(results.length).toBe(1)
       expect(results[0]?.content).toBe("remember this fact")
-    }).pipe(Effect.provide(makeTestLayer()))
-  )
+    }).pipe(Effect.provide(makeTestLayer())))
 
   it.effect("forget removes items before cutoff", () =>
     Effect.gen(function*() {
@@ -103,8 +100,7 @@ describe("MemoryEntity", () => {
 
       expect(remaining.length).toBe(1)
       expect(remaining[0]?.content).toBe("new memory")
-    }).pipe(Effect.provide(makeTestLayer()))
-  )
+    }).pipe(Effect.provide(makeTestLayer())))
 })
 
 const makeTestLayer = () => {

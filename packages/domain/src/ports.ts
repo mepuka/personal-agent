@@ -9,7 +9,6 @@ import type {
 } from "./errors.js"
 import type {
   AgentId,
-  ChannelId,
   AuditEntryId,
   ChannelId,
   ConversationId,
