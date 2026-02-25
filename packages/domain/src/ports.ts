@@ -114,7 +114,6 @@ export interface TurnRecord {
 
 export interface MemoryQuery {
   readonly agentId: AgentId
-  readonly sessionId: SessionId
   readonly text: string
   readonly limit: number
 }
@@ -123,9 +122,19 @@ export interface MemoryItemRecord {
   readonly memoryItemId: MemoryItemId
   readonly agentId: AgentId
   readonly tier: "WorkingMemory" | "EpisodicMemory" | "SemanticMemory" | "ProceduralMemory"
+  readonly scope: "SessionScope" | "GlobalScope"
+  readonly source: "UserSource" | "SystemSource" | "AgentSource"
   readonly content: string
+  readonly metadataJson: string | null
   readonly generatedByTurnId: TurnId | null
+  readonly sessionId: SessionId | null
+  readonly sensitivity: "Public" | "Internal" | "Confidential" | "Restricted"
+  readonly wasGeneratedBy: AgentId | null
+  readonly wasAttributedTo: AgentId | null
+  readonly governedByRetention: string | null
+  readonly lastAccessTime: Instant | null
   readonly createdAt: Instant
+  readonly updatedAt: Instant
 }
 
 export interface PolicyInput {
@@ -244,7 +253,17 @@ export interface SessionTurnPort {
 export interface MemoryPort {
   readonly retrieve: (query: MemoryQuery) => Effect.Effect<ReadonlyArray<MemoryItemRecord>>
   readonly encode: (
-    items: ReadonlyArray<MemoryItemRecord>,
+    agentId: AgentId,
+    items: ReadonlyArray<{
+      readonly tier: MemoryItemRecord["tier"]
+      readonly scope: MemoryItemRecord["scope"]
+      readonly source: MemoryItemRecord["source"]
+      readonly content: string
+      readonly metadataJson?: string
+      readonly generatedByTurnId?: string
+      readonly sessionId?: string
+      readonly sensitivity?: MemoryItemRecord["sensitivity"]
+    }>,
     now: Instant
   ) => Effect.Effect<ReadonlyArray<MemoryItemId>>
   readonly forget: (agentId: AgentId, cutoff: Instant) => Effect.Effect<number>
