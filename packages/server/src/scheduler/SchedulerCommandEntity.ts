@@ -16,6 +16,7 @@ const SchedulerExecutePayloadFields = {
   startedAt: Schema.DateTimeUtc,
   endedAt: Schema.DateTimeUtc,
   actionRef: Schema.String,
+  ownerAgentId: Schema.String,
   outcome: Schema.Literals(["ExecutionSucceeded", "ExecutionFailed", "ExecutionSkipped"]),
   agentId: Schema.String
 } as const
@@ -49,6 +50,7 @@ export const layer = SchedulerCommandEntity.toLayer(Effect.gen(function*() {
         const ticket: ExecutionTicket = {
           executionId: payload.executionId as ScheduledExecutionId,
           scheduleId: payload.scheduleId as ScheduleId,
+          ownerAgentId: payload.ownerAgentId as AgentId,
           dueAt: payload.dueAt,
           triggerSource: payload.triggerSource as TriggerSource,
           startedAt: payload.startedAt,

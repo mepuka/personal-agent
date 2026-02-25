@@ -1,4 +1,4 @@
-import type { ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
+import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
 import type { Instant, ScheduleRecord, ScheduleSkipReason, TriggerSource } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
 import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, ServiceMap } from "effect"
@@ -7,6 +7,7 @@ import { SchedulePortTag } from "./PortTags.js"
 export interface ExecutionTicket {
   readonly executionId: ScheduledExecutionId
   readonly scheduleId: ScheduleId
+  readonly ownerAgentId: AgentId
   readonly dueAt: Instant
   readonly triggerSource: TriggerSource
   readonly startedAt: Instant
@@ -126,6 +127,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
             case "ConcurrencyAllow": {
               const ticket = createExecutionTicket(
                 schedule.scheduleId,
+                schedule.ownerAgentId,
                 dueAt,
                 triggerSource,
                 now,
@@ -152,6 +154,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
 
               const ticket = createExecutionTicket(
                 schedule.scheduleId,
+                schedule.ownerAgentId,
                 dueAt,
                 triggerSource,
                 now,
@@ -181,6 +184,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
 
               const ticket = createExecutionTicket(
                 schedule.scheduleId,
+                schedule.ownerAgentId,
                 dueAt,
                 triggerSource,
                 now,
@@ -255,6 +259,7 @@ const compareDueCandidates = (
 
 const createExecutionTicket = (
   scheduleId: ScheduleId,
+  ownerAgentId: AgentId,
   dueAt: Instant,
   triggerSource: TriggerSource,
   startedAt: Instant,
@@ -262,6 +267,7 @@ const createExecutionTicket = (
 ): ExecutionTicket => ({
   executionId: makeExecutionId(),
   scheduleId,
+  ownerAgentId,
   dueAt,
   triggerSource,
   startedAt,

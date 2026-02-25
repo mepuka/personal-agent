@@ -1,7 +1,7 @@
-import type { AgentId } from "@template/domain/ids"
 import type { Instant } from "@template/domain/ports"
-import { Effect, Layer, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, ServiceMap } from "effect"
 import { SchedulerRuntime } from "../SchedulerRuntime.js"
+import { SchedulerActionExecutor } from "./SchedulerActionExecutor.js"
 import { SchedulerCommandEntity, type SchedulerExecutePayload } from "./SchedulerCommandEntity.js"
 
 export interface SchedulerDispatchSummary {
@@ -15,6 +15,7 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
   {
     make: Effect.gen(function*() {
       const runtime = yield* SchedulerRuntime
+      const executor = yield* SchedulerActionExecutor
       const makeClient = yield* SchedulerCommandEntity.client
       const client = makeClient("scheduler-command-lane")
 
@@ -24,16 +25,20 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
           let accepted = 0
 
           for (const ticket of tickets) {
+            const outcome = yield* executor.execute(ticket)
+            const endedAt = yield* DateTime.now
+
             const payload: SchedulerExecutePayload = {
               executionId: ticket.executionId,
               scheduleId: ticket.scheduleId,
+              ownerAgentId: ticket.ownerAgentId,
               dueAt: ticket.dueAt,
               triggerSource: ticket.triggerSource,
               startedAt: ticket.startedAt,
-              endedAt: now,
+              endedAt,
               actionRef: ticket.actionRef,
-              outcome: "ExecutionSucceeded",
-              agentId: schedulerAgentId
+              outcome,
+              agentId: ticket.ownerAgentId
             }
 
             const result = yield* client.execute(payload).pipe(Effect.orDie)
@@ -57,5 +62,3 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
 ) {
   static layer = Layer.effect(this, this.make)
 }
-
-const schedulerAgentId = "agent:scheduler" as AgentId

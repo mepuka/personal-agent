@@ -130,7 +130,7 @@ export interface MemoryItemRecord {
 
 export interface PolicyInput {
   readonly agentId: AgentId
-  readonly sessionId: SessionId
+  readonly sessionId: SessionId | null
   readonly action: "InvokeTool" | "WriteMemory" | "ReadMemory" | "ExecuteSchedule"
   readonly toolName?: ToolName
 }

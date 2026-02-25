@@ -16,6 +16,7 @@ import {
   SchedulerCommandEntity,
   type SchedulerExecutePayload
 } from "../src/scheduler/SchedulerCommandEntity.js"
+import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
 
@@ -80,8 +81,9 @@ describe("Scheduler command lane E2E", () => {
         startedAt: ticket!.startedAt,
         endedAt: DateTime.add(now, { seconds: 5 }),
         actionRef: ticket!.actionRef,
+        ownerAgentId: ticket!.ownerAgentId,
         outcome: "ExecutionSucceeded",
-        agentId: "agent:scheduler" as AgentId
+        agentId: ticket!.ownerAgentId
       }
 
       const first = yield* client.execute(payload)
@@ -184,10 +186,15 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
     Layer.provide(governancePortTagLayer)
   )
 
+  const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
+    Layer.provide(governancePortTagLayer)
+  )
+
   const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(schedulerRuntimeLayer),
-    Layer.provide(schedulerCommandLayer)
+    Layer.provide(schedulerCommandLayer),
+    Layer.provide(schedulerActionExecutorLayer)
   )
 
   return Layer.mergeAll(

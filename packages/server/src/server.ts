@@ -36,6 +36,7 @@ import {
 } from "./PortTags.js"
 import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
 import { layer as SchedulerCommandLayer } from "./scheduler/SchedulerCommandEntity.js"
+import { SchedulerActionExecutor } from "./scheduler/SchedulerActionExecutor.js"
 import { SchedulerDispatchLoop } from "./scheduler/SchedulerDispatchLoop.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
@@ -119,10 +120,15 @@ const schedulerCommandLayer = SchedulerCommandLayer.pipe(
   Layer.provide(governancePortTagLayer)
 )
 
+const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
+  Layer.provide(governancePortTagLayer)
+)
+
 const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
   Layer.provide(clusterLayer),
   Layer.provide(schedulerRuntimeLayer),
-  Layer.provide(schedulerCommandLayer)
+  Layer.provide(schedulerCommandLayer),
+  Layer.provide(schedulerActionExecutorLayer)
 )
 
 const memoryPortTagLayer = Layer.effect(
