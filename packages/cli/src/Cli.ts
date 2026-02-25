@@ -1,5 +1,4 @@
-import { FileSystem } from "@effect/platform"
-import { Console, Effect, Option, Stream } from "effect"
+import { Console, Effect, FileSystem, Option, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as readline from "node:readline"
 import { ChatClient } from "./RuntimeClient.js"

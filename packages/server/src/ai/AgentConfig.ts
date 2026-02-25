@@ -1,7 +1,6 @@
-import { FileSystem } from "@effect/platform"
 import type { AgentProfile, ProviderConfig } from "@template/domain/config"
 import { AgentConfigFileSchema } from "@template/domain/config"
-import { Effect, Layer, Schema, ServiceMap } from "effect"
+import { Effect, FileSystem, Layer, Schema, ServiceMap } from "effect"
 
 export class AgentProfileNotFound extends Schema.ErrorClass<AgentProfileNotFound>(
   "AgentProfileNotFound"
