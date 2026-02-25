@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as Response from "effect/unstable/ai/Response"
 import {
   decodeUsageFromJson,
@@ -63,7 +63,8 @@ describe("ContentBlockCodec", () => {
           toolName: "my_tool",
           isError: false
         })
-        expect(JSON.parse((blocks[0] as any).outputJson)).toEqual({ text: "ok" })
+        const outputJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))((blocks[0] as any).outputJson)
+        expect(outputJson).toEqual({ text: "ok" })
       }))
 
     it.effect("converts ToolResultPart (failure) to ToolResultBlock with isError: true", () =>
@@ -157,7 +158,7 @@ describe("ContentBlockCodec", () => {
         const json = yield* encodeUsageToJson(usage)
         expect(typeof json).toBe("string")
 
-        const parsed = JSON.parse(json)
+        const parsed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(json) as any
         expect(parsed.inputTokens.total).toBe(10)
         expect(parsed.outputTokens.total).toBe(6)
 

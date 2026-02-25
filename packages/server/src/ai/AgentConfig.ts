@@ -62,10 +62,9 @@ export class AgentConfig extends ServiceMap.Service<AgentConfig>()(
         Effect.orDie
       )
 
-      const raw = yield* Effect.try({
-        try: () => Bun.YAML.parse(yamlContent),
-        catch: (e) => new Error(`Failed to parse ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
-      }).pipe(Effect.orDie)
+      const raw = yield* Effect.sync(() => Bun.YAML.parse(yamlContent)).pipe(
+        Effect.orDie
+      )
 
       return yield* makeFromParsed(raw)
     })
