@@ -1,10 +1,10 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
 import type { GovernancePort, Instant, PolicyDecision, PolicyInput } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Ref } from "effect"
+import { DateTime, Effect, Layer } from "effect"
 import { GovernancePortTag } from "../src/PortTags.js"
-import type { ExecutionTicket } from "../src/SchedulerRuntime.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
+import type { ExecutionTicket } from "../src/SchedulerRuntime.js"
 
 describe("SchedulerActionExecutor", () => {
   it.effect("action:log returns ExecutionSucceeded when governance allows", () =>

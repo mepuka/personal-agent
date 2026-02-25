@@ -38,6 +38,7 @@ import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
 import { layer as SchedulerCommandLayer } from "./scheduler/SchedulerCommandEntity.js"
 import { SchedulerActionExecutor } from "./scheduler/SchedulerActionExecutor.js"
 import { SchedulerDispatchLoop } from "./scheduler/SchedulerDispatchLoop.js"
+import { SchedulerTickService } from "./scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
@@ -131,6 +132,10 @@ const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
   Layer.provide(schedulerActionExecutorLayer)
 )
 
+const schedulerTickLayer = SchedulerTickService.layer.pipe(
+  Layer.provide(schedulerDispatchLayer)
+)
+
 const memoryPortTagLayer = Layer.effect(
   MemoryPortTag,
   Effect.gen(function*() {
@@ -203,6 +208,7 @@ const PortsLive = Layer.mergeAll(
   schedulerRuntimeLayer,
   schedulerCommandLayer,
   schedulerDispatchLayer,
+  schedulerTickLayer,
   aiConfigLayer,
   languageModelLayer,
   chatPersistenceLayer,
