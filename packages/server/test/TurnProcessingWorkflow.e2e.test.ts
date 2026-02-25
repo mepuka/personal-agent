@@ -417,23 +417,29 @@ const makeTurnProcessingLayer = (
     Layer.provide(workflowEngineLayer)
   )
 
-  return Layer.mergeAll(
-    sqlInfrastructureLayer,
-    agentStateSqliteLayer,
-    sessionTurnSqliteLayer,
-    governanceSqliteLayer,
-    agentStateTagLayer,
-    sessionTurnTagLayer,
-    governanceTagLayer,
-    agentConfigLayer,
-    mockModelRegistryLayer,
-    chatPersistenceLayer,
-    toolRegistryLayer,
-    workflowEngineLayer,
-    turnWorkflowLayer,
-    turnRuntimeLayer
-  ).pipe(
-    Layer.provideMerge(clusterLayer)
+  return turnRuntimeLayer.pipe(
+    Layer.provideMerge(turnWorkflowLayer),
+    Layer.provideMerge(workflowEngineLayer),
+    Layer.provideMerge(Layer.mergeAll(
+      toolRegistryLayer,
+      mockModelRegistryLayer
+    )),
+    Layer.provideMerge(Layer.mergeAll(
+      chatPersistenceLayer,
+      agentConfigLayer
+    )),
+    Layer.provideMerge(Layer.mergeAll(
+      agentStateTagLayer,
+      sessionTurnTagLayer,
+      governanceTagLayer
+    )),
+    Layer.provideMerge(Layer.mergeAll(
+      agentStateSqliteLayer,
+      sessionTurnSqliteLayer,
+      governanceSqliteLayer
+    )),
+    Layer.provideMerge(clusterLayer),
+    Layer.provideMerge(sqlInfrastructureLayer)
   )
 }
 

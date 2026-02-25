@@ -1,4 +1,4 @@
-import { Effect, Ref, Schema } from "effect"
+import { Effect, Layer, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Activity from "effect/unstable/workflow/Activity"
@@ -198,8 +198,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
         prompt: toPromptText(payload.content, payload.contentBlocks),
         toolkit: toolkitBundle.toolkit
       }).pipe(
-        Effect.provide(toolkitBundle.handlerLayer),
-        Effect.provide(lmLayer)
+        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer))
       )
     }).pipe(
       Effect.catch((error) =>

@@ -199,28 +199,39 @@ const channelEntityLayer = ChannelEntityLayer.pipe(
   Layer.provide(sessionEntityLayer)
 )
 
-const PortsLive = Layer.mergeAll(
-  MemoryPortMemory.layer,
+const portTagsLayer = Layer.mergeAll(
   memoryPortTagLayer,
   agentStatePortTagLayer,
   sessionTurnPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
-  channelPortTagLayer,
-  schedulerRuntimeLayer,
-  schedulerCommandLayer,
-  schedulerDispatchLayer,
-  schedulerTickLayer,
-  agentConfigLayer,
-  modelRegistryLayer,
-  chatPersistenceLayer,
-  toolRegistryLayer,
-  turnProcessingWorkflowLayer,
-  turnProcessingRuntimeLayer,
-  agentEntityLayer,
-  sessionEntityLayer,
-  channelEntityLayer
-).pipe(
+  channelPortTagLayer
+)
+
+const schedulerLayer = schedulerTickLayer.pipe(
+  Layer.provideMerge(schedulerDispatchLayer),
+  Layer.provideMerge(schedulerCommandLayer),
+  Layer.provideMerge(schedulerRuntimeLayer)
+)
+
+const workflowLayer = turnProcessingRuntimeLayer.pipe(
+  Layer.provideMerge(turnProcessingWorkflowLayer)
+)
+
+const entityLayer = channelEntityLayer.pipe(
+  Layer.provideMerge(sessionEntityLayer),
+  Layer.provideMerge(agentEntityLayer)
+)
+
+const PortsLive = entityLayer.pipe(
+  Layer.provideMerge(workflowLayer),
+  Layer.provideMerge(toolRegistryLayer),
+  Layer.provideMerge(modelRegistryLayer),
+  Layer.provideMerge(chatPersistenceLayer),
+  Layer.provideMerge(agentConfigLayer),
+  Layer.provideMerge(schedulerLayer),
+  Layer.provideMerge(portTagsLayer),
+  Layer.provideMerge(MemoryPortMemory.layer),
   Layer.provideMerge(clusterLayer)
 )
 
