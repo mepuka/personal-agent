@@ -179,6 +179,7 @@ const sessionEntityLayer = SessionEntityLayer.pipe(
 
 const channelEntityLayer = ChannelEntityLayer.pipe(
   Layer.provide(clusterLayer),
+  Layer.provide(agentStatePortTagLayer),
   Layer.provide(channelPortTagLayer),
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(turnProcessingRuntimeLayer),

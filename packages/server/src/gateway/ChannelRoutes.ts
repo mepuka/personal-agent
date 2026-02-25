@@ -1,6 +1,6 @@
 import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
-import type { ChannelType } from "@template/domain/status"
-import { Effect, Stream } from "effect"
+import { ChannelType } from "@template/domain/status"
+import { Effect, Layer, Option, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -23,7 +23,43 @@ const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   data: JSON.stringify(event)
 })
 
+const CreateChannelRequest = Schema.Struct({
+  channelType: Schema.Union([ChannelType, Schema.Undefined]),
+  agentId: Schema.Union([Schema.String, Schema.Undefined])
+})
+
+const SendMessageRequest = Schema.Struct({
+  content: Schema.String
+})
+
+const decodeCreateChannelRequest = Schema.decodeUnknownOption(CreateChannelRequest)
+const decodeSendMessageRequest = Schema.decodeUnknownOption(SendMessageRequest)
+
+const badRequest = (message: string) =>
+  HttpServerResponse.json(
+    {
+      error: "BadRequest",
+      message
+    },
+    { status: 400 }
+  )
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const getStringField = (value: unknown, key: string): string => {
+  if (!isRecord(value)) {
+    return ""
+  }
+
+  const field = value[key]
+  return typeof field === "string" ? field : ""
+}
+
 const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
+  const turnId = getStringField(error, "turnId")
+  const sessionId = getStringField(error, "sessionId")
+
   if (
     typeof error === "object" &&
     error !== null &&
@@ -36,8 +72,8 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
       return {
         type: "turn.failed",
         sequence: Number.MAX_SAFE_INTEGER,
-        turnId: "",
-        sessionId: "",
+        turnId,
+        sessionId,
         errorCode,
         message: `Channel not found: ${channelId}`
       }
@@ -50,8 +86,8 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
     return {
       type: "turn.failed",
       sequence: Number.MAX_SAFE_INTEGER,
-      turnId: "",
-      sessionId: "",
+      turnId,
+      sessionId,
       errorCode,
       message
     }
@@ -60,33 +96,43 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
   return {
     type: "turn.failed",
     sequence: Number.MAX_SAFE_INTEGER,
-    turnId: "",
-    sessionId: "",
+    turnId,
+    sessionId,
     errorCode: "TurnProcessingError",
     message: error instanceof Error ? error.message : String(error)
   }
 }
 
 // ---------------------------------------------------------------------------
-// Routes — use HttpRouter.route (not HttpRouter.add) for proper streaming
-// scope transfer. HttpRouter.add creates a Layer whose handler scope closes
-// before a streaming response body finishes writing.
+// Routes
 // ---------------------------------------------------------------------------
 
-const createChannel = HttpRouter.route(
+const createChannel = HttpRouter.add(
   "POST",
   "/channels/:channelId/create",
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* ChannelEntity.client
       const channelId = extractParam(request.url, 1)
-      const body = yield* request.json
+      const rawBody = yield* request.json
+      if (!isRecord(rawBody)) {
+        return yield* badRequest("Expected JSON object payload")
+      }
+
+      const normalizedBody = {
+        channelType: rawBody.channelType ?? "CLI",
+        agentId: rawBody.agentId ?? "agent:bootstrap"
+      }
+      const decodedBody = decodeCreateChannelRequest(normalizedBody)
+      if (Option.isNone(decodedBody)) {
+        return yield* badRequest("Invalid create channel payload")
+      }
+
       const client = makeClient(channelId)
 
-      const typed = body as Record<string, unknown>
       yield* client.createChannel({
-        channelType: (typed.channelType as ChannelType | undefined) ?? "CLI",
-        agentId: (typed.agentId as string | undefined) ?? "agent:bootstrap"
+        channelType: decodedBody.value.channelType ?? "CLI",
+        agentId: decodedBody.value.agentId ?? "agent:bootstrap"
       })
 
       return yield* HttpServerResponse.json({ ok: true })
@@ -100,18 +146,23 @@ const createChannel = HttpRouter.route(
     )
 )
 
-const sendMessage = HttpRouter.route(
+const sendMessage = HttpRouter.add(
   "POST",
   "/channels/:channelId/messages",
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* ChannelEntity.client
       const channelId = extractParam(request.url, 1)
-      const body = yield* request.json
+      const rawBody = yield* request.json
+      const decodedBody = decodeSendMessageRequest(rawBody)
+      if (Option.isNone(decodedBody)) {
+        return yield* badRequest("Invalid send message payload")
+      }
+
       const client = makeClient(channelId)
 
       const stream = client.sendMessage({
-        content: (body as Record<string, unknown>).content as string
+        content: decodedBody.value.content
       }).pipe(
         Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
         Stream.map(toSseEvent),
@@ -129,7 +180,7 @@ const sendMessage = HttpRouter.route(
     })
 )
 
-const getHistory = HttpRouter.route(
+const getHistory = HttpRouter.add(
   "POST",
   "/channels/:channelId/history",
   (request) =>
@@ -156,14 +207,14 @@ const getHistory = HttpRouter.route(
     )
 )
 
-const health = HttpRouter.route(
+const health = HttpRouter.add(
   "GET",
   "/health",
-  HttpServerResponse.json({ status: "ok", service: "personal-agent" })
+  () => HttpServerResponse.json({ status: "ok", service: "personal-agent" })
 )
 
 // ---------------------------------------------------------------------------
 // Combined layer
 // ---------------------------------------------------------------------------
 
-export const layer = HttpRouter.addAll([createChannel, sendMessage, getHistory, health])
+export const layer = Layer.mergeAll(createChannel, sendMessage, getHistory, health)

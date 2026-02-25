@@ -8,7 +8,9 @@ const BASE_URL = "http://localhost:3000"
 
 export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient", {
   make: Effect.gen(function*() {
-    const httpClient = yield* HttpClient.HttpClient
+    const httpClient = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.filterStatusOk
+    )
 
     const createChannel = (channelId: string, agentId: string) =>
       HttpClientRequest.bodyJsonUnsafe(
