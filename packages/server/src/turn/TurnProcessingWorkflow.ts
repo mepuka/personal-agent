@@ -1,6 +1,5 @@
 import { Effect, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
-import type * as Response from "effect/unstable/ai/Response"
 import * as Activity from "effect/unstable/workflow/Activity"
 import * as Workflow from "effect/unstable/workflow/Workflow"
 import { ContextWindowExceeded, SessionNotFound, TokenBudgetExceeded } from "../../../domain/src/errors.js"
@@ -11,6 +10,8 @@ import {
   ContentBlock as ContentBlockSchema,
   type TurnRecord
 } from "../../../domain/src/ports.js"
+import { ModelFinishReason } from "../../../domain/src/status.js"
+import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ToolRegistry } from "../ai/ToolRegistry.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
 
@@ -41,7 +42,7 @@ export const ProcessTurnResult = Schema.Struct({
   auditReasonCode: TurnAuditReasonCode,
   assistantContent: Schema.String,
   assistantContentBlocks: Schema.Array(ContentBlockSchema),
-  modelFinishReason: Schema.Union([Schema.String, Schema.Null]),
+  modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null])
 })
 export type ProcessTurnResult = typeof ProcessTurnResult.Type
@@ -78,8 +79,6 @@ const PolicyDecisionSchema = Schema.Struct({
 })
 
 const PersistTurnError = Schema.Union([SessionNotFound, ContextWindowExceeded])
-const JsonFromString = Schema.UnknownFromJsonString
-const encodeUnknownJson = Schema.encodeUnknownEffect(JsonFromString)
 
 export const TurnProcessingWorkflow = Workflow.make({
   name: "TurnProcessingWorkflow",
@@ -203,8 +202,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
     const assistantResult = yield* Effect.gen(function*() {
       const assistantContent = modelResponse.text
-      const assistantContentBlocks = yield* toDomainContentBlocks(modelResponse.content)
-      const modelUsageJson = yield* encodeUnknownJson(modelResponse.usage)
+      const assistantContentBlocks = yield* encodePartsToContentBlocks(modelResponse.content)
+      const modelUsageJson = yield* encodeUsageToJson(modelResponse.usage)
       return {
         assistantContent,
         assistantContentBlocks,
@@ -230,13 +229,15 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     )
 
+    const modelFinishReason = encodeFinishReason(modelResponse.finishReason)
+
     yield* Activity.make({
       name: "PersistAssistantTurn",
       execute: sessionTurnPort.appendTurn(
         makeAssistantTurn(payload, {
           assistantContent: assistantResult.assistantContent,
           assistantContentBlocks: assistantResult.assistantContentBlocks,
-          modelFinishReason: modelResponse.finishReason,
+          modelFinishReason,
           modelUsageJson: assistantResult.modelUsageJson
         })
       )
@@ -255,7 +256,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
       auditReasonCode: "turn_processing_accepted",
       assistantContent: assistantResult.assistantContent,
       assistantContentBlocks: assistantResult.assistantContentBlocks,
-      modelFinishReason: modelResponse.finishReason,
+      modelFinishReason,
       modelUsageJson: assistantResult.modelUsageJson
     } as const
   })
@@ -310,7 +311,7 @@ const makeAssistantTurn = (
   details: {
     readonly assistantContent: string
     readonly assistantContentBlocks: ReadonlyArray<ContentBlock>
-    readonly modelFinishReason: string
+    readonly modelFinishReason: ModelFinishReason
     readonly modelUsageJson: string
   }
 ): TurnRecord => ({
@@ -344,68 +345,6 @@ const toPromptText = (
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
 }
 
-const toDomainContentBlocks = (
-  parts: ReadonlyArray<Response.Part<any>>
-): Effect.Effect<ReadonlyArray<ContentBlock>, Schema.SchemaError> =>
-  Effect.gen(function*() {
-    const blocks: Array<ContentBlock> = []
-
-    for (const part of parts) {
-      switch (part.type) {
-        case "text": {
-          blocks.push({
-            contentBlockType: "TextBlock",
-            text: part.text
-          })
-          break
-        }
-        case "tool-call": {
-          blocks.push({
-            contentBlockType: "ToolUseBlock",
-            toolCallId: part.id,
-            toolName: part.name,
-            inputJson: yield* encodeUnknownJson(part.params)
-          })
-          break
-        }
-        case "tool-result": {
-          blocks.push({
-            contentBlockType: "ToolResultBlock",
-            toolCallId: part.id,
-            toolName: part.name,
-            outputJson: yield* encodeUnknownJson(part.result),
-            isError: part.isFailure
-          })
-          break
-        }
-        case "file": {
-          if (part.mediaType.startsWith("image/")) {
-            blocks.push({
-              contentBlockType: "ImageBlock",
-              mediaType: part.mediaType,
-              source: toImageSource(part.data),
-              altText: null
-            })
-          }
-          break
-        }
-        default:
-          break
-      }
-    }
-
-    return blocks
-  })
-
-const toImageSource = (data: string | Uint8Array | URL): string => {
-  if (typeof data === "string") {
-    return data
-  }
-  if (data instanceof URL) {
-    return data.toString()
-  }
-  return `data:application/octet-stream;base64,${Buffer.from(data).toString("base64")}`
-}
 const toErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message

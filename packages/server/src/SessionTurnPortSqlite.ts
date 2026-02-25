@@ -10,7 +10,7 @@ import {
   type SessionTurnPort,
   type TurnRecord
 } from "../../domain/src/ports.js"
-import { AgentRole } from "../../domain/src/status.js"
+import { AgentRole, ModelFinishReason } from "../../domain/src/status.js"
 
 const SessionRowSchema = Schema.Struct({
   session_id: Schema.String,
@@ -30,7 +30,7 @@ const TurnRowSchema = Schema.Struct({
   message_id: Schema.String,
   message_content: Schema.String,
   content_blocks_json: Schema.String,
-  model_finish_reason: Schema.Union([Schema.String, Schema.Null]),
+  model_finish_reason: Schema.Union([ModelFinishReason, Schema.Null]),
   model_usage_json: Schema.Union([Schema.String, Schema.Null]),
   created_at: Schema.String
 })

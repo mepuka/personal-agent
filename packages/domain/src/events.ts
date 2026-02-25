@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { ContentBlock } from "./ports.js"
+import { ModelFinishReason } from "./status.js"
 
 export class SubmitTurnRequest extends Schema.Class<SubmitTurnRequest>("SubmitTurnRequest")({
   turnId: Schema.String,
@@ -57,7 +58,7 @@ export class TurnCompletedEvent extends Schema.Class<TurnCompletedEvent>(
   sessionId: Schema.String,
   accepted: Schema.Boolean,
   auditReasonCode: Schema.String,
-  modelFinishReason: Schema.Union([Schema.String, Schema.Null]),
+  modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null])
 }) {}
 

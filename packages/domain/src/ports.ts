@@ -26,6 +26,7 @@ import type {
   ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
+  ModelFinishReason,
   PermissionMode,
   QuotaPeriod,
   ScheduleStatus
@@ -106,7 +107,7 @@ export interface TurnRecord {
   readonly participantRole: AgentRole
   readonly participantAgentId: AgentId | null
   readonly message: MessageRecord
-  readonly modelFinishReason: string | null
+  readonly modelFinishReason: ModelFinishReason | null
   readonly modelUsageJson: string | null
   readonly createdAt: Instant
 }

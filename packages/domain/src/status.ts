@@ -60,6 +60,18 @@ export const QuotaPeriod = Schema.Literals([
 ])
 export type QuotaPeriod = typeof QuotaPeriod.Type
 
+export const ModelFinishReason = Schema.Literals([
+  "stop",
+  "length",
+  "content-filter",
+  "tool-calls",
+  "error",
+  "pause",
+  "other",
+  "unknown"
+])
+export type ModelFinishReason = typeof ModelFinishReason.Type
+
 export const ChannelType = Schema.Literals([
   "CLI",
   "HTTP"

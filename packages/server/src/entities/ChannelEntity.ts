@@ -3,7 +3,7 @@ import { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, ConversationId, SessionId } from "@template/domain/ids"
 import type { AgentState } from "@template/domain/ports"
 import { ContentBlock } from "@template/domain/ports"
-import { ChannelType } from "@template/domain/status"
+import { ChannelType, ModelFinishReason } from "@template/domain/status"
 import { Cause, DateTime, Effect, Schema, Stream } from "effect"
 import { ClusterSchema, Entity, Sharding } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -27,7 +27,7 @@ const TurnRecordSchema = Schema.Struct({
     content: Schema.String,
     contentBlocks: Schema.Array(ContentBlock)
   }),
-  modelFinishReason: Schema.Union([Schema.String, Schema.Null]),
+  modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
   createdAt: Schema.DateTimeUtc
 })
