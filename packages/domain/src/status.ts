@@ -77,3 +77,9 @@ export const ChannelType = Schema.Literals([
   "HTTP"
 ])
 export type ChannelType = typeof ChannelType.Type
+
+export const MemorySortOrder = Schema.Literals([
+  "CreatedDesc",
+  "CreatedAsc"
+])
+export type MemorySortOrder = typeof MemorySortOrder.Type

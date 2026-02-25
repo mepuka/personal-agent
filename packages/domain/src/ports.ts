@@ -22,10 +22,17 @@ import type {
 } from "./ids.js"
 import { MessageId } from "./ids.js"
 import type {
+  MemoryScope,
+  MemorySource,
+  MemoryTier,
+  SensitivityLevel
+} from "./memory.js"
+import type {
   AuthorizationDecision,
   ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
+  MemorySortOrder,
   ModelFinishReason,
   PermissionMode,
   QuotaPeriod,
@@ -112,20 +119,35 @@ export interface TurnRecord {
   readonly createdAt: Instant
 }
 
-export interface MemoryQuery {
-  readonly agentId: AgentId
-  readonly sessionId: SessionId
-  readonly text: string
-  readonly limit: number
+export interface MemorySearchQuery {
+  readonly query?: string
+  readonly tier?: MemoryTier
+  readonly scope?: MemoryScope
+  readonly source?: MemorySource
+  readonly sort?: MemorySortOrder
+  readonly limit?: number
+  readonly cursor?: string
+}
+
+export interface MemorySearchResult {
+  readonly items: ReadonlyArray<MemoryItemRecord>
+  readonly cursor: string | null
+  readonly totalCount: number
 }
 
 export interface MemoryItemRecord {
   readonly memoryItemId: MemoryItemId
   readonly agentId: AgentId
-  readonly tier: "WorkingMemory" | "EpisodicMemory" | "SemanticMemory" | "ProceduralMemory"
+  readonly tier: MemoryTier
+  readonly scope: MemoryScope
+  readonly source: MemorySource
   readonly content: string
+  readonly metadataJson: string | null
   readonly generatedByTurnId: TurnId | null
+  readonly sessionId: SessionId | null
+  readonly sensitivity: SensitivityLevel
   readonly createdAt: Instant
+  readonly updatedAt: Instant
 }
 
 export interface PolicyInput {
@@ -242,9 +264,22 @@ export interface SessionTurnPort {
 }
 
 export interface MemoryPort {
-  readonly retrieve: (query: MemoryQuery) => Effect.Effect<ReadonlyArray<MemoryItemRecord>>
+  readonly search: (
+    agentId: AgentId,
+    query: MemorySearchQuery
+  ) => Effect.Effect<MemorySearchResult>
   readonly encode: (
-    items: ReadonlyArray<MemoryItemRecord>,
+    agentId: AgentId,
+    items: ReadonlyArray<{
+      readonly tier: MemoryTier
+      readonly scope: MemoryScope
+      readonly source: MemorySource
+      readonly content: string
+      readonly metadataJson?: string | null
+      readonly generatedByTurnId?: TurnId | null
+      readonly sessionId?: SessionId | null
+      readonly sensitivity?: SensitivityLevel
+    }>,
     now: Instant
   ) => Effect.Effect<ReadonlyArray<MemoryItemId>>
   readonly forget: (agentId: AgentId, cutoff: Instant) => Effect.Effect<number>
