@@ -10,6 +10,35 @@
 
 ---
 
+## Task 0: Fix ProxyGateway baseline type errors
+
+**Files:**
+- Modify: `packages/server/src/gateway/ProxyGateway.ts`
+
+### Requirements
+
+`bun run check` currently fails on two ProxyGateway issues unrelated to Slice 2. Fix them so subsequent tasks can verify cleanly.
+
+**ProxyGateway.ts line 2:** Remove unused `EntityProxyServer` import:
+
+```typescript
+// Before:
+import { EntityProxy, EntityProxyServer } from "effect/unstable/cluster"
+// After:
+import { EntityProxy } from "effect/unstable/cluster"
+```
+
+**ProxyGateway.ts line 54:** The `any` argument error comes from the `handle` chain for `${parentRpc._tag}Discard`. The workaround in this file already uses `as any` casts throughout — add an explicit `as any` on the `.handle` return at line 68 to silence the remaining error, OR suppress with `// @ts-expect-error` if the cast doesn't work (this is a known effect beta bug documented in the file comments).
+
+### Verify
+
+```bash
+bun run check   # should now pass (or only emit non-error diagnostics)
+bun run test
+```
+
+---
+
 ## Task 1: Promote TurnRecordSchema to domain
 
 **Files:**
@@ -26,12 +55,12 @@ In `packages/domain/src/ports.ts`, replace the `TurnRecord` interface (lines 110
 
 ```typescript
 export class TurnRecord extends Schema.Class<TurnRecord>("TurnRecord")({
-  turnId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String,
+  turnId: TurnId,
+  sessionId: SessionId,
+  conversationId: ConversationId,
   turnIndex: Schema.Number,
-  participantRole: Schema.String,
-  participantAgentId: Schema.Union([Schema.String, Schema.Null]),
+  participantRole: AgentRole,
+  participantAgentId: Schema.Union([AgentId, Schema.Null]),
   message: MessageRecord,
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
@@ -39,13 +68,17 @@ export class TurnRecord extends Schema.Class<TurnRecord>("TurnRecord")({
 }) {}
 ```
 
-Add `ModelFinishReason` import from `./status.js`. Export `TurnRecord` from `index.ts` (already exported via `ports.js` barrel).
+Add imports: `TurnId`, `SessionId`, `ConversationId`, `AgentId` from `./ids.js` and `ModelFinishReason` from `./status.js`. Import `AgentRole` as a value (it's already imported as a type — switch to value import since we use it in the schema).
 
-In `AdapterProtocol.ts`, remove the `TurnRecordSchema` definition (lines 20-42) and import `TurnRecord` from `@template/domain/ports`. Replace `Schema.Array(TurnRecordSchema)` with `Schema.Array(TurnRecord)` in `GetHistoryRpc`.
+Export `TurnRecord` from `index.ts` (already exported via `ports.js` barrel — verify).
+
+In `AdapterProtocol.ts`, remove the `TurnRecordSchema` definition (lines 20-42) and the `ContentBlock` import. Import `TurnRecord` from `@template/domain/ports`. Replace `Schema.Array(TurnRecordSchema)` with `Schema.Array(TurnRecord)` in `GetHistoryRpc`.
 
 In `CLIAdapterEntity.ts`, remove the `TurnRecordSchema` import from `./AdapterProtocol.js` and import `TurnRecord` from `@template/domain/ports` instead. Replace `Schema.Array(TurnRecordSchema)` with `Schema.Array(TurnRecord)` in `GetHistoryRpc`.
 
 **Note:** `TurnRecord` was previously an interface used by `SessionTurnPort.listTurns` and `SessionTurnPort.appendTurn`. Converting to Schema.Class keeps the same shape but makes it a class. All places that construct `TurnRecord` objects will still work since Schema.Class instances can be created with plain objects. However, type annotations using `TurnRecord` as an interface will now reference the class — verify that `SessionTurnPortSqlite` and `TurnProcessingWorkflow` still compile.
+
+**Branded ID note:** The existing `TurnRecordSchema` used plain `Schema.String` everywhere. The branded IDs (`TurnId`, `SessionId`, etc.) are `Schema.String.pipe(Schema.brand(...))` — they accept any string at decode time but produce branded types. Callers that construct TurnRecord objects with plain strings will need `as TurnId` casts (which they already use). If this causes widespread type breakage, fall back to `Schema.String` for the branded fields and add a TODO comment.
 
 ### Verify
 
@@ -60,6 +93,7 @@ bun run test
 
 **Files:**
 - Modify: `packages/domain/src/errors.ts`
+- Modify: `packages/server/src/entities/AdapterProtocol.ts`
 - Modify: `packages/server/src/ChannelCore.ts`
 - Modify: `packages/server/test/ChannelCore.test.ts`
 
@@ -74,6 +108,22 @@ export class ChannelTypeMismatch extends Schema.ErrorClass<ChannelTypeMismatch>(
   existingType: Schema.String,
   requestedType: Schema.String
 }) {}
+```
+
+**AdapterProtocol.ts:** Add `ChannelTypeMismatch` to `InitializeRpc` error channel so the RPC boundary explicitly declares this error:
+
+```typescript
+import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
+
+export const InitializeRpc = Rpc.make("initialize", {
+  payload: {
+    channelType: ChannelType,
+    agentId: Schema.String
+  },
+  success: Schema.Void,
+  error: ChannelTypeMismatch,
+  primaryKey: ({ agentId }) => `initialize:${agentId}`
+}).annotate(ClusterSchema.Persisted, true)
 ```
 
 In `ChannelCore.ts`, modify `initializeChannel` (lines 56-59). When `existing !== null`, validate that `existing.channelType === params.channelType` and `existing.agentId === params.agentId`. If type mismatches, yield `ChannelTypeMismatch`. If agent mismatches, also yield `ChannelTypeMismatch` (reuse the error — agent mismatch is the same class of problem).
@@ -94,7 +144,7 @@ bun run test
 
 ---
 
-## Task 3: Add userId to AdapterProtocol + turn payloads
+## Task 3: Add userId to adapter protocol + turn payloads
 
 **Files:**
 - Modify: `packages/server/src/entities/AdapterProtocol.ts`
@@ -104,22 +154,62 @@ bun run test
 - Modify: `packages/server/src/entities/WebChatAdapterEntity.ts`
 - Modify: `packages/server/src/gateway/WebChatRoutes.ts`
 - Modify: `packages/server/src/gateway/ChannelRoutes.ts`
+- Modify: `packages/server/src/entities/SessionEntity.ts`
 
 ### Requirements
 
-**AdapterProtocol.ts:** Add `userId: Schema.String` to `InitializeRpc` payload (alongside `channelType` and `agentId`).
+**userId flow:** The design says "on turn payload only" — not persisted on channel record. Each adapter sources userId differently and passes it through the message processing path.
 
-**ChannelCore.ts:** Add `userId: string` to `initializeChannel` params. Thread it into `buildTurnPayload` — store on the returned `ProcessTurnPayload`.
+**AdapterProtocol.ts:** Add `userId: Schema.String` to both `InitializeRpc` and `ReceiveMessageRpc` payloads. This ensures the userId is always available at message-processing time without requiring channel-record persistence:
 
-**TurnProcessingWorkflow.ts:** Add `userId: Schema.String` to `ProcessTurnPayload` schema (line 30-40). The workflow doesn't need to use it yet — it's carried for audit trail.
+```typescript
+export const InitializeRpc = Rpc.make("initialize", {
+  payload: {
+    channelType: ChannelType,
+    agentId: Schema.String,
+    userId: Schema.String
+  },
+  // ... rest unchanged
+})
 
-**CLIAdapterEntity.ts:** Pass `userId: "user:cli:local"` in the `initialize` handler.
+export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
+  payload: {
+    content: Schema.String,
+    userId: Schema.String
+  },
+  // ... rest unchanged
+})
+```
 
-**WebChatAdapterEntity.ts:** Pass `userId: request.payload.userId` in the `initialize` handler.
+**ChannelCore.ts:** Add `userId: string` param to `buildTurnPayload`. Pass it into the returned `ProcessTurnPayload`:
 
-**WebChatRoutes.ts:** Pass `userId` from the init frame into `client.initialize({ ..., userId: frame.userId })`. Also carry `userId` into `buildTurnPayload` if available (store it on the connection state alongside `initialized`).
+```typescript
+const buildTurnPayload = (params: {
+  readonly channelId: ChannelId
+  readonly content: string
+  readonly contentBlocks: ReadonlyArray<ContentBlock>
+  readonly userId: string
+}) =>
+  Effect.gen(function*() {
+    // ... existing channel lookup ...
+    return {
+      // ... existing fields ...
+      userId: params.userId
+    } satisfies ProcessTurnPayload
+  })
+```
 
-**ChannelRoutes.ts:** Pass `userId: "user:cli:local"` in the create channel handler (will be renamed in Task 4).
+**TurnProcessingWorkflow.ts:** Add `userId: Schema.String` to `ProcessTurnPayload` schema (after `agentId` field, line ~34). The workflow doesn't use it yet — it's carried for audit trail.
+
+**SessionEntity.ts:** Add `userId: Schema.String` to `ProcessTurnPayloadFields` so the field serialises across the entity RPC boundary.
+
+**CLIAdapterEntity.ts:** In `createChannel` handler, pass `userId: "user:cli:local"`. In `sendMessage` handler, pass `userId: request.payload.userId` (which becomes `"user:cli:local"` from the route layer).
+
+**WebChatAdapterEntity.ts:** In `initialize` handler, pass `userId: request.payload.userId`. In `receiveMessage` handler, pass `userId: request.payload.userId`.
+
+**WebChatRoutes.ts:** Store `userId` alongside `initialized` in connection state. On init frame, capture `frame.userId`. On message frame, pass `userId` to `client.receiveMessage({ content: frame.content, userId })`.
+
+**ChannelRoutes.ts:** Pass `userId: "user:cli:local"` in both the create handler and the sendMessage handler (via request payload or hardcoded — use hardcoded for now since CLI routes serve local users).
 
 ### Verify
 
@@ -130,12 +220,14 @@ bun run test
 
 ---
 
-## Task 4: Unify CLI adapter to shared AdapterProtocol RPCs
+## Task 4: Unify CLI adapter to shared AdapterProtocol RPCs + rename HTTP routes
 
 **Files:**
 - Modify: `packages/server/src/entities/CLIAdapterEntity.ts`
 - Modify: `packages/server/src/gateway/ChannelRoutes.ts`
 - Modify: `packages/cli/src/RuntimeClient.ts`
+- Modify: `packages/cli/src/Cli.ts`
+- Modify: `packages/server/src/server.ts`
 - Modify: `packages/server/test/CLIAdapterEntity.test.ts`
 - Modify: `packages/server/test/ChannelRoutes.e2e.test.ts`
 
@@ -152,17 +244,39 @@ export const CLIAdapterEntity = Entity.make("CLIAdapter", [
 ])
 ```
 
-Update `toLayer` handler names: `createChannel` → `initialize`, `sendMessage` → `receiveMessage`. Add `getStatus` handler (same pattern as WebChatAdapterEntity — read from ChannelPortTag). Add `ChannelPortTag` dependency.
+Update `toLayer` handler names: `createChannel` → `initialize`, `sendMessage` → `receiveMessage`. Add `getStatus` handler (same pattern as WebChatAdapterEntity — read from ChannelPortTag). Add `ChannelPortTag` dependency to the layer's `Effect.gen`.
 
-**ChannelRoutes.ts:** Rename routes:
-- `POST /channels/:channelId/create` → `POST /channels/:channelId/initialize`
-- `POST /channels/:channelId/history` → `GET /channels/:channelId/history`
-- Add new `GET /channels/:channelId/status` route
-- Keep `POST /channels/:channelId/messages` (calls `receiveMessage` internally)
+**server.ts:** Update `cliAdapterEntityLayer` to provide `channelPortTagLayer` (needed for the new `getStatus` handler):
 
-Update internal calls: `client.createChannel(...)` → `client.initialize(...)`, `client.sendMessage(...)` → `client.receiveMessage(...)`.
+```typescript
+const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(channelCoreLayer),
+  Layer.provide(channelPortTagLayer)
+)
+```
 
-**RuntimeClient.ts:** Update `createChannel` to call `/channels/${channelId}/initialize` instead of `/channels/${channelId}/create`. Rename the method from `createChannel` to `initialize` for consistency.
+**ChannelRoutes.ts:**
+- Extract `/health` route into a separate export (`healthRoute` or `healthLayer`) so it can remain always-on even when CLI routes are gated. The simplest approach: keep the `health` const as-is but export it separately, and have the CLI-gated layer only include the channel-specific routes.
+- Rename routes:
+  - `POST /channels/:channelId/create` → `POST /channels/:channelId/initialize`
+  - `POST /channels/:channelId/history` → `GET /channels/:channelId/history`
+  - Add new `GET /channels/:channelId/status` route
+  - Keep `POST /channels/:channelId/messages` (calls `receiveMessage` internally)
+- Update internal calls: `client.createChannel(...)` → `client.initialize(...)`, `client.sendMessage(...)` → `client.receiveMessage(...)`
+
+Export two layers:
+```typescript
+export const healthLayer = health  // always-on
+export const layer = Layer.mergeAll(initializeChannel, sendMessage, getHistory, getStatus)  // gatable
+```
+
+**RuntimeClient.ts:**
+- Rename `createChannel` method to `initialize`
+- Update URL: `/channels/${channelId}/create` → `/channels/${channelId}/initialize`
+- Update return interface: `{ initialize, sendMessage, health }`
+
+**Cli.ts:** Update `client.createChannel(channelId, "agent:bootstrap")` → `client.initialize(channelId, "agent:bootstrap")` (line 30).
 
 **CLIAdapterEntity.test.ts:** Update test calls from `client.createChannel(...)` to `client.initialize(...)` and `client.sendMessage(...)` to `client.receiveMessage(...)`. Add a test for `getStatus`.
 
@@ -184,9 +298,9 @@ bun run test
 
 ### Requirements
 
-Gate `cliAdapterEntityLayer` and `ChannelRoutesLayer` with `Layer.unwrap` + `config.channels.cli.enabled`, mirroring the existing WebChat gating pattern (lines 221-233 in server.ts).
+Gate `cliAdapterEntityLayer` and the CLI channel routes layer with `Layer.unwrap` + `config.channels.cli.enabled`, mirroring the existing WebChat gating pattern (lines 222-234 in server.ts).
 
-Replace the unconditional `cliAdapterEntityLayer` (line 216-219) with:
+Replace the unconditional `cliAdapterEntityLayer` (from Task 4) with:
 
 ```typescript
 const cliAdapterEntityLayer = Layer.unwrap(
@@ -204,7 +318,7 @@ const cliAdapterEntityLayer = Layer.unwrap(
 )
 ```
 
-Similarly gate `ChannelRoutesLayer` in `HttpApiAndRoutesLive`:
+Gate the CLI-specific routes (but NOT the health route):
 
 ```typescript
 const cliRoutesLayer = Layer.unwrap(
@@ -213,12 +327,24 @@ const cliRoutesLayer = Layer.unwrap(
     if (!config.channels.cli.enabled) {
       return Layer.empty
     }
-    return ChannelRoutesLayer
+    return ChannelRoutesLayer  // the gatable layer from Task 4 (excludes /health)
   }).pipe(Effect.provide(agentConfigLayer))
 )
 ```
 
-**Note:** CLIAdapterEntity now needs `channelPortTagLayer` (added in Task 4 for `getStatus`).
+Update `HttpApiAndRoutesLive` to include both `healthLayer` (always-on) and `cliRoutesLayer` (gated) separately:
+
+```typescript
+const HttpApiAndRoutesLive = Layer.mergeAll(
+  ProxyApiLive,
+  HealthRoutesLayer,     // always-on
+  cliRoutesLayer,        // gated by channels.cli.enabled
+  webChatRoutesLayer     // gated by channels.webchat.enabled
+).pipe(
+  Layer.provide(PortsLive),
+  Layer.provide(clusterLayer)
+)
+```
 
 ### Verify
 
@@ -237,7 +363,7 @@ bun run test
 
 ### Requirements
 
-In `WebChatRoutes.ts`, the `MESSAGE_ERROR` case (lines 156-161) currently sends `{type:"error", code:"MESSAGE_ERROR", message:...}`. Change it to send a `TurnFailedEvent` shape:
+In `WebChatRoutes.ts`, the `MESSAGE_ERROR` case (lines 156-161) currently sends `{type:"error", code:"MESSAGE_ERROR", message:...}`. Change it to send a `TurnFailedEvent` shape matching the SSE contract in ChannelRoutes.ts:
 
 ```typescript
 Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
@@ -318,13 +444,13 @@ export const ServiceTransport = Schema.Literals([
 export type ServiceTransport = typeof ServiceTransport.Type
 ```
 
-**integration.ts:** Create with:
+**integration.ts:** Create with Schema.Class for both records (needed for runtime encode/decode in persistence layer):
 
 ```typescript
 import { Schema } from "effect"
-import type { AgentId, ExternalServiceId, IntegrationId } from "./ids.js"
-import type { IntegrationStatus, ServiceTransport } from "./status.js"
-import type { Instant } from "./ports.js"
+import { AgentId, ExternalServiceId, IntegrationId } from "./ids.js"
+import { IntegrationStatus, ServiceTransport } from "./status.js"
+import { Instant } from "./ports.js"
 
 export class ServiceToolCapability extends Schema.Class<ServiceToolCapability>("ServiceToolCapability")({
   _tag: Schema.tag("ServiceToolCapability"),
@@ -352,29 +478,29 @@ export const ServiceCapability = Schema.Union([
 ])
 export type ServiceCapability = typeof ServiceCapability.Type
 
-export interface ExternalServiceRecord {
-  readonly serviceId: ExternalServiceId
-  readonly name: string
-  readonly endpoint: string
-  readonly transport: ServiceTransport
-  readonly identifier: string
-  readonly createdAt: Instant
-}
+export class ExternalServiceRecord extends Schema.Class<ExternalServiceRecord>("ExternalServiceRecord")({
+  serviceId: ExternalServiceId,
+  name: Schema.String,
+  endpoint: Schema.String,
+  transport: ServiceTransport,
+  identifier: Schema.String,
+  createdAt: Schema.DateTimeUtcFromString
+}) {}
 
-export interface IntegrationRecord {
-  readonly integrationId: IntegrationId
-  readonly agentId: AgentId
-  readonly serviceId: ExternalServiceId
-  readonly status: IntegrationStatus
-  readonly capabilities: ReadonlyArray<ServiceCapability>
-  readonly createdAt: Instant
-  readonly updatedAt: Instant
-}
+export class IntegrationRecord extends Schema.Class<IntegrationRecord>("IntegrationRecord")({
+  integrationId: IntegrationId,
+  agentId: AgentId,
+  serviceId: ExternalServiceId,
+  status: IntegrationStatus,
+  capabilities: Schema.Array(ServiceCapability),
+  createdAt: Schema.DateTimeUtcFromString,
+  updatedAt: Schema.DateTimeUtcFromString
+}) {}
 ```
 
 **index.ts:** Add `export * from "./integration.js"`.
 
-**IntegrationSchema.test.ts:** Test encode/decode for each `ServiceCapability` variant and `ExternalServiceRecord`/`IntegrationRecord` shapes.
+**IntegrationSchema.test.ts:** Test encode/decode for each `ServiceCapability` variant and `ExternalServiceRecord`/`IntegrationRecord` roundtrip via `Schema.decodeUnknown`/`Schema.encodeUnknown`.
 
 ### Verify
 
@@ -403,13 +529,16 @@ export const IntegrationConfigSchema = Schema.Struct({
   serviceId: Schema.String,
   name: Schema.String,
   endpoint: Schema.String,
-  transport: Schema.Literals(["stdio", "sse", "http"])
+  transport: Schema.Literals(["stdio", "sse", "http"]),
+  identifier: Schema.optional(Schema.String)
 })
 export type IntegrationConfig = typeof IntegrationConfigSchema.Type
 
 export const IntegrationsConfigSchema = Schema.Array(IntegrationConfigSchema)
 export type IntegrationsConfig = typeof IntegrationsConfigSchema.Type
 ```
+
+**Note:** `identifier` is optional in config — defaults to `endpoint` value when not provided. The `IntegrationEntity` (Task 10) derives `identifier` from config: `config.identifier ?? config.endpoint`.
 
 Add to `AgentConfigFileSchema`:
 
@@ -421,7 +550,7 @@ integrations: IntegrationsConfigSchema.pipe(
 
 **AgentConfig.ts:** Add `readonly integrations: IntegrationsConfig` to `AgentConfigService` interface. Wire `integrations: config.integrations` in `makeFromParsed`.
 
-**ConfigSchema.test.ts:** Test that `integrations` defaults to `[]`, and test parsing a config with integrations defined.
+**ConfigSchema.test.ts:** Test that `integrations` defaults to `[]`, and test parsing a config with integrations defined (including with/without `identifier`).
 
 **AgentConfig.test.ts:** Test that `AgentConfig.integrations` is accessible and defaults empty.
 
@@ -433,6 +562,7 @@ integrations: IntegrationsConfigSchema.pipe(
 #     name: "Example Service"
 #     endpoint: "http://localhost:8080"
 #     transport: "http"
+#     # identifier: "custom-id"  # optional, defaults to endpoint
 ```
 
 ### Verify
@@ -511,8 +641,10 @@ Add necessary imports from `./ids.js`, `./integration.js`, `./status.js`.
 **PortTags.ts:** Add:
 
 ```typescript
-export const IntegrationPortTag = ServiceMap.Service<IntegrationPort>("server/ports/IntegrationPort")
+export class IntegrationPortTag extends ServiceMap.Tag<IntegrationPort>()("server/ports/IntegrationPort") {}
 ```
+
+Follow the existing pattern used by other port tags in this file (e.g., `ChannelPortTag`).
 
 **IntegrationPortSqlite.test.ts:** Test CRUD operations: create service, get service, create integration, get by ID, get by agent+service, update status. Test capabilities JSON roundtrip.
 
@@ -528,11 +660,21 @@ bun run test
 ## Task 10: Skeleton IntegrationEntity
 
 **Files:**
+- Modify: `packages/domain/src/errors.ts`
 - Create: `packages/server/src/entities/IntegrationEntity.ts`
 - Modify: `packages/server/src/server.ts`
 - Create: `packages/server/test/IntegrationEntity.test.ts`
 
 ### Requirements
+
+**errors.ts:** Add `IntegrationNotFound`:
+
+```typescript
+export class IntegrationNotFound extends Schema.ErrorClass<IntegrationNotFound>("IntegrationNotFound")({
+  _tag: Schema.tag("IntegrationNotFound"),
+  integrationId: Schema.String
+}) {}
+```
 
 **IntegrationEntity.ts:** Create with three RPCs:
 
@@ -540,13 +682,16 @@ bun run test
 import { Schema } from "effect"
 import { ClusterSchema } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
+import { ServiceCapability } from "@template/domain/integration"
+import { IntegrationNotFound } from "@template/domain/errors"
 
 const ConnectRpc = Rpc.make("connect", {
   payload: {
     serviceId: Schema.String,
     name: Schema.String,
     endpoint: Schema.String,
-    transport: Schema.Literals(["stdio", "sse", "http"])
+    transport: Schema.Literals(["stdio", "sse", "http"]),
+    identifier: Schema.optional(Schema.String)
   },
   success: Schema.Void,
   primaryKey: ({ serviceId }) => `connect:${serviceId}`
@@ -572,11 +717,9 @@ const GetStatusRpc = Rpc.make("getIntegrationStatus", {
 Entity name: `"Integration"`. Entity ID is the `integrationId`.
 
 Stub implementation:
-- `connect`: Creates ExternalServiceRecord + IntegrationRecord via IntegrationPortTag. Sets status to `"Connected"` directly (no actual connection).
+- `connect`: Derives `agentId` from `AgentConfig` (yield it in the `toLayer` gen). Creates `ExternalServiceRecord` with `identifier: payload.identifier ?? payload.endpoint`. Creates `IntegrationRecord` with status `"Connected"` (skeleton — no actual connection). Uses `IntegrationPortTag` for persistence.
 - `disconnect`: Updates status to `"Disconnected"` via `updateStatus`.
-- `getIntegrationStatus`: Reads from IntegrationPortTag.
-
-Add `IntegrationNotFound` error to `packages/domain/src/errors.ts`.
+- `getIntegrationStatus`: Reads from `IntegrationPortTag`. Returns `IntegrationNotFound` if not found.
 
 **server.ts:** Import and wire `IntegrationEntity`. Conditionally include based on whether `config.integrations` is non-empty:
 
@@ -589,11 +732,14 @@ const integrationEntityLayer = Layer.unwrap(
     }
     return IntegrationEntityLayer.pipe(
       Layer.provide(clusterLayer),
-      Layer.provide(integrationPortTagLayer)
+      Layer.provide(integrationPortTagLayer),
+      Layer.provide(agentConfigLayer)
     )
   }).pipe(Effect.provide(agentConfigLayer))
 )
 ```
+
+Add `integrationPortSqliteLayer`, `integrationPortTagLayer`, and wire into `entityLayer` and `portTagsLayer`.
 
 **IntegrationEntity.test.ts:** Test connect (creates records), disconnect (updates status), getIntegrationStatus (returns snapshot), connect idempotency, getStatus for non-existent integration returns error.
 
@@ -656,6 +802,8 @@ Add to `CLIAdapterEntity.test.ts` or `WebChatAdapterEntity.test.ts`:
 - **Event ordering:** Verify streamed events come in order: `turn.started` first, then deltas/tool events, then `turn.completed` last
 - **Concurrent messages on one channel:** Send two messages rapidly, verify both complete without turn index collision (mock runtime should handle sequentially)
 
+**Note on mock path:** These tests use `Entity.makeTestClient` which bypasses real sharded session routing. The concurrency tests validate ChannelCore's own serialization logic (no turn index collisions at the core level), not the full sharding path. Add a comment in each concurrency test documenting this limitation.
+
 ### Verify
 
 ```bash
@@ -679,6 +827,7 @@ Confirm:
 - `/channels/:channelId/initialize` works (renamed from `/create`)
 - `/channels/:channelId/messages` SSE works
 - `/channels/:channelId/status` returns channel info
+- `/health` works even when `channels.cli.enabled: false`
 - `/ws/chat/:channelId` WebSocket flow works (init + message + streamed events)
 - Config gating: both CLI and WebChat can be disabled independently
 
@@ -692,30 +841,34 @@ Confirm:
 | `packages/domain/src/ids.ts` | Add `IntegrationId`, `ExternalServiceId` |
 | `packages/domain/src/ports.ts` | Promote `TurnRecord` to Schema.Class, add `IntegrationPort` |
 | `packages/domain/src/status.ts` | Add `IntegrationStatus`, `ConnectionStatus`, `ServiceTransport` |
-| `packages/domain/src/integration.ts` | Create — ServiceCapability, ExternalServiceRecord, IntegrationRecord |
+| `packages/domain/src/integration.ts` | Create — ServiceCapability, ExternalServiceRecord, IntegrationRecord (all Schema.Class) |
 | `packages/domain/src/config.ts` | Add `IntegrationConfigSchema`, `IntegrationsConfigSchema` |
 | `packages/domain/src/index.ts` | Export integration module |
 | `packages/domain/test/IntegrationSchema.test.ts` | Create — schema encode/decode tests |
 | `packages/domain/test/ConfigSchema.test.ts` | Add integrations config tests |
+| `packages/server/src/gateway/ProxyGateway.ts` | Fix baseline type errors |
 | `packages/server/src/ChannelCore.ts` | Re-init validation, userId in buildTurnPayload |
-| `packages/server/src/entities/AdapterProtocol.ts` | Add userId to InitializeRpc, import TurnRecord from domain |
+| `packages/server/src/entities/AdapterProtocol.ts` | Add userId + error to InitializeRpc, userId to ReceiveMessageRpc, import TurnRecord from domain |
 | `packages/server/src/entities/CLIAdapterEntity.ts` | Use shared AdapterProtocol RPCs, add getStatus |
 | `packages/server/src/entities/WebChatAdapterEntity.ts` | Pass userId through |
+| `packages/server/src/entities/SessionEntity.ts` | Add userId to ProcessTurnPayloadFields |
 | `packages/server/src/entities/IntegrationEntity.ts` | Create — skeleton entity |
-| `packages/server/src/gateway/ChannelRoutes.ts` | Rename routes, use AdapterProtocol RPC names |
-| `packages/server/src/gateway/WebChatRoutes.ts` | Normalize message errors to turn.failed, pass userId |
-| `packages/server/src/server.ts` | Gate CLI, wire IntegrationEntity |
+| `packages/server/src/gateway/ChannelRoutes.ts` | Extract /health, rename routes, use AdapterProtocol RPC names |
+| `packages/server/src/gateway/WebChatRoutes.ts` | Normalize message errors to turn.failed, store/pass userId |
+| `packages/server/src/server.ts` | Gate CLI, wire IntegrationEntity, separate health route |
 | `packages/server/src/persistence/DomainMigrator.ts` | Add 0005_integration_tables |
 | `packages/server/src/IntegrationPortSqlite.ts` | Create — integration persistence |
 | `packages/server/src/PortTags.ts` | Add IntegrationPortTag |
 | `packages/server/src/ai/AgentConfig.ts` | Surface integrations config |
 | `packages/server/src/turn/TurnProcessingWorkflow.ts` | Add userId to ProcessTurnPayload |
 | `packages/cli/src/RuntimeClient.ts` | Update endpoint paths, rename createChannel → initialize |
+| `packages/cli/src/Cli.ts` | Update createChannel → initialize call |
 | `packages/server/test/ChannelCore.test.ts` | Add re-init, cross-channel, history tests |
 | `packages/server/test/CLIAdapterEntity.test.ts` | Update RPC names, add getStatus test |
 | `packages/server/test/WebChatAdapterEntity.test.ts` | Add event ordering, concurrent tests |
 | `packages/server/test/ChannelRoutes.e2e.test.ts` | Update route paths |
 | `packages/server/test/WebChatRoutes.ws.test.ts` | Create — Bun WS e2e tests |
+| `packages/server/test/WebChatRoutes.e2e.test.ts` | Update for turn.failed error shape |
 | `packages/server/test/IntegrationPortSqlite.test.ts` | Create — persistence tests |
 | `packages/server/test/IntegrationEntity.test.ts` | Create — entity tests |
 | `packages/server/test/AgentConfig.test.ts` | Add integrations config tests |
