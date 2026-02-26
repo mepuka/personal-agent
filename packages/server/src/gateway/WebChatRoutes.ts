@@ -12,7 +12,7 @@
  *   5. Server streams: turn events as JSON frames
  */
 import type { TurnStreamEvent } from "@template/domain/events"
-import { Effect, Stream } from "effect"
+import { Cause, Effect, Stream } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -80,7 +80,7 @@ export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
 const turnEventToFrame = (event: TurnStreamEvent): string =>
   JSON.stringify(event)
 
-/** @internal — exported for testing */
+/** @internal — exported for testing. Transport-level errors only (not message processing). */
 export const errorFrame = (code: string, message: string): string =>
   JSON.stringify({ type: "error", code, message })
 
@@ -157,10 +157,16 @@ const wsChat = HttpRouter.add(
           return client.receiveMessage({ content: frame.content, userId }).pipe(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
-              const err = cause.toString()
-              return writeFn(errorFrame("MESSAGE_ERROR", err)).pipe(
-                Effect.ignore
-              )
+              const err = Cause.squash(cause)
+              const failedEvent = {
+                type: "turn.failed" as const,
+                sequence: Number.MAX_SAFE_INTEGER,
+                turnId: "",
+                sessionId: "",
+                errorCode: "MESSAGE_ERROR",
+                message: err instanceof Error ? err.message : String(err)
+              }
+              return writeFn(JSON.stringify(failedEvent)).pipe(Effect.ignore)
             })
           )
         }
