@@ -38,3 +38,9 @@ export type ToolName = typeof ToolName.Type
 
 export const ChannelId = Schema.String.pipe(Schema.brand("ChannelId"))
 export type ChannelId = typeof ChannelId.Type
+
+export const IntegrationId = Schema.String.pipe(Schema.brand("IntegrationId"))
+export type IntegrationId = typeof IntegrationId.Type
+
+export const ExternalServiceId = Schema.String.pipe(Schema.brand("ExternalServiceId"))
+export type ExternalServiceId = typeof ExternalServiceId.Type

@@ -98,3 +98,26 @@ export const MemorySortOrder = Schema.Literals([
   "CreatedAsc"
 ])
 export type MemorySortOrder = typeof MemorySortOrder.Type
+
+export const IntegrationStatus = Schema.Literals([
+  "Connected",
+  "Disconnected",
+  "Error",
+  "Initializing"
+])
+export type IntegrationStatus = typeof IntegrationStatus.Type
+
+export const ConnectionStatus = Schema.Literals([
+  "Open",
+  "Closed",
+  "Reconnecting",
+  "Failed"
+])
+export type ConnectionStatus = typeof ConnectionStatus.Type
+
+export const ServiceTransport = Schema.Literals([
+  "stdio",
+  "sse",
+  "http"
+])
+export type ServiceTransport = typeof ServiceTransport.Type
