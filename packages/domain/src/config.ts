@@ -74,12 +74,27 @@ export type ChannelsConfig = typeof ChannelsConfigSchema.Type
 
 const defaultChannelsConfig = Schema.decodeUnknownSync(ChannelsConfigSchema)({})
 
+export const IntegrationConfigSchema = Schema.Struct({
+  serviceId: Schema.String,
+  name: Schema.String,
+  endpoint: Schema.String,
+  transport: Schema.Literals(["stdio", "sse", "http"]),
+  identifier: Schema.optional(Schema.String)
+})
+export type IntegrationConfig = typeof IntegrationConfigSchema.Type
+
+export const IntegrationsConfigSchema = Schema.Array(IntegrationConfigSchema)
+export type IntegrationsConfig = typeof IntegrationsConfigSchema.Type
+
 export const AgentConfigFileSchema = Schema.Struct({
   providers: Schema.Record(Schema.String, ProviderConfigSchema),
   agents: Schema.Record(Schema.String, AgentProfileSchema),
   server: ServerConfigSchema,
   channels: ChannelsConfigSchema.pipe(
     Schema.withDecodingDefaultKey(() => defaultChannelsConfig)
+  ),
+  integrations: IntegrationsConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => [] as IntegrationsConfig)
   )
 })
 export type AgentConfigFile = typeof AgentConfigFileSchema.Type

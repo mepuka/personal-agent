@@ -1,4 +1,4 @@
-import type { AgentProfile, ChannelsConfig, ProviderConfig } from "@template/domain/config"
+import type { AgentProfile, ChannelsConfig, IntegrationsConfig, ProviderConfig } from "@template/domain/config"
 import { AgentConfigFileSchema } from "@template/domain/config"
 import { Effect, FileSystem, Layer, Schema, ServiceMap } from "effect"
 
@@ -14,6 +14,7 @@ export interface AgentConfigService {
   readonly agents: Map<string, AgentProfile>
   readonly server: { readonly port: number }
   readonly channels: ChannelsConfig
+  readonly integrations: IntegrationsConfig
   readonly defaultAgent: AgentProfile
   readonly getAgent: (agentId: string) => Effect.Effect<AgentProfile, AgentProfileNotFound>
 }
@@ -44,6 +45,7 @@ const makeFromParsed = (raw: unknown): Effect.Effect<AgentConfigService> =>
       agents,
       server: config.server,
       channels: config.channels,
+      integrations: config.integrations,
       defaultAgent,
       getAgent
     } satisfies AgentConfigService

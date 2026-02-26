@@ -116,4 +116,11 @@ describe("AgentConfig", () => {
       )
     )
   )
+
+  it.effect("integrations defaults to empty array when omitted", () =>
+    Effect.gen(function*() {
+      const config = yield* AgentConfig
+      expect(config.integrations).toEqual([])
+    }).pipe(Effect.provide(testLayer))
+  )
 })

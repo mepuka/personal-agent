@@ -5,6 +5,7 @@ import {
   AgentConfigFileSchema,
   ChannelConfigSchema,
   ChannelsConfigSchema,
+  IntegrationConfigSchema,
   ProviderConfigSchema
 } from "../src/config.js"
 
@@ -134,5 +135,78 @@ describe("Config Schemas", () => {
     const result = Schema.decodeUnknownSync(AgentConfigFileSchema)(input)
     expect(result.channels.cli.enabled).toBe(true)
     expect(result.channels.webchat.enabled).toBe(false)
+  })
+
+  it("defaults integrations to empty array when omitted", () => {
+    const input = {
+      providers: {
+        anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
+      },
+      agents: {
+        default: {
+          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
+          generation: { temperature: 0.7, maxOutputTokens: 4096 }
+        }
+      },
+      server: { port: 3000 }
+    }
+    const result = Schema.decodeUnknownSync(AgentConfigFileSchema)(input)
+    expect(result.integrations).toEqual([])
+  })
+
+  it("decodes config with integrations defined", () => {
+    const input = {
+      providers: {
+        anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
+      },
+      agents: {
+        default: {
+          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
+          generation: { temperature: 0.7, maxOutputTokens: 4096 }
+        }
+      },
+      server: { port: 3000 },
+      integrations: [
+        {
+          serviceId: "svc:example",
+          name: "Example Service",
+          endpoint: "http://localhost:8080",
+          transport: "http",
+          identifier: "custom-id"
+        }
+      ]
+    }
+    const result = Schema.decodeUnknownSync(AgentConfigFileSchema)(input)
+    expect(result.integrations).toHaveLength(1)
+    expect(result.integrations[0].serviceId).toBe("svc:example")
+    expect(result.integrations[0].name).toBe("Example Service")
+    expect(result.integrations[0].endpoint).toBe("http://localhost:8080")
+    expect(result.integrations[0].transport).toBe("http")
+    expect(result.integrations[0].identifier).toBe("custom-id")
+  })
+
+  it("decodes integration without identifier (optional field)", () => {
+    const input = {
+      serviceId: "svc:test",
+      name: "Test Service",
+      endpoint: "http://localhost:9090",
+      transport: "sse"
+    }
+    const result = Schema.decodeUnknownSync(IntegrationConfigSchema)(input)
+    expect(result.serviceId).toBe("svc:test")
+    expect(result.transport).toBe("sse")
+    expect(result.identifier).toBeUndefined()
+  })
+
+  it("rejects invalid integration transport", () => {
+    const input = {
+      serviceId: "svc:bad",
+      name: "Bad Service",
+      endpoint: "http://localhost:9090",
+      transport: "grpc"
+    }
+    expect(() => Schema.decodeUnknownSync(IntegrationConfigSchema)(input)).toThrow()
   })
 })

@@ -50,3 +50,10 @@ channels:
     enabled: true
   webchat:
     enabled: true
+
+# integrations:
+#   - serviceId: "svc:example"
+#     name: "Example Service"
+#     endpoint: "http://localhost:8080"
+#     transport: "http"
+#     # identifier: "custom-id"  # optional, defaults to endpoint
