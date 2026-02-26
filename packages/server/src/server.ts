@@ -3,6 +3,7 @@ import type {
   AgentStatePort,
   ChannelPort,
   GovernancePort,
+  IntegrationPort,
   MemoryPort,
   SchedulePort,
   SessionTurnPort
@@ -19,6 +20,7 @@ import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
+import { layer as IntegrationEntityLayer } from "./entities/IntegrationEntity.js"
 import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
@@ -27,6 +29,7 @@ import { layer as ChannelRoutesLayer, healthLayer as HealthRoutesLayer } from ".
 import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
+import { IntegrationPortSqlite } from "./IntegrationPortSqlite.js"
 import { MemoryPortSqlite } from "./MemoryPortSqlite.js"
 import * as DomainMigrator from "./persistence/DomainMigrator.js"
 import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
@@ -34,6 +37,7 @@ import {
   AgentStatePortTag,
   ChannelPortTag,
   GovernancePortTag,
+  IntegrationPortTag,
   MemoryPortTag,
   SchedulePortTag,
   SessionTurnPortTag
@@ -109,6 +113,17 @@ const channelPortTagLayer = Layer.effect(
     return (yield* ChannelPortSqlite) as ChannelPort
   })
 ).pipe(Layer.provide(channelPortSqliteLayer))
+
+const integrationPortSqliteLayer = IntegrationPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
+const integrationPortTagLayer = Layer.effect(
+  IntegrationPortTag,
+  Effect.gen(function*() {
+    return (yield* IntegrationPortSqlite) as IntegrationPort
+  })
+).pipe(Layer.provide(integrationPortSqliteLayer))
 
 const schedulerRuntimeLayer = SchedulerRuntime.layer.pipe(
   Layer.provide(schedulePortTagLayer)
@@ -242,13 +257,28 @@ const webChatAdapterEntityLayer = Layer.unwrap(
   }).pipe(Effect.provide(agentConfigLayer))
 )
 
+const integrationEntityLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    if (config.integrations.length === 0) {
+      return Layer.empty
+    }
+    return IntegrationEntityLayer.pipe(
+      Layer.provide(clusterLayer),
+      Layer.provide(integrationPortTagLayer),
+      Layer.provide(agentConfigLayer)
+    )
+  }).pipe(Effect.provide(agentConfigLayer))
+)
+
 const portTagsLayer = Layer.mergeAll(
   memoryPortTagLayer,
   agentStatePortTagLayer,
   sessionTurnPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
-  channelPortTagLayer
+  channelPortTagLayer,
+  integrationPortTagLayer
 )
 
 const schedulerLayer = schedulerTickLayer.pipe(
@@ -263,6 +293,7 @@ const workflowLayer = turnProcessingRuntimeLayer.pipe(
 
 const entityLayer = cliAdapterEntityLayer.pipe(
   Layer.provideMerge(webChatAdapterEntityLayer),
+  Layer.provideMerge(integrationEntityLayer),
   Layer.provideMerge(sessionEntityLayer),
   Layer.provideMerge(agentEntityLayer),
   Layer.provideMerge(memoryEntityLayer)

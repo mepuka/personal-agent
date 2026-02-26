@@ -45,6 +45,11 @@ export class ChannelTypeMismatch extends Schema.ErrorClass<ChannelTypeMismatch>(
   requestedType: Schema.String
 }) {}
 
+export class IntegrationNotFound extends Schema.ErrorClass<IntegrationNotFound>("IntegrationNotFound")({
+  _tag: Schema.tag("IntegrationNotFound"),
+  integrationId: Schema.String
+}) {}
+
 export class MemoryAccessDenied extends Schema.ErrorClass<MemoryAccessDenied>("MemoryAccessDenied")({
   _tag: Schema.tag("MemoryAccessDenied"),
   agentId: AgentId,
