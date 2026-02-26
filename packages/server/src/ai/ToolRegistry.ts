@@ -11,7 +11,7 @@ const ToolFailure = Schema.Struct({
 })
 type ToolFailure = typeof ToolFailure.Type
 
-const TimeNowTool = Tool.make("time.now", {
+const TimeNowTool = Tool.make("time_now", {
   description: "Return the current UTC timestamp as ISO 8601.",
   success: Schema.Struct({
     nowIso: Schema.String
@@ -20,7 +20,7 @@ const TimeNowTool = Tool.make("time.now", {
   failureMode: "return"
 })
 
-const MathCalculateTool = Tool.make("math.calculate", {
+const MathCalculateTool = Tool.make("math_calculate", {
   description: "Evaluate a basic arithmetic expression.",
   parameters: Schema.Struct({
     expression: Schema.String
@@ -32,7 +32,7 @@ const MathCalculateTool = Tool.make("math.calculate", {
   failureMode: "return"
 })
 
-const EchoTextTool = Tool.make("echo.text", {
+const EchoTextTool = Tool.make("echo_text", {
   description: "Return provided text verbatim.",
   parameters: Schema.Struct({
     text: Schema.String
@@ -163,19 +163,19 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           toolkit: SafeToolkit,
           handlerLayer: SafeToolkit.toLayer(
             SafeToolkit.of({
-              "time.now": () =>
+              "time_now": () =>
                 runGovernedTool(
                   context,
-                  "time.now" as ToolName,
+                  "time_now" as ToolName,
                   Effect.succeed({
                     nowIso: DateTime.formatIso(context.now)
                   })
                 ),
-              "math.calculate": ({ expression }) => {
+              "math_calculate": ({ expression }) => {
                 const result = safeCalculate(expression)
                 return runGovernedTool(
                   context,
-                  "math.calculate" as ToolName,
+                  "math_calculate" as ToolName,
                   result === null
                     ? Effect.fail<ToolFailure>({
                       errorCode: "InvalidExpression",
@@ -184,10 +184,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                     : Effect.succeed({ result })
                 )
               },
-              "echo.text": ({ text }) =>
+              "echo_text": ({ text }) =>
                 runGovernedTool(
                   context,
-                  "echo.text" as ToolName,
+                  "echo_text" as ToolName,
                   Effect.succeed({ text })
                 )
             })
