@@ -8,7 +8,7 @@ import type {
   SchedulePort,
   SessionTurnPort
 } from "@template/domain/ports"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -364,5 +364,6 @@ const HttpLive = HttpRouter.serve(
 )
 
 Layer.launch(HttpLive).pipe(
+  Effect.provide(Logger.layer([Logger.consoleJson])),
   BunRuntime.runMain
 )
