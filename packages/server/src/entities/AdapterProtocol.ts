@@ -4,7 +4,7 @@
  * Both CLIAdapterEntity and WebChatAdapterEntity consume these RPCs so that
  * any client can talk to any adapter through a single, consistent contract.
  */
-import { ChannelNotFound } from "@template/domain/errors"
+import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
 import { TurnRecord } from "@template/domain/ports"
 import { ChannelCapability, ChannelType } from "@template/domain/status"
@@ -43,6 +43,7 @@ export const InitializeRpc = Rpc.make("initialize", {
     agentId: Schema.String
   },
   success: Schema.Void,
+  error: ChannelTypeMismatch,
   primaryKey: ({ agentId }) => `initialize:${agentId}`
 }).annotate(ClusterSchema.Persisted, true)
 

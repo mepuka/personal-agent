@@ -1,4 +1,4 @@
-import { ChannelNotFound } from "@template/domain/errors"
+import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, ConversationId, SessionId } from "@template/domain/ids"
 import type { AgentState, ContentBlock, TurnRecord } from "@template/domain/ports"
@@ -55,6 +55,20 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         Effect.gen(function*() {
           const existing = yield* channelPort.get(params.channelId)
           if (existing !== null) {
+            if (existing.channelType !== params.channelType) {
+              return yield* new ChannelTypeMismatch({
+                channelId: params.channelId,
+                existingType: existing.channelType,
+                requestedType: params.channelType
+              })
+            }
+            if (existing.agentId !== params.agentId) {
+              return yield* new ChannelTypeMismatch({
+                channelId: params.channelId,
+                existingType: existing.agentId,
+                requestedType: params.agentId
+              })
+            }
             yield* ensureAgentState(existing.agentId)
             return
           }
@@ -185,7 +199,7 @@ export type ChannelCoreService = {
     readonly channelType: ChannelType
     readonly agentId: AgentId
     readonly capabilities: ReadonlyArray<ChannelCapability>
-  }) => Effect.Effect<void>
+  }) => Effect.Effect<void, ChannelTypeMismatch>
 
   readonly buildTurnPayload: (params: {
     readonly channelId: ChannelId

@@ -38,6 +38,13 @@ export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("Channel
   channelId: Schema.String
 }) {}
 
+export class ChannelTypeMismatch extends Schema.ErrorClass<ChannelTypeMismatch>("ChannelTypeMismatch")({
+  _tag: Schema.tag("ChannelTypeMismatch"),
+  channelId: Schema.String,
+  existingType: Schema.String,
+  requestedType: Schema.String
+}) {}
+
 export class MemoryAccessDenied extends Schema.ErrorClass<MemoryAccessDenied>("MemoryAccessDenied")({
   _tag: Schema.tag("MemoryAccessDenied"),
   agentId: AgentId,

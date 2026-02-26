@@ -1,4 +1,4 @@
-import { ChannelNotFound } from "@template/domain/errors"
+import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId } from "@template/domain/ids"
 import { TurnRecord } from "@template/domain/ports"
@@ -15,6 +15,7 @@ const CreateChannelRpc = Rpc.make("createChannel", {
     agentId: Schema.String
   },
   success: Schema.Void,
+  error: ChannelTypeMismatch,
   primaryKey: ({ agentId }) => `create:${agentId}`
 }).annotate(ClusterSchema.Persisted, true)
 

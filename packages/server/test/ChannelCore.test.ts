@@ -325,6 +325,70 @@ describe("ChannelCore", () => {
     )
   })
 
+  it.effect("re-init with different channelType fails with ChannelTypeMismatch", () => {
+    const dbPath = testDatabasePath("core-type-mismatch")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const channelId = "channel:core-type-mismatch" as ChannelId
+
+      // First init as CLI
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:type-mismatch" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      // Re-init as WebChat — should fail
+      const error = yield* core.initializeChannel({
+        channelId,
+        channelType: "WebChat",
+        agentId: "agent:type-mismatch" as AgentId,
+        capabilities: ["SendText", "Typing", "StreamingDelivery"]
+      }).pipe(Effect.flip)
+
+      expect(error._tag).toBe("ChannelTypeMismatch")
+      expect(error.channelId).toBe(channelId)
+      expect(error.existingType).toBe("CLI")
+      expect(error.requestedType).toBe("WebChat")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("re-init with different agentId fails with ChannelTypeMismatch", () => {
+    const dbPath = testDatabasePath("core-agent-mismatch")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const channelId = "channel:core-agent-mismatch" as ChannelId
+
+      // First init with agent:a
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:a" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      // Re-init with agent:b — should fail
+      const error = yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:b" as AgentId,
+        capabilities: ["SendText"]
+      }).pipe(Effect.flip)
+
+      expect(error._tag).toBe("ChannelTypeMismatch")
+      expect(error.channelId).toBe(channelId)
+      expect(error.existingType).toBe("agent:a")
+      expect(error.requestedType).toBe("agent:b")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("processTurn streams events using direct runtime fallback in test", () => {
     const dbPath = testDatabasePath("core-process")
     return Effect.gen(function*() {
