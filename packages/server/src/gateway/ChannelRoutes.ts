@@ -16,11 +16,13 @@ const extractParam = (inputUrl: string, index: number): string => {
   return parts[index] ?? ""
 }
 
+const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
+
 const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   _tag: "Event",
   event: event.type,
   id: String(event.sequence),
-  data: JSON.stringify(event)
+  data: encodeToJson(event)
 })
 
 const InitializeChannelRequest = Schema.Struct({

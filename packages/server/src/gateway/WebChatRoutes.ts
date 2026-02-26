@@ -11,13 +11,50 @@
  *   4. Client sends: {"type":"message","content":"hello","threadId":"optional"}
  *   5. Server streams: turn events as JSON frames
  */
+import { TurnFailedEvent } from "@template/domain/events"
 import type { TurnStreamEvent } from "@template/domain/events"
-import { Cause, Effect, Stream } from "effect"
+import { Cause, Effect, Option, Schema, Stream } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import type * as Socket from "effect/unstable/socket/Socket"
 import { WebChatAdapterEntity } from "../entities/WebChatAdapterEntity.js"
+
+// ---------------------------------------------------------------------------
+// Frame Schemas
+// ---------------------------------------------------------------------------
+
+const InitFrameSchema = Schema.Struct({
+  type: Schema.Literal("init"),
+  agentId: Schema.optional(Schema.String),
+  userId: Schema.optional(Schema.String)
+})
+
+const MessageFrameSchema = Schema.Struct({
+  type: Schema.Literal("message"),
+  content: Schema.String,
+  threadId: Schema.optional(Schema.String)
+})
+
+const ClientFrameSchema = Schema.Union([InitFrameSchema, MessageFrameSchema])
+
+const ConnectedFrame = Schema.Struct({ type: Schema.Literal("connected") })
+const InitializedFrame = Schema.Struct({ type: Schema.Literal("initialized") })
+const ErrorFrameSchema = Schema.Struct({
+  type: Schema.Literal("error"),
+  code: Schema.String,
+  message: Schema.String
+})
+
+// ---------------------------------------------------------------------------
+// Codecs
+// ---------------------------------------------------------------------------
+
+const decodeClientFrame = Schema.decodeUnknownOption(Schema.fromJsonString(ClientFrameSchema))
+const encodeConnected = Schema.encodeSync(Schema.fromJsonString(ConnectedFrame))
+const encodeInitialized = Schema.encodeSync(Schema.fromJsonString(InitializedFrame))
+const encodeErrorFrame = Schema.encodeSync(Schema.fromJsonString(ErrorFrameSchema))
+const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,9 +67,6 @@ export const extractChannelId = (url: string): string => {
   // /ws/chat/:channelId → parts = ["ws", "chat", "<channelId>"]
   return parts[2] ?? ""
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
 
 /**
  * Frame types that the client can send over the WebSocket.
@@ -53,36 +87,30 @@ export type ClientFrame = InitFrame | MessageFrame
 
 /** @internal — exported for testing */
 export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
-  try {
-    const text = typeof data === "string" ? data : new TextDecoder().decode(data)
-    const parsed: unknown = JSON.parse(text)
-    if (!isRecord(parsed)) return null
-    if (parsed.type === "init") {
-      return {
-        type: "init" as const,
-        agentId: typeof parsed.agentId === "string" ? parsed.agentId : "agent:bootstrap",
-        userId: typeof parsed.userId === "string" ? parsed.userId : "user:web:anon"
-      }
+  const text = typeof data === "string" ? data : new TextDecoder().decode(data)
+  const result = decodeClientFrame(text)
+  if (Option.isNone(result)) return null
+  const frame = result.value
+  if (frame.type === "init") {
+    return {
+      type: "init" as const,
+      agentId: frame.agentId ?? "agent:bootstrap",
+      userId: frame.userId ?? "user:web:anon"
     }
-    if (parsed.type === "message" && typeof parsed.content === "string") {
-      return {
-        type: "message" as const,
-        content: parsed.content,
-        threadId: typeof parsed.threadId === "string" ? parsed.threadId : undefined
-      }
-    }
-    return null
-  } catch {
-    return null
+  }
+  return {
+    type: "message" as const,
+    content: frame.content,
+    threadId: frame.threadId
   }
 }
 
 const turnEventToFrame = (event: TurnStreamEvent): string =>
-  JSON.stringify(event)
+  encodeToJson(event)
 
 /** @internal — exported for testing. Transport-level errors only (not message processing). */
 export const errorFrame = (code: string, message: string): string =>
-  JSON.stringify({ type: "error", code, message })
+  encodeErrorFrame({ type: "error" as const, code, message })
 
 // ---------------------------------------------------------------------------
 // Route
@@ -137,7 +165,7 @@ const wsChat = HttpRouter.add(
           }).pipe(
             Effect.andThen(() => {
               initialized = true
-              return writeFn(JSON.stringify({ type: "initialized" }))
+              return writeFn(encodeInitialized({ type: "initialized" as const }))
             }),
             Effect.catchCause((cause) =>
               writeFn(errorFrame("INIT_FAILED", String(cause))).pipe(
@@ -158,15 +186,15 @@ const wsChat = HttpRouter.add(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
               const err = Cause.squash(cause)
-              const failedEvent = {
-                type: "turn.failed" as const,
+              const failedEvent = new TurnFailedEvent({
+                type: "turn.failed",
                 sequence: Number.MAX_SAFE_INTEGER,
                 turnId: "",
                 sessionId: "",
                 errorCode: "MESSAGE_ERROR",
                 message: err instanceof Error ? err.message : String(err)
-              }
-              return writeFn(JSON.stringify(failedEvent)).pipe(Effect.ignore)
+              })
+              return writeFn(encodeToJson(failedEvent)).pipe(Effect.ignore)
             })
           )
         }
@@ -179,7 +207,7 @@ const wsChat = HttpRouter.add(
       yield* socket.runRaw(
         (data) => handleFrame(data, write),
         {
-          onOpen: write(JSON.stringify({ type: "connected" })).pipe(Effect.ignore)
+          onOpen: write(encodeConnected({ type: "connected" as const })).pipe(Effect.ignore)
         }
       )
 
