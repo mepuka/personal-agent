@@ -72,10 +72,7 @@ export const ChannelsConfigSchema = Schema.Struct({
 })
 export type ChannelsConfig = typeof ChannelsConfigSchema.Type
 
-const defaultChannelsConfig: ChannelsConfig = {
-  cli: { enabled: true },
-  webchat: { enabled: true }
-}
+const defaultChannelsConfig = Schema.decodeUnknownSync(ChannelsConfigSchema)({})
 
 export const AgentConfigFileSchema = Schema.Struct({
   providers: Schema.Record(Schema.String, ProviderConfigSchema),
