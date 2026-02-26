@@ -11,8 +11,6 @@ import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "./turn/TurnProcessingWorkflow.js"
 import { TurnModelFailure, type TurnProcessingError } from "./turn/TurnProcessingWorkflow.js"
 
-const toErrorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
-
 const toSessionId = (channelId: ChannelId): SessionId => (`session:${channelId}`) as SessionId
 
 const toConversationId = (channelId: ChannelId): ConversationId => (`conv:${channelId}`) as ConversationId
@@ -152,24 +150,23 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
                   AlreadyProcessingMessage: () => failWithModelFailure("session_entity_already_processing"),
                   PersistenceError: (error) =>
                     failWithModelFailure(
-                      `session_entity_persistence_error: ${toErrorMessage(error)}`
+                      `session_entity_persistence_error: ${error.message ?? String(error)}`
                     )
                 }),
                 Stream.catchCause((cause) =>
                   failWithModelFailure(
-                    `session_entity_stream_error: ${toErrorMessage(Cause.squash(cause))}`
+                    `session_entity_stream_error: ${Cause.pretty(cause)}`
                   )
                 )
               )
             ),
-            Effect.catchCause((cause) => {
-              const error = Cause.squash(cause)
-              return Effect.succeed(
+            Effect.catchCause((cause) =>
+              Effect.succeed(
                 failWithModelFailure(
-                  `session_entity_client_error: ${toErrorMessage(error)}`
+                  `session_entity_client_error: ${Cause.pretty(cause)}`
                 )
               )
-            })
+            )
           )
         ) as Stream.Stream<TurnStreamEvent, TurnProcessingError>
       }
