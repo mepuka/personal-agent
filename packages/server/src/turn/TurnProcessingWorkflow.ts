@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref, Schema } from "effect"
+import { Cause, Effect, Layer, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Activity from "effect/unstable/workflow/Activity"
@@ -179,7 +179,11 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const semanticMemories = yield* sqlitePort.retrieve(
       payload.agentId as AgentId,
       { query: payload.content, tier: "SemanticMemory", limit: 20 }
-    ).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ content: string }>)))
+    ).pipe(Effect.catch((error) =>
+      Effect.logWarning("Semantic memory retrieval failed, continuing without memories", Cause.die(error)).pipe(
+        Effect.as([] as ReadonlyArray<{ content: string }>)
+      )
+    ))
 
     const modelResponse = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
@@ -218,7 +222,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
         prompt: userPrompt,
         toolkit: toolkitBundle.toolkit
       }).pipe(
-        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer))
+        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer)),
+        Effect.withSpan("TurnProcessing.generateText")
       )
     }).pipe(
       Effect.catch((error) =>
@@ -232,7 +237,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
             Effect.fail(
               new TurnModelFailure({
                 turnId: payload.turnId,
-                reason: toErrorMessage(error)
+                reason: error instanceof Error ? error.message : String(error)
               })
             )
           )
@@ -261,7 +266,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
             Effect.fail(
               new TurnModelFailure({
                 turnId: payload.turnId,
-                reason: `encoding_error: ${toErrorMessage(error)}`
+                reason: `encoding_error: ${error instanceof Error ? error.message : String(error)}`
               })
             )
           )
@@ -383,11 +388,4 @@ const toPromptText = (
     .trim()
 
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
-}
-
-const toErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message
-  }
-  return String(error)
 }
