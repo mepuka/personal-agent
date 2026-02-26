@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { EntityProxy, EntityProxyServer } from "effect/unstable/cluster"
+import { EntityProxy } from "effect/unstable/cluster"
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentEntity } from "../entities/AgentEntity.js"
 import { MemoryEntity } from "../entities/MemoryEntity.js"
@@ -34,7 +34,7 @@ const makeEntityHandlers = <Type extends string, Rpcs extends import("effect/uns
       let handlers = handlers_
       for (const parentRpc_ of entity.protocol.requests.values()) {
         const parentRpc = parentRpc_ as any
-        handlers = handlers
+        handlers = (handlers
           .handle(
             parentRpc._tag as any,
             (({ params, payload }: { params: { entityId: string }; payload: any }) =>
@@ -49,7 +49,7 @@ const makeEntityHandlers = <Type extends string, Rpcs extends import("effect/uns
                   method: parentRpc._tag
                 })
               )) as any
-          )
+          ) as any)
           .handle(
             `${parentRpc._tag}Discard` as any,
             (({ params, payload }: { params: { entityId: string }; payload: any }) =>
