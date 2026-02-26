@@ -1,12 +1,13 @@
 import { MemoryAccessDenied } from "@template/domain/errors"
 import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
-import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
+import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import type { MemorySearchQuery } from "@template/domain/ports"
 import { MemorySortOrder } from "@template/domain/status"
 import { DateTime, Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
 
 const MemoryItemResultSchema = Schema.Struct({
   memoryItemId: Schema.String,
@@ -19,6 +20,10 @@ const MemoryItemResultSchema = Schema.Struct({
   generatedByTurnId: Schema.Union([Schema.String, Schema.Null]),
   sessionId: Schema.Union([Schema.String, Schema.Null]),
   sensitivity: SensitivityLevel,
+  wasGeneratedBy: Schema.Union([Schema.String, Schema.Null]),
+  wasAttributedTo: Schema.Union([Schema.String, Schema.Null]),
+  governedByRetention: Schema.Union([Schema.String, Schema.Null]),
+  lastAccessTime: Schema.Union([Schema.DateTimeUtc, Schema.Null]),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc
 })
@@ -64,6 +69,17 @@ const StoreRpc = Rpc.make("store", {
   primaryKey: ({ requestId }) => `store:${requestId}`
 }).annotate(ClusterSchema.Persisted, true)
 
+const RetrieveRpc = Rpc.make("retrieve", {
+  payload: {
+    query: Schema.String,
+    tier: Schema.optional(MemoryTier),
+    scope: Schema.optional(MemoryScope),
+    limit: Schema.optional(Schema.Number)
+  },
+  success: Schema.Array(MemoryItemResultSchema),
+  error: MemoryAccessDenied
+})
+
 const ForgetRpc = Rpc.make("forget", {
   payload: {
     requestId: Schema.String,
@@ -74,18 +90,31 @@ const ForgetRpc = Rpc.make("forget", {
   primaryKey: ({ requestId }) => `forget:${requestId}`
 }).annotate(ClusterSchema.Persisted, true)
 
+const ListItemsRpc = Rpc.make("listItems", {
+  payload: {
+    tier: Schema.optional(MemoryTier),
+    scope: Schema.optional(MemoryScope),
+    limit: Schema.optional(Schema.Number)
+  },
+  success: Schema.Array(MemoryItemResultSchema),
+  error: MemoryAccessDenied
+})
+
 export const MemoryEntity = Entity.make("Memory", [
   SearchRpc,
   StoreRpc,
-  ForgetRpc
+  RetrieveRpc,
+  ForgetRpc,
+  ListItemsRpc
 ])
 
 export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
   const port = yield* MemoryPortTag
+  const sqlitePort = yield* MemoryPortSqlite
   const governance = yield* GovernancePortTag
 
   type MemoryAction = "ReadMemory" | "WriteMemory"
-  type MemoryOperation = "search" | "store" | "forget"
+  type MemoryOperation = "search" | "store" | "forget" | "retrieve" | "listItems"
 
   const withPolicy = <A>(options: {
     readonly agentId: AgentId
@@ -206,6 +235,24 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
       })
     },
 
+    retrieve: ({ address, payload }) => {
+      const agentId = String(address.entityId) as AgentId
+      return withPolicy({
+        agentId,
+        action: "ReadMemory",
+        operation: "retrieve",
+        auditBeforeExecute: false,
+        allowReason: "memory_retrieve_allowed",
+        denyReason: "memory_retrieve_denied",
+        execute: sqlitePort.retrieve(agentId, {
+          query: payload.query,
+          tier: payload.tier,
+          scope: payload.scope,
+          limit: payload.limit ?? 10
+        }) as any
+      })
+    },
+
     forget: ({ address, payload }) => {
       const agentId = String(address.entityId) as AgentId
       return withPolicy({
@@ -218,6 +265,23 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
         denyReason: "memory_forget_denied",
         execute: port.forget(agentId, payload.cutoff)
       })
+    },
+
+    listItems: ({ address, payload }) => {
+      const agentId = String(address.entityId) as AgentId
+      return withPolicy({
+        agentId,
+        action: "ReadMemory",
+        operation: "listItems",
+        auditBeforeExecute: false,
+        allowReason: "memory_list_allowed",
+        denyReason: "memory_list_denied",
+        execute: sqlitePort.listAll(agentId, {
+          tier: payload.tier,
+          scope: payload.scope,
+          limit: payload.limit ?? 50
+        }) as any
+      })
     }
   }
 }))
@@ -225,7 +289,7 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
 const makeAuditEntryId = (
   agentId: AgentId,
   action: "ReadMemory" | "WriteMemory",
-  operation: "search" | "store" | "forget",
+  operation: "search" | "store" | "forget" | "retrieve" | "listItems",
   requestId?: string
 ): AuditEntryId =>
   requestId === undefined

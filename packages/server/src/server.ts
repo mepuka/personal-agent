@@ -174,6 +174,7 @@ const agentEntityLayer = AgentEntityLayer.pipe(
 const memoryEntityLayer = MemoryEntityLayer.pipe(
   Layer.provide(clusterLayer),
   Layer.provide(memoryPortTagLayer),
+  Layer.provide(memoryPortSqliteLayer),
   Layer.provide(governancePortTagLayer)
 )
 
@@ -207,7 +208,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(toolRegistryLayer),
   Layer.provide(chatPersistenceLayer),
   Layer.provide(agentConfigLayer),
-  Layer.provide(modelRegistryLayer)
+  Layer.provide(modelRegistryLayer),
+  Layer.provide(memoryPortSqliteLayer)
 )
 
 const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -272,7 +274,9 @@ const integrationEntityLayer = Layer.unwrap(
 )
 
 const portTagsLayer = Layer.mergeAll(
+  memoryPortSqliteLayer,
   memoryPortTagLayer,
+  memoryEntityLayer,
   agentStatePortTagLayer,
   sessionTurnPortTagLayer,
   schedulePortTagLayer,

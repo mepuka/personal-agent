@@ -43,6 +43,28 @@ describe("MemoryEntity", () => {
     )
   })
 
+  it.effect("store + retrieve round-trip via entity RPCs", () => {
+    const dbPath = testDatabasePath("memory-entity-retrieve-roundtrip")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(MemoryEntity, MemoryEntityLayer)
+      const client = yield* makeClient(AGENT_ID)
+
+      yield* client.store({
+        requestId: "store:retrieve-roundtrip",
+        items: [
+          { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User's name is Alex" }
+        ]
+      })
+
+      const results = yield* client.retrieve({ query: "Alex", limit: 10 })
+      expect(results.length).toBeGreaterThanOrEqual(1)
+      expect(results[0].content).toContain("Alex")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.live("store timestamps items with server clock", () => {
     const dbPath = testDatabasePath("mem-entity-server-clock")
     return Effect.gen(function*() {
@@ -64,6 +86,51 @@ describe("MemoryEntity", () => {
       const createdAt = DateTime.toEpochMillis(result.items[0].createdAt)
       expect(createdAt).toBeGreaterThanOrEqual(DateTime.toEpochMillis(before))
       expect(createdAt).toBeLessThanOrEqual(DateTime.toEpochMillis(after))
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("forget removes items via entity RPC", () => {
+    const dbPath = testDatabasePath("memory-entity-forget")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(MemoryEntity, MemoryEntityLayer)
+      const port = yield* MemoryPortSqlite
+      const agentId = "agent:entity-forget" as AgentId
+      const client = yield* makeClient(agentId)
+
+      yield* port.encode(agentId, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "old memory" }
+      ], instant("2026-01-01T00:00:00.000Z"))
+
+      const result = yield* client.forget({
+        requestId: "forget:entity",
+        cutoff: instant("2026-02-25T12:00:00.000Z")
+      })
+      expect(result).toBe(1)
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("listItems returns all items for agent", () => {
+    const dbPath = testDatabasePath("memory-entity-list")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(MemoryEntity, MemoryEntityLayer)
+      const client = yield* makeClient(AGENT_ID)
+
+      yield* client.store({
+        requestId: "store:list-items",
+        items: [
+          { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "fact" },
+          { tier: "EpisodicMemory", scope: "SessionScope", source: "SystemSource", content: "event" }
+        ]
+      })
+
+      const all = yield* client.listItems({ limit: 10 })
+      expect(all).toHaveLength(2)
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -282,6 +349,7 @@ const makeClusterLayer = (
   const memoryEntityLayer = MemoryEntityLayer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(memoryTagLayer),
+    Layer.provide(memorySqliteLayer),
     Layer.provide(governanceTagLayer)
   )
 

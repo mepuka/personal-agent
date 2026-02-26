@@ -16,6 +16,7 @@ import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry } from "../ai/ToolRegistry.js"
+import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
 import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../PortTags.js"
 
 export const TurnAuditReasonCode = Schema.Literals([
@@ -97,11 +98,12 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const agentStatePort = yield* AgentStatePortTag
     const sessionTurnPort = yield* SessionTurnPortTag
     const governancePort = yield* GovernancePortTag
-    const memoryPort = yield* MemoryPortTag
+    yield* MemoryPortTag // required by layer — actual retrieval uses sqlitePort below
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
     const agentConfig = yield* AgentConfig
     const modelRegistry = yield* ModelRegistry
+    const sqlitePort = yield* MemoryPortSqlite
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -172,15 +174,12 @@ export const layer = TurnProcessingWorkflow.toLayer(
       })
     }).asEffect()
 
-    // Retrieve semantic memories (outside Activity — read-only snapshot).
-    // No query filter: inject all semantic memories as context, bounded by limit.
-    // Semantic search (vector/embedding) will replace this in a future slice.
-    const memoryContext = yield* memoryPort.search(
+    // Retrieve semantic memories for context injection (snapshot read, not an Activity)
+    // Uses FTS5 full-text search via MemoryPortSqlite.retrieve for relevance ranking
+    const semanticMemories = yield* sqlitePort.retrieve(
       payload.agentId as AgentId,
-      { tier: "SemanticMemory", limit: 20 }
-    ).pipe(
-      Effect.map((result) => result.items)
-    )
+      { query: payload.content, tier: "SemanticMemory", limit: 20 }
+    ).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ content: string }>)))
 
     const modelResponse = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
@@ -199,21 +198,24 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
-      // Inject system prompt on first turn
+      // Build system prompt: base persona + fresh memory context each turn
+      const baseSystemPrompt = profile.persona.systemPrompt
+      const systemPromptWithMemory = semanticMemories.length > 0
+        ? baseSystemPrompt
+          + "\n\n[Relevant Memory]\n"
+          + semanticMemories.map((m) => `- ${m.content}`).join("\n")
+        : baseSystemPrompt
+
+      // Set system prompt (always re-set to avoid stale memory accumulation)
       const currentHistory = yield* Ref.get(chat.history)
-      if (currentHistory.content.length === 0) {
-        const withSystem = Prompt.setSystem(currentHistory, profile.persona.systemPrompt)
-        yield* Ref.set(chat.history, withSystem)
-      }
+      const withSystem = Prompt.setSystem(currentHistory, systemPromptWithMemory)
+      yield* Ref.set(chat.history, withSystem)
 
       // Build prompt with memory context prepended
       const userPrompt = toPromptText(payload.content, payload.contentBlocks)
-      const enhancedPrompt = memoryContext.length > 0
-        ? formatMemoryBlock(memoryContext) + userPrompt
-        : userPrompt
 
       return yield* chat.generateText({
-        prompt: enhancedPrompt,
+        prompt: userPrompt,
         toolkit: toolkitBundle.toolkit
       }).pipe(
         Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer))
@@ -381,11 +383,6 @@ const toPromptText = (
     .trim()
 
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
-}
-
-const formatMemoryBlock = (items: ReadonlyArray<{ content: string }>): string => {
-  const lines = items.map((item) => `- ${item.content}`).join("\n")
-  return `[Relevant Memory]\n${lines}\n\n`
 }
 
 const toErrorMessage = (error: unknown): string => {

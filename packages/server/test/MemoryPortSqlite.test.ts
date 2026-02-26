@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest"
 import fc from "fast-check"
+import type { AgentId } from "@template/domain/ids"
+import type { Instant, MemorySearchQuery } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { AgentId } from "../../domain/src/ids.js"
-import type { Instant, MemorySearchQuery } from "../../domain/src/ports.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
@@ -33,6 +33,28 @@ describe("MemoryPortSqlite", () => {
       expect(result.totalCount).toBe(1)
     }).pipe(
       Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("encode + retrieve round-trip via FTS5", () => {
+    const dbPath = testDatabasePath("memory-roundtrip")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      const ids = yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User's name is Alex" },
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User prefers TypeScript" }
+      ], now)
+
+      expect(ids).toHaveLength(2)
+
+      const results = yield* port.retrieve(AGENT_ID, { query: "Alex", limit: 10 })
+      expect(results.length).toBeGreaterThanOrEqual(1)
+      expect(results[0].content).toContain("Alex")
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
@@ -193,6 +215,26 @@ describe("MemoryPortSqlite", () => {
     )
   })
 
+  it.effect("retrieve filters by tier", () => {
+    const dbPath = testDatabasePath("memory-tier-filter")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "semantic fact" },
+        { tier: "EpisodicMemory", scope: "SessionScope", source: "SystemSource", content: "episodic event" }
+      ], now)
+
+      const semanticOnly = yield* port.retrieve(AGENT_ID, { query: "", tier: "SemanticMemory", limit: 10 })
+      expect(semanticOnly).toHaveLength(1)
+      expect(semanticOnly[0].tier).toBe("SemanticMemory")
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("search sorts by CreatedAsc", () => {
     const dbPath = testDatabasePath("mem-sort")
     const layer = makeMemoryLayer(dbPath)
@@ -272,6 +314,32 @@ describe("MemoryPortSqlite", () => {
     )
   })
 
+  it.effect("forget removes items by cutoff date (ForgetFilters)", () => {
+    const dbPath = testDatabasePath("memory-forget-filters")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const old = instant("2026-01-01T00:00:00.000Z")
+      const recent = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "old fact" }
+      ], old)
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "new fact" }
+      ], recent)
+
+      const deleted = yield* port.forget(AGENT_ID, { cutoffDate: instant("2026-02-01T00:00:00.000Z") })
+      expect(deleted).toBe(1)
+
+      const remaining = yield* port.retrieve(AGENT_ID, { query: "", limit: 10 })
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0].content).toBe("new fact")
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("search isolates items by agentId", () => {
     const dbPath = testDatabasePath("mem-isolation")
     const layer = makeMemoryLayer(dbPath)
@@ -294,6 +362,27 @@ describe("MemoryPortSqlite", () => {
       expect(result.items[0].content).toBe("Agent 1 fact")
     }).pipe(
       Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("FTS5 ranks relevant results higher", () => {
+    const dbPath = testDatabasePath("memory-fts-rank")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User likes pizza and pasta" },
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "The weather is sunny today" },
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User's favorite pizza is margherita" }
+      ], now)
+
+      const results = yield* port.retrieve(AGENT_ID, { query: "pizza", limit: 10 })
+      expect(results.length).toBeGreaterThanOrEqual(2)
+      expect(results.every((r) => r.content.includes("pizza"))).toBe(true)
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
@@ -430,6 +519,47 @@ describe("MemoryPortSqlite", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("listAll returns items for agent", () => {
+    const dbPath = testDatabasePath("memory-list")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "fact one" },
+        { tier: "EpisodicMemory", scope: "SessionScope", source: "SystemSource", content: "event one" }
+      ], now)
+
+      const all = yield* port.listAll(AGENT_ID, { limit: 10 })
+      expect(all).toHaveLength(2)
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("provenance fields round-trip as null when not provided", () => {
+    const dbPath = testDatabasePath("memory-provenance")
+    return Effect.gen(function*() {
+      const port = yield* MemoryPortSqlite
+      const now = instant("2026-02-25T12:00:00.000Z")
+
+      yield* port.encode(AGENT_ID, [
+        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "a fact" }
+      ], now)
+
+      const results = yield* port.retrieve(AGENT_ID, { query: "fact", limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0].wasGeneratedBy).toBe(AGENT_ID)
+      expect(results[0].wasAttributedTo).toBe(AGENT_ID)
+      expect(results[0].governedByRetention).toBeNull()
+      expect(results[0].lastAccessTime).toBeNull()
+    }).pipe(
+      Effect.provide(makeMemoryLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 describe("MemoryPortSqlite property-based tests", () => {
@@ -439,7 +569,7 @@ describe("MemoryPortSqlite property-based tests", () => {
   })
   const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
 
-  it("cursor roundtrip: encode → decode is identity for arbitrary CursorData", () => {
+  it("cursor roundtrip: encode -> decode is identity for arbitrary CursorData", () => {
     const arb = Schema.toArbitrary(CursorSchema) as fc.Arbitrary<{ readonly createdAt: string; readonly rowid: number }>
 
     fc.assert(

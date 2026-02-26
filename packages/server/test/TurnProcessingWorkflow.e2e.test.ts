@@ -318,7 +318,7 @@ describe("TurnProcessingWorkflow e2e", () => {
         }
       ], now)
 
-      const userContent = "Hello, what is my name?"
+      const userContent = "Tell me about the user and their preferences"
       const result = yield* runtime.processTurn(makeTurnPayload({
         turnId: "turn:memory" as TurnId,
         agentId,
@@ -336,7 +336,7 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(allCaptured).toContain("[Relevant Memory]")
       expect(allCaptured).toContain("User's name is Alex")
       expect(allCaptured).toContain("User prefers concise responses")
-      expect(allCaptured).toContain("Hello, what is my name?")
+      expect(allCaptured).toContain("Tell me about the user and their preferences")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -499,7 +499,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
-    Layer.provide(mockModelRegistryLayer)
+    Layer.provide(mockModelRegistryLayer),
+    Layer.provide(memoryPortSqliteLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

@@ -140,19 +140,23 @@ const loader = SqliteMigrator.fromRecord({
 
     yield* sql`
       CREATE TABLE IF NOT EXISTS memory_items (
-        memory_item_id    TEXT PRIMARY KEY,
-        agent_id          TEXT NOT NULL,
-        tier              TEXT NOT NULL CHECK (tier IN ('SemanticMemory', 'EpisodicMemory')),
-        scope             TEXT NOT NULL CHECK (scope IN ('SessionScope', 'ProjectScope', 'GlobalScope')),
-        source            TEXT NOT NULL CHECK (source IN ('UserSource', 'SystemSource', 'AgentSource')),
-        content           TEXT NOT NULL,
-        metadata_json     TEXT,
+        memory_item_id       TEXT PRIMARY KEY,
+        agent_id             TEXT NOT NULL,
+        tier                 TEXT NOT NULL CHECK (tier IN ('WorkingMemory', 'EpisodicMemory', 'SemanticMemory', 'ProceduralMemory')),
+        scope                TEXT NOT NULL CHECK (scope IN ('SessionScope', 'GlobalScope')),
+        source               TEXT NOT NULL CHECK (source IN ('UserSource', 'SystemSource', 'AgentSource')),
+        content              TEXT NOT NULL,
+        metadata_json        TEXT,
         generated_by_turn_id TEXT,
-        session_id        TEXT,
-        sensitivity       TEXT NOT NULL DEFAULT 'Internal'
-                          CHECK (sensitivity IN ('Public', 'Internal', 'Confidential', 'Restricted')),
-        created_at        TEXT NOT NULL,
-        updated_at        TEXT NOT NULL
+        session_id           TEXT,
+        sensitivity          TEXT NOT NULL DEFAULT 'Internal'
+                             CHECK (sensitivity IN ('Public', 'Internal', 'Confidential', 'Restricted')),
+        was_generated_by     TEXT,
+        was_attributed_to    TEXT,
+        governed_by_retention TEXT,
+        last_access_time     TEXT,
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
       )
     `.unprepared
 
@@ -164,6 +168,38 @@ const loader = SqliteMigrator.fromRecord({
     yield* sql`
       CREATE INDEX IF NOT EXISTS idx_memory_items_agent_scope
       ON memory_items(agent_id, scope)
+    `.unprepared
+
+    yield* sql`
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+        content,
+        metadata_json,
+        content=memory_items,
+        content_rowid=rowid
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
+        INSERT INTO memory_items_fts(rowid, content, metadata_json)
+        VALUES (new.rowid, new.content, new.metadata_json);
+      END
+    `.unprepared
+
+    yield* sql`
+      CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
+        INSERT INTO memory_items_fts(memory_items_fts, rowid, content, metadata_json)
+        VALUES ('delete', old.rowid, old.content, old.metadata_json);
+      END
+    `.unprepared
+
+    yield* sql`
+      CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
+        INSERT INTO memory_items_fts(memory_items_fts, rowid, content, metadata_json)
+        VALUES ('delete', old.rowid, old.content, old.metadata_json);
+        INSERT INTO memory_items_fts(rowid, content, metadata_json)
+        VALUES (new.rowid, new.content, new.metadata_json);
+      END
     `.unprepared
   }),
   "0005_integration_tables": Effect.gen(function*() {

@@ -201,6 +201,7 @@ const makeAppLayer = (
   const memoryEntityLayer = MemoryEntityLayer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(memoryPortTagLayer),
+    Layer.provide(memoryPortSqliteLayer),
     Layer.provide(governanceTagLayer)
   )
 

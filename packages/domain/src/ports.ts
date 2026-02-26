@@ -31,7 +31,7 @@ import type {
   MemorySource,
   MemoryTier,
   SensitivityLevel
-} from "./memory.js"
+} from "./status.js"
 import type {
   AuthorizationDecision,
   ChannelCapability,
@@ -141,6 +141,12 @@ export interface MemorySearchResult {
   readonly totalCount: number
 }
 
+export interface MemoryQuery {
+  readonly agentId: AgentId
+  readonly text: string
+  readonly limit: number
+}
+
 export interface MemoryItemRecord {
   readonly memoryItemId: MemoryItemId
   readonly agentId: AgentId
@@ -152,6 +158,10 @@ export interface MemoryItemRecord {
   readonly generatedByTurnId: TurnId | null
   readonly sessionId: SessionId | null
   readonly sensitivity: SensitivityLevel
+  readonly wasGeneratedBy: AgentId | null
+  readonly wasAttributedTo: AgentId | null
+  readonly governedByRetention: string | null
+  readonly lastAccessTime: Instant | null
   readonly createdAt: Instant
   readonly updatedAt: Instant
 }

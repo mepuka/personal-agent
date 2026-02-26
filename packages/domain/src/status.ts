@@ -121,3 +121,34 @@ export const ServiceTransport = Schema.Literals([
   "http"
 ])
 export type ServiceTransport = typeof ServiceTransport.Type
+
+// --- Memory enums (aligned with PAO ontology) ---
+
+export const MemoryTier = Schema.Literals([
+  "WorkingMemory",
+  "EpisodicMemory",
+  "SemanticMemory",
+  "ProceduralMemory"
+])
+export type MemoryTier = typeof MemoryTier.Type
+
+export const MemoryScope = Schema.Literals([
+  "SessionScope",
+  "GlobalScope"
+])
+export type MemoryScope = typeof MemoryScope.Type
+
+export const MemorySource = Schema.Literals([
+  "UserSource",
+  "SystemSource",
+  "AgentSource"
+])
+export type MemorySource = typeof MemorySource.Type
+
+export const SensitivityLevel = Schema.Literals([
+  "Public",
+  "Internal",
+  "Confidential",
+  "Restricted"
+])
+export type SensitivityLevel = typeof SensitivityLevel.Type

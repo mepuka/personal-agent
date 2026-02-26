@@ -1,60 +1,49 @@
 import { Schema } from "effect"
+import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "./status.js"
 
-export const MemoryTier = Schema.Literals([
-  "SemanticMemory",
-  "EpisodicMemory"
-])
-export type MemoryTier = typeof MemoryTier.Type
+export const StoreItemInput = Schema.Struct({
+  tier: MemoryTier,
+  scope: MemoryScope,
+  source: MemorySource,
+  content: Schema.String,
+  metadataJson: Schema.optional(Schema.String),
+  generatedByTurnId: Schema.optional(Schema.String),
+  sessionId: Schema.optional(Schema.String),
+  sensitivity: Schema.optional(SensitivityLevel)
+})
+export type StoreItemInput = typeof StoreItemInput.Type
 
-export const MemoryScope = Schema.Literals([
-  "SessionScope",
-  "ProjectScope",
-  "GlobalScope"
-])
-export type MemoryScope = typeof MemoryScope.Type
+export const MemoryItemRecordSchema = Schema.Struct({
+  memoryItemId: Schema.String,
+  agentId: Schema.String,
+  tier: MemoryTier,
+  scope: MemoryScope,
+  source: MemorySource,
+  content: Schema.String,
+  metadataJson: Schema.Union([Schema.String, Schema.Null]),
+  generatedByTurnId: Schema.Union([Schema.String, Schema.Null]),
+  sessionId: Schema.Union([Schema.String, Schema.Null]),
+  sensitivity: SensitivityLevel,
+  wasGeneratedBy: Schema.Union([Schema.String, Schema.Null]),
+  wasAttributedTo: Schema.Union([Schema.String, Schema.Null]),
+  governedByRetention: Schema.Union([Schema.String, Schema.Null]),
+  lastAccessTime: Schema.Union([Schema.DateTimeUtc, Schema.Null]),
+  createdAt: Schema.DateTimeUtc,
+  updatedAt: Schema.DateTimeUtc
+})
+export type MemoryItemRecordSchema = typeof MemoryItemRecordSchema.Type
 
-export const MemorySource = Schema.Literals([
-  "UserSource",
-  "SystemSource",
-  "AgentSource"
-])
-export type MemorySource = typeof MemorySource.Type
-
-export const SensitivityLevel = Schema.Literals([
-  "Public",
-  "Internal",
-  "Confidential",
-  "Restricted"
-])
-export type SensitivityLevel = typeof SensitivityLevel.Type
-
-export const SearchQuery = Schema.Struct({
-  query: Schema.optional(Schema.String),
+export const RetrieveQuery = Schema.Struct({
+  query: Schema.String,
   tier: Schema.optional(MemoryTier),
   scope: Schema.optional(MemoryScope),
-  source: Schema.optional(MemorySource),
-  sort: Schema.optional(Schema.Literals(["CreatedDesc", "CreatedAsc"])),
-  limit: Schema.optional(Schema.Number),
-  cursor: Schema.optional(Schema.String)
+  limit: Schema.optional(Schema.Number)
 })
-export type SearchQuery = typeof SearchQuery.Type
+export type RetrieveQuery = typeof RetrieveQuery.Type
 
-export const SearchResult = Schema.Struct({
-  items: Schema.Array(Schema.Struct({
-    memoryItemId: Schema.String,
-    agentId: Schema.String,
-    tier: MemoryTier,
-    scope: MemoryScope,
-    source: MemorySource,
-    content: Schema.String,
-    metadataJson: Schema.Union([Schema.String, Schema.Null]),
-    generatedByTurnId: Schema.Union([Schema.String, Schema.Null]),
-    sessionId: Schema.Union([Schema.String, Schema.Null]),
-    sensitivity: SensitivityLevel,
-    createdAt: Schema.DateTimeUtc,
-    updatedAt: Schema.DateTimeUtc
-  })),
-  cursor: Schema.Union([Schema.String, Schema.Null]),
-  totalCount: Schema.Number
+export const ForgetFilter = Schema.Struct({
+  cutoffDate: Schema.optional(Schema.DateTimeUtc),
+  scope: Schema.optional(MemoryScope),
+  itemIds: Schema.optional(Schema.Array(Schema.String))
 })
-export type SearchResult = typeof SearchResult.Type
+export type ForgetFilter = typeof ForgetFilter.Type
