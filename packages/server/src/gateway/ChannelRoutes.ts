@@ -140,6 +140,7 @@ const initializeChannel = HttpRouter.add(
 
       return yield* HttpServerResponse.json({ ok: true })
     }).pipe(
+      Effect.withSpan("ChannelRoutes.initializeChannel"),
       Effect.catchCause(() =>
         HttpServerResponse.json(
           { error: "InternalServerError" },
@@ -181,7 +182,9 @@ const sendMessage = HttpRouter.add(
           connection: "keep-alive"
         }
       })
-    })
+    }).pipe(
+      Effect.withSpan("ChannelRoutes.sendMessage")
+    )
 )
 
 const getHistory = HttpRouter.add(
@@ -197,6 +200,7 @@ const getHistory = HttpRouter.add(
 
       return yield* HttpServerResponse.json(turns)
     }).pipe(
+      Effect.withSpan("ChannelRoutes.getHistory"),
       Effect.catchTag("ChannelNotFound", (error) =>
         HttpServerResponse.json(
           { error: "ChannelNotFound", channelId: error.channelId },
@@ -224,6 +228,7 @@ const getStatus = HttpRouter.add(
 
       return yield* HttpServerResponse.json(status)
     }).pipe(
+      Effect.withSpan("ChannelRoutes.getStatus"),
       Effect.catchTag("ChannelNotFound", (error) =>
         HttpServerResponse.json(
           { error: "ChannelNotFound", channelId: error.channelId },
