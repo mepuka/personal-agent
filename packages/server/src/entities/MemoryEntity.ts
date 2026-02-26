@@ -1,11 +1,12 @@
-import type { AgentId, SessionId, TurnId } from "@template/domain/ids"
+import { MemoryAccessDenied } from "@template/domain/errors"
+import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
 import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/memory"
 import type { MemorySearchQuery } from "@template/domain/ports"
 import { MemorySortOrder } from "@template/domain/status"
-import { Effect, Schema } from "effect"
+import { DateTime, Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { MemoryPortTag } from "../PortTags.js"
+import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 
 const MemoryItemResultSchema = Schema.Struct({
   memoryItemId: Schema.String,
@@ -38,7 +39,8 @@ const SearchRpc = Rpc.make("search", {
     limit: Schema.optional(Schema.Number),
     cursor: Schema.optional(Schema.String)
   },
-  success: SearchResultSchema
+  success: SearchResultSchema,
+  error: MemoryAccessDenied
 })
 
 const StoreItemFields = {
@@ -54,19 +56,22 @@ const StoreItemFields = {
 
 const StoreRpc = Rpc.make("store", {
   payload: {
-    items: Schema.Array(Schema.Struct(StoreItemFields)),
-    now: Schema.DateTimeUtc
+    requestId: Schema.String,
+    items: Schema.Array(Schema.Struct(StoreItemFields))
   },
   success: Schema.Array(Schema.String),
-  primaryKey: () => "store"
+  error: MemoryAccessDenied,
+  primaryKey: ({ requestId }) => `store:${requestId}`
 }).annotate(ClusterSchema.Persisted, true)
 
 const ForgetRpc = Rpc.make("forget", {
   payload: {
-    cutoff: Schema.DateTimeUtc
+    requestId: Schema.String,
+    cutoff: Schema.DateTimeUtcFromString
   },
   success: Schema.Number,
-  primaryKey: () => "forget"
+  error: MemoryAccessDenied,
+  primaryKey: ({ requestId }) => `forget:${requestId}`
 }).annotate(ClusterSchema.Persisted, true)
 
 export const MemoryEntity = Entity.make("Memory", [
@@ -77,6 +82,70 @@ export const MemoryEntity = Entity.make("Memory", [
 
 export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
   const port = yield* MemoryPortTag
+  const governance = yield* GovernancePortTag
+
+  type MemoryAction = "ReadMemory" | "WriteMemory"
+  type MemoryOperation = "search" | "store" | "forget"
+
+  const withPolicy = <A>(options: {
+    readonly agentId: AgentId
+    readonly action: MemoryAction
+    readonly operation: MemoryOperation
+    readonly requestId?: string
+    readonly auditBeforeExecute: boolean
+    readonly allowReason: string
+    readonly denyReason: string
+    readonly execute: Effect.Effect<A>
+  }): Effect.Effect<A, MemoryAccessDenied> =>
+    Effect.gen(function*() {
+      const now = yield* DateTime.now
+      const policy = yield* governance.evaluatePolicy({
+        agentId: options.agentId,
+        sessionId: null,
+        action: options.action
+      })
+      const auditEntryId = makeAuditEntryId(
+        options.agentId,
+        options.action,
+        options.operation,
+        options.requestId
+      )
+
+      if (policy.decision === "Deny" || policy.decision === "RequireApproval") {
+        yield* governance.writeAudit({
+          auditEntryId,
+          agentId: options.agentId,
+          sessionId: null,
+          decision: policy.decision,
+          reason: `${options.denyReason}:${policy.reason}`,
+          createdAt: now
+        })
+        return yield* new MemoryAccessDenied({
+          agentId: options.agentId,
+          action: options.action,
+          decision: policy.decision,
+          reason: policy.reason
+        })
+      }
+
+      const writeAllowAudit = governance.writeAudit({
+        auditEntryId,
+        agentId: options.agentId,
+        sessionId: null,
+        decision: "Allow",
+        reason: options.allowReason,
+        createdAt: now
+      })
+
+      if (options.auditBeforeExecute) {
+        yield* writeAllowAudit
+        return yield* options.execute
+      }
+
+      const result = yield* options.execute
+      yield* writeAllowAudit
+      return result
+    })
 
   return {
     search: ({ address, payload }) => {
@@ -92,34 +161,73 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
           cursor: payload.cursor
         }).filter(([, v]) => v !== undefined)
       ) as MemorySearchQuery
-      return port.search(agentId, query)
+      return withPolicy({
+        agentId,
+        action: "ReadMemory",
+        operation: "search",
+        auditBeforeExecute: false,
+        allowReason: "memory_search_allowed",
+        denyReason: "memory_search_denied",
+        execute: port.search(agentId, query)
+      })
     },
 
     store: ({ address, payload }) => {
       const agentId = String(address.entityId) as AgentId
-      return port.encode(
+      return withPolicy({
         agentId,
-        payload.items.map((item) => {
-          const base = {
-            tier: item.tier,
-            scope: item.scope,
-            source: item.source,
-            content: item.content,
-            metadataJson: item.metadataJson ?? null,
-            generatedByTurnId: (item.generatedByTurnId ?? null) as TurnId | null,
-            sessionId: (item.sessionId ?? null) as SessionId | null
-          }
-          return item.sensitivity !== undefined
-            ? { ...base, sensitivity: item.sensitivity }
-            : base
-        }),
-        payload.now
-      )
+        action: "WriteMemory",
+        operation: "store",
+        requestId: payload.requestId,
+        auditBeforeExecute: true,
+        allowReason: "memory_store_allowed",
+        denyReason: "memory_store_denied",
+        execute: Effect.gen(function*() {
+          const now = yield* DateTime.now
+          return yield* port.encode(
+            agentId,
+            payload.items.map((item) => {
+              const base = {
+                tier: item.tier,
+                scope: item.scope,
+                source: item.source,
+                content: item.content,
+                metadataJson: item.metadataJson ?? null,
+                generatedByTurnId: (item.generatedByTurnId ?? null) as TurnId | null,
+                sessionId: (item.sessionId ?? null) as SessionId | null
+              }
+              return item.sensitivity !== undefined
+                ? { ...base, sensitivity: item.sensitivity }
+                : base
+            }),
+            now
+          )
+        })
+      })
     },
 
     forget: ({ address, payload }) => {
       const agentId = String(address.entityId) as AgentId
-      return port.forget(agentId, payload.cutoff)
+      return withPolicy({
+        agentId,
+        action: "WriteMemory",
+        operation: "forget",
+        requestId: payload.requestId,
+        auditBeforeExecute: true,
+        allowReason: "memory_forget_allowed",
+        denyReason: "memory_forget_denied",
+        execute: port.forget(agentId, payload.cutoff)
+      })
     }
   }
 }))
+
+const makeAuditEntryId = (
+  agentId: AgentId,
+  action: "ReadMemory" | "WriteMemory",
+  operation: "search" | "store" | "forget",
+  requestId?: string
+): AuditEntryId =>
+  requestId === undefined
+    ? (`audit:memory:${operation}:${action}:${agentId}:${crypto.randomUUID()}`) as AuditEntryId
+    : (`audit:memory:${operation}:${action}:${agentId}:${requestId}`) as AuditEntryId

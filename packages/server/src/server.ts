@@ -19,6 +19,7 @@ import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
 import { layer as ChannelEntityLayer } from "./entities/ChannelEntity.js"
+import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
@@ -152,6 +153,12 @@ const agentEntityLayer = AgentEntityLayer.pipe(
   Layer.provide(agentStatePortTagLayer)
 )
 
+const memoryEntityLayer = MemoryEntityLayer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(memoryPortTagLayer),
+  Layer.provide(governancePortTagLayer)
+)
+
 const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
   Layer.provide(clusterLayer)
 )
@@ -225,7 +232,8 @@ const workflowLayer = turnProcessingRuntimeLayer.pipe(
 
 const entityLayer = channelEntityLayer.pipe(
   Layer.provideMerge(sessionEntityLayer),
-  Layer.provideMerge(agentEntityLayer)
+  Layer.provideMerge(agentEntityLayer),
+  Layer.provideMerge(memoryEntityLayer)
 )
 
 const PortsLive = entityLayer.pipe(

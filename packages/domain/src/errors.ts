@@ -37,3 +37,20 @@ export class ChannelNotFound extends Schema.ErrorClass<ChannelNotFound>("Channel
   _tag: Schema.tag("ChannelNotFound"),
   channelId: Schema.String
 }) {}
+
+export class MemoryAccessDenied extends Schema.ErrorClass<MemoryAccessDenied>("MemoryAccessDenied")({
+  _tag: Schema.tag("MemoryAccessDenied"),
+  agentId: AgentId,
+  action: Schema.Literals([
+    "ReadMemory",
+    "WriteMemory"
+  ]),
+  decision: Schema.Literals([
+    "Deny",
+    "RequireApproval"
+  ]),
+  reason: Schema.String
+}, {
+  description: "Memory access denied by governance policy",
+  httpApiStatus: 403
+}) {}
