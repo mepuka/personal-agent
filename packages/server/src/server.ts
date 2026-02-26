@@ -20,6 +20,7 @@ import { ChannelCore } from "./ChannelCore.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
 import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
+import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
@@ -217,6 +218,20 @@ const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
   Layer.provide(channelCoreLayer)
 )
 
+const webChatAdapterEntityLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    if (!config.channels.webchat.enabled) {
+      return Layer.empty
+    }
+    return WebChatAdapterEntityLayer.pipe(
+      Layer.provide(clusterLayer),
+      Layer.provide(channelCoreLayer),
+      Layer.provide(channelPortTagLayer)
+    )
+  }).pipe(Effect.provide(agentConfigLayer))
+)
+
 const portTagsLayer = Layer.mergeAll(
   memoryPortTagLayer,
   agentStatePortTagLayer,
@@ -237,6 +252,7 @@ const workflowLayer = turnProcessingRuntimeLayer.pipe(
 )
 
 const entityLayer = cliAdapterEntityLayer.pipe(
+  Layer.provideMerge(webChatAdapterEntityLayer),
   Layer.provideMerge(sessionEntityLayer),
   Layer.provideMerge(agentEntityLayer),
   Layer.provideMerge(memoryEntityLayer)
