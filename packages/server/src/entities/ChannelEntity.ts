@@ -29,7 +29,7 @@ const TurnRecordSchema = Schema.Struct({
   }),
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
-  createdAt: Schema.DateTimeUtc
+  createdAt: Schema.DateTimeUtcFromString
 })
 
 const CreateChannelRpc = Rpc.make("createChannel", {

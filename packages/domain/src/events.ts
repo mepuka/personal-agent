@@ -8,7 +8,7 @@ export class SubmitTurnRequest extends Schema.Class<SubmitTurnRequest>("SubmitTu
   agentId: Schema.String,
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
-  createdAt: Schema.DateTimeUtc,
+  createdAt: Schema.DateTimeUtcFromString,
   inputTokens: Schema.Number
 }) {}
 
@@ -17,7 +17,7 @@ export class TurnStartedEvent extends Schema.Class<TurnStartedEvent>("TurnStarte
   sequence: Schema.Number,
   turnId: Schema.String,
   sessionId: Schema.String,
-  createdAt: Schema.DateTimeUtc
+  createdAt: Schema.DateTimeUtcFromString
 }) {}
 
 export class AssistantDeltaEvent extends Schema.Class<AssistantDeltaEvent>("AssistantDeltaEvent")({

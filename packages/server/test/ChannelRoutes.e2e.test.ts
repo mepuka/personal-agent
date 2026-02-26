@@ -248,15 +248,10 @@ describe("ChannelRoutes e2e", () => {
       expect(body).toContain("hello")
     }).pipe(Effect.provide(NodeHttpServer.layerTest)))
 
-  // TODO: SingleRunner streaming RPCs hang — entity client streaming through
-  // SingleRunner never terminates. Non-streaming entity RPCs (createChannel,
-  // getHistory) work fine through SingleRunner. This needs investigation in
-  // the Effect cluster layer. See: ChannelEntity.test.ts for entity streaming
-  // tests using Entity.makeTestClient (which works).
-  it.skip("create channel + send message returns SSE stream (blocked: SingleRunner streaming)", () => {
+  it.live("create channel + send message returns SSE stream", () => {
     const dbPath = testDatabasePath("e2e-send")
     return Effect.gen(function*() {
-      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true }).pipe(
+      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
         Layer.provide(makeAppLayer(dbPath)),
         Layer.build
       )

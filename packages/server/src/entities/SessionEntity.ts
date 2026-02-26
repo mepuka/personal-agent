@@ -28,17 +28,19 @@ const ProcessTurnPayloadFields = {
   agentId: Schema.String,
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
-  createdAt: Schema.DateTimeUtc,
+  createdAt: Schema.DateTimeUtcFromString,
   inputTokens: Schema.Number
 } as const
 
+// NOTE: stream + Persisted is broken when success schema contains Transform
+// fields (e.g. DateTimeUtcFromString). See docs/issues/effect-cluster-stream-
+// persisted-transform-bug.md for root cause analysis.
 const ProcessTurnRpc = Rpc.make("processTurn", {
   payload: ProcessTurnPayloadFields,
   success: TurnStreamEvent,
   error: TurnProcessingError,
-  stream: true,
-  primaryKey: ({ turnId }) => turnId
-}).annotate(ClusterSchema.Persisted, true)
+  stream: true
+})
 
 export const SessionEntity = Entity.make("Session", [
   StartSessionRpc,
