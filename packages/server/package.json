@@ -21,6 +21,7 @@
     "build-annotate": "babel build/esm --plugins annotate-pure-calls --out-dir build/esm --source-maps",
     "check": "tsc -b tsconfig.json",
     "test": "vitest",
+    "test:ws": "bun test ./test/WebChatRoutes.ws.bun-test.ts",
     "coverage": "vitest --coverage"
   },
   "dependencies": {
