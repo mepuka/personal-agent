@@ -1,11 +1,31 @@
 #!/usr/bin/env bun
 
+import { ChatClient } from "@template/client/ChatClient"
+import { RegistryContext } from "@effect/atom-react"
+import { BunHttpClient } from "@effect/platform-bun"
+import { Effect } from "effect"
+import { AtomRegistry } from "effect/unstable/reactivity"
 // @ts-expect-error -- @opentui/core .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { createCliRenderer } from "@opentui/core"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { createRoot } from "@opentui/react"
 import { App } from "./App.js"
 
+// Build the ChatClient service — resolves Config + HttpClient dependencies.
+const client = await Effect.runPromise(
+  ChatClient.make.pipe(Effect.provide(BunHttpClient.layer))
+)
+
+// Create shared atom registry — single instance for the entire app
+const registry = AtomRegistry.make()
+
 const renderer = await createCliRenderer()
 const root = createRoot(renderer)
-root.render(<App />)
+
+// RegistryContext.Provider MUST wrap App so that useContext(RegistryContext)
+// inside useSendMessage and all components reads from this registry.
+root.render(
+  <RegistryContext.Provider value={registry}>
+    <App client={client} />
+  </RegistryContext.Provider>
+)
