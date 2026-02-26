@@ -274,7 +274,23 @@ Add client paths:
 "@template/client/test/*": ["./packages/client/test/*.js"]
 ```
 
-**Step 10: Install dependencies and verify**
+**Step 10: Update root `tsconfig.build.json`**
+
+Add client build reference:
+```json
+{
+  "extends": "./tsconfig.base.json",
+  "include": [],
+  "references": [
+    { "path": "packages/cli/tsconfig.build.json" },
+    { "path": "packages/client/tsconfig.build.json" },
+    { "path": "packages/domain/tsconfig.build.json" },
+    { "path": "packages/server/tsconfig.build.json" }
+  ]
+}
+```
+
+**Step 11: Install dependencies and verify**
 
 Run: `bun install`
 Run: `bun run check`
@@ -283,7 +299,7 @@ Expected: No type errors.
 Run: `bun run test`
 Expected: All existing tests pass (the CLI tests use `ChatClient` via the re-export — should be transparent).
 
-**Step 11: Commit**
+**Step 12: Commit**
 
 ```bash
 git add packages/client/ packages/cli/src/RuntimeClient.ts packages/cli/package.json packages/cli/tsconfig.src.json tsconfig.json tsconfig.base.json
@@ -324,6 +340,7 @@ Create the TUI package with dependencies, tsconfig, and a minimal "hello world" 
   },
   "scripts": {
     "dev": "bun --watch src/bin.tsx",
+    "build": "tsc -b tsconfig.build.json",
     "check": "tsc -b tsconfig.json",
     "test": "vitest",
     "coverage": "vitest --coverage"
@@ -336,10 +353,12 @@ Create the TUI package with dependencies, tsconfig, and a minimal "hello world" 
     "@template/client": "workspace:^",
     "@template/domain": "workspace:^",
     "effect": "4.0.0-beta.11",
-    "react": "^19.2.4"
+    "react": "^19.2.4",
+    "scheduler": "^0.27.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.2"
+    "@types/react": "^19.2.2",
+    "@types/scheduler": "^0.26.0"
   }
 }
 ```
@@ -445,14 +464,24 @@ export function App() {
 
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
-import { App } from "./App.tsx"
+import { App } from "./App.js"
 
 const renderer = await createCliRenderer()
 const root = createRoot(renderer)
 root.render(<App />)
 ```
 
-**Step 5: Update root `tsconfig.json`**
+Note: We use `.js` extensions per the repo's NodeNext convention (with `rewriteRelativeImportExtensions: true`). This applies to all relative imports across the TUI package — `.tsx` source files are imported as `.js`.
+
+**Step 5: Create `packages/tui/src/index.ts`**
+
+```typescript
+export { App } from "./App.js"
+```
+
+This is needed because `tsconfig.base.json` maps `@template/tui` to `packages/tui/src/index.js`.
+
+**Step 6: Update root `tsconfig.json`**
 
 Add tui reference:
 ```json
@@ -469,7 +498,7 @@ Add tui reference:
 }
 ```
 
-**Step 6: Update `tsconfig.base.json`**
+**Step 7: Update `tsconfig.base.json`**
 
 Add tui paths:
 ```json
@@ -478,23 +507,42 @@ Add tui paths:
 "@template/tui/test/*": ["./packages/tui/test/*.js"]
 ```
 
-**Step 7: Add `tui` script to root `package.json`**
+**Step 8: Update root `tsconfig.build.json`**
+
+Add tui build reference:
+```json
+{
+  "extends": "./tsconfig.base.json",
+  "include": [],
+  "references": [
+    { "path": "packages/cli/tsconfig.build.json" },
+    { "path": "packages/client/tsconfig.build.json" },
+    { "path": "packages/domain/tsconfig.build.json" },
+    { "path": "packages/server/tsconfig.build.json" },
+    { "path": "packages/tui/tsconfig.build.json" }
+  ]
+}
+```
+
+Note: This is cumulative with the client reference added in Task 1 Step 10.
+
+**Step 9: Add `tui` script to root `package.json`**
 
 Add to scripts:
 ```json
 "tui": "bun packages/tui/src/bin.tsx"
 ```
 
-**Step 8: Install and verify**
+**Step 10: Install and verify**
 
-Run: `bun install` (installs @opentui/core, @opentui/react, @effect/atom-react, react)
+Run: `bun install` (installs @opentui/core, @opentui/react, @effect/atom-react, react, scheduler)
 Run: `bun run check`
 Expected: No type errors.
 
 Run: `bun run tui`
 Expected: Terminal clears and shows a bordered box with "Personal Agent TUI" in cyan and "Loading..." below. Ctrl+C exits.
 
-**Step 9: Commit**
+**Step 11: Commit**
 
 ```bash
 git add packages/tui/ tsconfig.json tsconfig.base.json package.json
@@ -583,6 +631,7 @@ Create the hook that calls `ChatClient.sendMessage` and dispatches `TurnStreamEv
 
 **Files:**
 - Create: `packages/tui/src/hooks/useSendMessage.ts`
+- Create: `packages/tui/test/dispatchEvent.test.ts`
 
 **Step 1: Create `packages/tui/src/hooks/useSendMessage.ts`**
 
@@ -603,7 +652,7 @@ import {
 } from "../atoms/session.js"
 import type { ChatMessage, ToolEvent } from "../types.js"
 
-export function useSendMessage(client: typeof ChatClient.Type) {
+export function useSendMessage(client: ChatClient) {
   const registry = React.useContext(RegistryContext)
 
   return React.useCallback(
@@ -656,7 +705,8 @@ export function useSendMessage(client: typeof ChatClient.Type) {
   )
 }
 
-function dispatchEvent(
+/** @internal — exported for testing */
+export function dispatchEvent(
   registry: AtomRegistry.AtomRegistry,
   event: TurnStreamEvent
 ): void {
@@ -727,16 +777,125 @@ function dispatchEvent(
 }
 ```
 
-**Step 2: Verify**
+**Step 2: Verify typecheck**
 
 Run: `bun run check`
 Expected: No type errors.
 
-**Step 3: Commit**
+**Step 3: Create `packages/tui/test/dispatchEvent.test.ts`**
+
+Unit tests for the `dispatchEvent` function — pure logic, no React needed:
+
+```typescript
+import * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
+import { describe, expect, it } from "vitest"
+import { messagesAtom, toolEventsAtom } from "../src/atoms/session.js"
+import { dispatchEvent } from "../src/hooks/useSendMessage.js"
+
+describe("dispatchEvent", () => {
+  function makeRegistry() {
+    return AtomRegistry.make()
+  }
+
+  it("turn.started appends empty streaming assistant message", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, { type: "turn.started", turnId: "t1" } as any)
+
+    const msgs = registry.get(messagesAtom)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toMatchObject({
+      role: "assistant",
+      content: "",
+      turnId: "t1",
+      status: "streaming"
+    })
+  })
+
+  it("assistant.delta appends text to last message", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, { type: "turn.started", turnId: "t1" } as any)
+    dispatchEvent(registry, { type: "assistant.delta", delta: "Hello" } as any)
+    dispatchEvent(registry, { type: "assistant.delta", delta: " world" } as any)
+
+    const msgs = registry.get(messagesAtom)
+    expect(msgs[0]!.content).toBe("Hello world")
+  })
+
+  it("turn.completed marks last message complete", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, { type: "turn.started", turnId: "t1" } as any)
+    dispatchEvent(registry, { type: "turn.completed" } as any)
+
+    expect(registry.get(messagesAtom)[0]!.status).toBe("complete")
+  })
+
+  it("turn.failed marks last message with error", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, { type: "turn.started", turnId: "t1" } as any)
+    dispatchEvent(registry, {
+      type: "turn.failed",
+      errorCode: "PROVIDER_ERROR",
+      message: "Rate limited"
+    } as any)
+
+    const last = registry.get(messagesAtom)[0]!
+    expect(last.status).toBe("failed")
+    expect(last.errorMessage).toBe("PROVIDER_ERROR: Rate limited")
+  })
+
+  it("tool.call appends tool event", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, {
+      type: "tool.call",
+      toolCallId: "tc1",
+      toolName: "search",
+      inputJson: "{}"
+    } as any)
+
+    const tools = registry.get(toolEventsAtom)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({
+      toolCallId: "tc1",
+      toolName: "search",
+      status: "called"
+    })
+  })
+
+  it("tool.result updates matching tool event", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, {
+      type: "tool.call",
+      toolCallId: "tc1",
+      toolName: "search",
+      inputJson: "{}"
+    } as any)
+    dispatchEvent(registry, {
+      type: "tool.result",
+      toolCallId: "tc1",
+      outputJson: '{"result": "found"}',
+      isError: false
+    } as any)
+
+    const tools = registry.get(toolEventsAtom)
+    expect(tools[0]).toMatchObject({
+      status: "completed",
+      outputJson: '{"result": "found"}',
+      isError: false
+    })
+  })
+})
+```
+
+**Step 4: Run tests**
+
+Run: `bun run test packages/tui`
+Expected: All 6 tests pass.
+
+**Step 5: Commit**
 
 ```bash
-git add packages/tui/src/hooks/
-git commit -m "feat: add useSendMessage hook — SSE stream to Atom bridge"
+git add packages/tui/src/hooks/ packages/tui/test/
+git commit -m "feat: add useSendMessage hook with dispatchEvent tests"
 ```
 
 ---
@@ -920,39 +1079,75 @@ git commit -m "feat: add TUI components — ChatPane, ToolPane, InputBar, Status
 
 ### Task 6: Wire Up `App.tsx` — Full Layout with Atom Registry and ChatClient
 
-Connect all components into the `App`, create the `AtomRegistry`, initialize the channel, and wire the `useSendMessage` hook.
+Connect all components into the `App`, initialize the channel, load history, and wire the `useSendMessage` hook.
+
+**Critical architecture decisions:**
+1. **`bin.tsx` builds the ChatClient and AtomRegistry** — `ChatClient.make` is an Effect requiring `HttpClient.HttpClient`, so we resolve it in bin.tsx via `Effect.runPromise` before React renders.
+2. **`bin.tsx` wraps `<App>` in `<RegistryContext.Provider>`** — this ensures all hooks inside App (including `useSendMessage`) can read the registry via `useContext`.
+3. **App receives `client` as a prop** — no module-scope singletons, clean dependency flow.
 
 **Files:**
 - Modify: `packages/tui/src/App.tsx`
 - Modify: `packages/tui/src/bin.tsx`
 
-**Step 1: Rewrite `packages/tui/src/App.tsx`**
+**Step 1: Rewrite `packages/tui/src/bin.tsx`**
+
+This is now the bootstrap entry point — it builds the ChatClient service, creates the AtomRegistry, and mounts the React tree with the registry provider wrapping App.
 
 ```tsx
+#!/usr/bin/env bun
+
 import { ChatClient } from "@template/client/ChatClient"
 import { RegistryContext } from "@effect/atom-react"
 import { BunHttpClient } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+import { App } from "./App.js"
+
+// Build the ChatClient service — resolves Config + HttpClient dependencies.
+// ChatClient.make captures httpClient in a closure, so the returned object's
+// methods (initialize, sendMessage, etc.) are self-contained Effects with no
+// remaining service requirements.
+const client = await Effect.runPromise(
+  ChatClient.make.pipe(Effect.provide(BunHttpClient.layer))
+)
+
+// Create shared atom registry — single instance for the entire app
+const registry = AtomRegistry.make()
+
+const renderer = await createCliRenderer()
+const root = createRoot(renderer)
+
+// RegistryContext.Provider MUST wrap App so that useContext(RegistryContext)
+// inside useSendMessage and all components reads from this registry.
+root.render(
+  <RegistryContext.Provider value={registry}>
+    <App client={client} />
+  </RegistryContext.Provider>
+)
+```
+
+**Step 2: Rewrite `packages/tui/src/App.tsx`**
+
+App is now a pure React component — no module-scope Effect code. It receives `client` as a prop and reads the registry from context.
+
+```tsx
+import type { ChatClient } from "@template/client/ChatClient"
+import { RegistryContext } from "@effect/atom-react"
+import { Effect } from "effect"
 import * as React from "react"
-import { channelIdAtom, connectionStatusAtom } from "./atoms/session.js"
+import { channelIdAtom, connectionStatusAtom, messagesAtom } from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
 import { StatusBar } from "./components/StatusBar.js"
 import { ToolPane } from "./components/ToolPane.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
+import type { ChatMessage } from "./types.js"
 
-// Build the ChatClient once at module scope
-const ClientLive = ChatClient.layer.pipe(Layer.provide(BunHttpClient.layer))
-const client = Effect.runSync(
-  Layer.buildWithMemoMap(ClientLive, Effect.unsafeMakeMemoMap()).pipe(
-    Effect.map(() => Effect.runSync(ChatClient.make.pipe(Effect.provide(BunHttpClient.layer))))
-  )
-)
-
-const registry = AtomRegistry.make()
-
-export function App() {
+export function App({ client }: { readonly client: ChatClient }) {
+  const registry = React.useContext(RegistryContext)
   const sendMessage = useSendMessage(client)
 
   // Initialize channel on mount
@@ -961,13 +1156,25 @@ export function App() {
     registry.set(channelIdAtom, chId)
     registry.set(connectionStatusAtom, "connecting")
 
-    const init = client.initialize(chId, "agent:bootstrap").pipe(
-      Effect.tap(() => Effect.sync(() => registry.set(connectionStatusAtom, "connected"))),
+    const init = Effect.gen(function*() {
+      yield* client.initialize(chId, "agent:bootstrap")
+      registry.set(connectionStatusAtom, "connected")
+
+      // Load any existing history from a previous session
+      const history = yield* client.getHistory(chId)
+      if (Array.isArray(history) && history.length > 0) {
+        const restored: Array<ChatMessage> = history.map((msg: any) => ({
+          role: msg.role as "user" | "assistant",
+          content: String(msg.content ?? ""),
+          turnId: String(msg.turnId ?? ""),
+          status: "complete" as const
+        }))
+        registry.set(messagesAtom, restored)
+      }
+    }).pipe(
       Effect.catchAll((error) =>
         Effect.sync(() => {
           registry.set(connectionStatusAtom, "error")
-          // eslint-disable-next-line no-console
-          console.error("Failed to initialize channel:", error)
         })
       )
     )
@@ -975,35 +1182,19 @@ export function App() {
   }, [])
 
   return (
-    <RegistryContext.Provider value={registry}>
-      <box flexDirection="column" flexGrow={1}>
-        <box flexDirection="row" flexGrow={1}>
-          <ChatPane />
-          <ToolPane />
-        </box>
-        <InputBar onSubmit={sendMessage} />
-        <StatusBar />
+    <box flexDirection="column" flexGrow={1}>
+      <box flexDirection="row" flexGrow={1}>
+        <ChatPane />
+        <ToolPane />
       </box>
-    </RegistryContext.Provider>
+      <InputBar onSubmit={sendMessage} />
+      <StatusBar />
+    </box>
   )
 }
 ```
 
-**Note:** The `ChatClient` instantiation here is a first pass. The `Effect.runSync` approach works for a synchronous config read. If this causes issues (e.g., async config), we'll refactor to `Effect.runPromise` in the entry point and pass client as a prop. The important thing is getting the wiring right — we can clean this up.
-
-**Step 2: Update `packages/tui/src/bin.tsx`**
-
-```tsx
-#!/usr/bin/env bun
-
-import { createCliRenderer } from "@opentui/core"
-import { createRoot } from "@opentui/react"
-import { App } from "./App.js"
-
-const renderer = await createCliRenderer()
-const root = createRoot(renderer)
-root.render(<App />)
-```
+**Why `import type { ChatClient }`?** — We only need `ChatClient` as a TypeScript type here (for the prop signature). The value import happens in `bin.tsx` where the service is built. Using `import type` keeps the import clean.
 
 **Step 3: Verify**
 
@@ -1076,10 +1267,10 @@ Expected: Multi-pane layout renders. Status bar shows "connected".
 Type "Hello, what can you do?" and press Enter.
 Expected:
 - User message appears in ChatPane with `>` prefix
-- Status changes to "streaming"
+- Status bar shows `connected | streaming` (both `connectionStatusAtom` stays "connected" and `isStreamingAtom` becomes true — StatusBar reads both)
 - Assistant response streams in character by character
 - If tools are called, they appear in ToolPane
-- On completion, status returns to "connected"
+- On completion, `isStreamingAtom` resets to false — status bar shows `connected` without the streaming suffix
 
 **Step 4: Verify error handling**
 
@@ -1110,13 +1301,16 @@ git commit -m "fix: TUI end-to-end adjustments"
 | `packages/cli/tsconfig.src.json` | Modify | 1 |
 | `tsconfig.json` | Modify | 1, 2 |
 | `tsconfig.base.json` | Modify | 1, 2 |
+| `tsconfig.build.json` | Modify | 1, 2 |
 | `packages/tui/package.json` | Create | 2 |
 | `packages/tui/tsconfig*.json` | Create (4 files) | 2 |
+| `packages/tui/src/index.ts` | Create | 2 |
 | `packages/tui/src/bin.tsx` | Create | 2, 6 |
 | `packages/tui/src/App.tsx` | Create | 2, 6 |
 | `packages/tui/src/types.ts` | Create | 3 |
 | `packages/tui/src/atoms/session.ts` | Create | 3 |
 | `packages/tui/src/hooks/useSendMessage.ts` | Create | 4 |
+| `packages/tui/test/dispatchEvent.test.ts` | Create | 4 |
 | `packages/tui/src/components/MessageBubble.tsx` | Create | 5 |
 | `packages/tui/src/components/ChatPane.tsx` | Create | 5 |
 | `packages/tui/src/components/ToolPane.tsx` | Create | 5 |
@@ -1128,7 +1322,7 @@ git commit -m "fix: TUI end-to-end adjustments"
 
 ```bash
 bun run check           # typecheck — no errors
-bun run test            # full suite — no regressions
+bun run test            # full suite — no regressions (includes dispatchEvent tests)
 bun run start           # server starts (separate terminal)
 bun run tui             # TUI launches, connects, chat works
 ```
