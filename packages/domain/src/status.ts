@@ -74,9 +74,24 @@ export type ModelFinishReason = typeof ModelFinishReason.Type
 
 export const ChannelType = Schema.Literals([
   "CLI",
-  "HTTP"
+  "Messaging",
+  "WebChat",
+  "APIChannel",
+  "VoiceChannel",
+  "EmailChannel"
 ])
 export type ChannelType = typeof ChannelType.Type
+
+export const ChannelCapability = Schema.Literals([
+  "SendText",
+  "SendFile",
+  "Reactions",
+  "Threads",
+  "ReadReceipts",
+  "Typing",
+  "StreamingDelivery"
+])
+export type ChannelCapability = typeof ChannelCapability.Type
 
 export const MemorySortOrder = Schema.Literals([
   "CreatedDesc",
