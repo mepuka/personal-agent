@@ -54,6 +54,33 @@ describe("ChannelPortSqlite", () => {
     )
   })
 
+  it.effect("roundtrips multiple capabilities", () => {
+    const dbPath = testDatabasePath("channel-multi-cap")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      const channel: ChannelRecord = {
+        channelId: "channel:webchat-1" as ChannelId,
+        channelType: "WebChat",
+        agentId: "agent:test" as AgentId,
+        activeSessionId: "session:s1" as SessionId,
+        activeConversationId: "conv:c1" as ConversationId,
+        capabilities: ["SendText", "Typing", "StreamingDelivery"],
+        createdAt: now
+      }
+
+      yield* port.create(channel)
+      const result = yield* port.get(channel.channelId)
+
+      expect(result).not.toBeNull()
+      expect(result!.capabilities).toEqual(["SendText", "Typing", "StreamingDelivery"])
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("create is idempotent (upsert)", () => {
     const dbPath = testDatabasePath("channel-upsert")
     return Effect.gen(function*() {
