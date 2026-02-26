@@ -1,6 +1,7 @@
 # Channel Adapter Architecture - Slice 1 (Greenfield Final): Foundation + CLI Migration + WebChat
 
-**Date:** 2026-02-25  
+**Date:** 2026-02-25
+**Status:** COMPLETE — merged to main 2026-02-25 (13 commits, 174 tests passing)
 **Revision:** User-decisions locked (streaming enabled, per-channel sessions, no backward compatibility)
 
 ## Locked Decisions
