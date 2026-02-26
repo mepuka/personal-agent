@@ -17,12 +17,15 @@ import {
 import type {
   AuditEntryId,
   ChannelId,
+  ExternalServiceId,
+  IntegrationId,
   MemoryItemId,
   PolicyId,
   ScheduledExecutionId,
   ScheduleId,
   ToolName
 } from "./ids.js"
+import type { ExternalServiceRecord, IntegrationRecord } from "./integration.js"
 import type {
   MemoryScope,
   MemorySource,
@@ -35,6 +38,7 @@ import type {
   ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
+  IntegrationStatus,
   MemorySortOrder,
   PermissionMode,
   QuotaPeriod,
@@ -320,4 +324,13 @@ export interface ChannelRecord {
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
+}
+
+export interface IntegrationPort {
+  readonly createService: (service: ExternalServiceRecord) => Effect.Effect<void>
+  readonly getService: (serviceId: ExternalServiceId) => Effect.Effect<ExternalServiceRecord | null>
+  readonly createIntegration: (integration: IntegrationRecord) => Effect.Effect<void>
+  readonly getIntegration: (integrationId: IntegrationId) => Effect.Effect<IntegrationRecord | null>
+  readonly getIntegrationByService: (agentId: AgentId, serviceId: ExternalServiceId) => Effect.Effect<IntegrationRecord | null>
+  readonly updateStatus: (integrationId: IntegrationId, status: IntegrationStatus) => Effect.Effect<void>
 }

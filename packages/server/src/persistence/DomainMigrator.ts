@@ -165,6 +165,37 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS idx_memory_items_agent_scope
       ON memory_items(agent_id, scope)
     `.unprepared
+  }),
+  "0005_integration_tables": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS external_services (
+        service_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        endpoint TEXT NOT NULL,
+        transport TEXT NOT NULL CHECK (transport IN ('stdio', 'sse', 'http')),
+        identifier TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS integrations (
+        integration_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('Connected', 'Disconnected', 'Error', 'Initializing')),
+        capabilities_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS integrations_agent_service_idx
+      ON integrations (agent_id, service_id)
+    `.unprepared
   })
 })
 
