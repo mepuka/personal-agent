@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
-import type { ChannelId } from "@template/domain/ids"
-import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
+import type { AgentId, ChannelId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
+import type { AgentStatePort, ChannelPort, SessionTurnPort, TurnRecord } from "@template/domain/ports"
 import { Effect, Layer, Stream } from "effect"
 import { Entity, Sharding, ShardingConfig } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
@@ -21,46 +21,106 @@ import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
+// ---------------------------------------------------------------------------
+// Mock TurnProcessingRuntime — also persists user + assistant turns to
+// simulate what the real TurnProcessingWorkflow does.
+// ---------------------------------------------------------------------------
+
 const makeMockTurnProcessingRuntime = () =>
-  Layer.succeed(TurnProcessingRuntime, {
-    processTurn: (_input: ProcessTurnPayload) =>
-      Effect.succeed({
-        turnId: _input.turnId,
-        accepted: true,
-        auditReasonCode: "turn_processing_accepted" as const,
-        assistantContent: "mock response",
-        assistantContentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }],
-        modelFinishReason: "stop",
-        modelUsageJson: "{}"
-      }),
-    processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> =>
-      Stream.make(
-        {
-          type: "turn.started" as const,
-          sequence: 1,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          createdAt: input.createdAt
-        },
-        {
-          type: "assistant.delta" as const,
-          sequence: 2,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          delta: "mock response"
-        },
-        {
-          type: "turn.completed" as const,
-          sequence: 3,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          accepted: true,
-          auditReasonCode: "turn_processing_accepted",
-          modelFinishReason: "stop",
-          modelUsageJson: "{}"
-        }
-      )
-  } as any)
+  Layer.effect(
+    TurnProcessingRuntime,
+    Effect.gen(function*() {
+      const sessionTurnPort = yield* SessionTurnPortTag
+
+      const persistTurns = (input: ProcessTurnPayload) =>
+        Effect.gen(function*() {
+          const userTurn: TurnRecord = {
+            turnId: input.turnId as TurnId,
+            sessionId: input.sessionId as SessionId,
+            conversationId: input.conversationId as ConversationId,
+            turnIndex: 0,
+            participantRole: "UserRole",
+            participantAgentId: input.agentId as AgentId,
+            message: {
+              messageId: (`message:${input.turnId}:user`) as MessageId,
+              role: "UserRole",
+              content: input.content,
+              contentBlocks: input.contentBlocks.length > 0
+                ? input.contentBlocks
+                : [{ contentBlockType: "TextBlock" as const, text: input.content }]
+            },
+            modelFinishReason: null,
+            modelUsageJson: null,
+            createdAt: input.createdAt
+          }
+          yield* sessionTurnPort.appendTurn(userTurn)
+
+          const assistantTurn: TurnRecord = {
+            turnId: (`${input.turnId}:assistant`) as TurnId,
+            sessionId: input.sessionId as SessionId,
+            conversationId: input.conversationId as ConversationId,
+            turnIndex: 0,
+            participantRole: "AssistantRole",
+            participantAgentId: input.agentId as AgentId,
+            message: {
+              messageId: (`message:${input.turnId}:assistant`) as MessageId,
+              role: "AssistantRole",
+              content: "mock response",
+              contentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }]
+            },
+            modelFinishReason: "stop",
+            modelUsageJson: "{}",
+            createdAt: input.createdAt
+          }
+          yield* sessionTurnPort.appendTurn(assistantTurn)
+        })
+
+      return {
+        processTurn: (input: ProcessTurnPayload) =>
+          persistTurns(input).pipe(
+            Effect.map(() => ({
+              turnId: input.turnId,
+              accepted: true,
+              auditReasonCode: "turn_processing_accepted" as const,
+              assistantContent: "mock response",
+              assistantContentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }],
+              modelFinishReason: "stop",
+              modelUsageJson: "{}"
+            }))
+          ),
+        processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> =>
+          Stream.concat(
+            Stream.fromEffect(persistTurns(input)).pipe(Stream.drain),
+            Stream.make(
+              {
+                type: "turn.started" as const,
+                sequence: 1,
+                turnId: input.turnId,
+                sessionId: input.sessionId,
+                createdAt: input.createdAt
+              },
+              {
+                type: "assistant.delta" as const,
+                sequence: 2,
+                turnId: input.turnId,
+                sessionId: input.sessionId,
+                delta: "mock response"
+              },
+              {
+                type: "turn.completed" as const,
+                sequence: 3,
+                turnId: input.turnId,
+                sessionId: input.sessionId,
+                accepted: true,
+                auditReasonCode: "turn_processing_accepted",
+                modelFinishReason: "stop",
+                modelUsageJson: "{}"
+              }
+            )
+          )
+      } as any
+    })
+  )
 
 const makeTestLayer = (dbPath: string) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
@@ -97,7 +157,9 @@ const makeTestLayer = (dbPath: string) => {
     })
   ).pipe(Layer.provide(channelPortSqliteLayer))
 
-  const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime().pipe(
+    Layer.provide(sessionTurnTagLayer)
+  )
   const mockShardingLayer = Layer.succeed(Sharding.Sharding, {} as any)
 
   const channelCoreLayer = ChannelCore.layer.pipe(
@@ -307,6 +369,70 @@ describe("WebChatAdapterEntity", () => {
 
       const error = yield* client.getStatus({}).pipe(Effect.flip)
       expect(error._tag).toBe("ChannelNotFound")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("streamed events are ordered: turn.started first, turn.completed last", () => {
+    const dbPath = testDatabasePath("webchat-event-order")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(WebChatAdapterEntity, WebChatAdapterEntityLayer)
+      const channelId = "channel:event-order" as ChannelId
+      const client = yield* makeClient(channelId)
+
+      yield* client.initialize({
+        channelType: "WebChat",
+        agentId: "agent:event-order",
+        userId: "user:web:test"
+      })
+
+      const events = yield* client.receiveMessage({
+        content: "hello",
+        userId: "user:web:test"
+      }).pipe(Stream.runCollect)
+
+      expect(events.length).toBeGreaterThanOrEqual(3)
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events[events.length - 1]?.type).toBe("turn.completed")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("concurrent messages complete without turn index collision", () => {
+    const dbPath = testDatabasePath("webchat-concurrent")
+    return Effect.gen(function*() {
+      // Note: This test uses Entity.makeTestClient which bypasses real sharded
+      // session routing. It validates ChannelCore's serialization logic at the
+      // core level, not the full sharding path.
+      const makeClient = yield* Entity.makeTestClient(WebChatAdapterEntity, WebChatAdapterEntityLayer)
+      const channelId = "channel:concurrent" as ChannelId
+      const client = yield* makeClient(channelId)
+
+      yield* client.initialize({
+        channelType: "WebChat",
+        agentId: "agent:concurrent",
+        userId: "user:web:test"
+      })
+
+      // Send two messages concurrently
+      const [events1, events2] = yield* Effect.all([
+        client.receiveMessage({ content: "msg1", userId: "user:web:test" }).pipe(Stream.runCollect),
+        client.receiveMessage({ content: "msg2", userId: "user:web:test" }).pipe(Stream.runCollect)
+      ], { concurrency: 2 })
+
+      // Both should complete with turn events
+      expect(events1.length).toBeGreaterThan(0)
+      expect(events2.length).toBeGreaterThan(0)
+
+      // Verify no turn index collisions in history
+      const history = yield* client.getHistory({})
+      const turnIndices = history.map((t) => t.turnIndex)
+      const uniqueIndices = new Set(turnIndices)
+      expect(uniqueIndices.size).toBe(turnIndices.length)
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
