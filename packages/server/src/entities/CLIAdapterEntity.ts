@@ -24,7 +24,10 @@ export const layer = CLIAdapterEntity.toLayer(Effect.gen(function*() {
         channelType: "CLI",
         agentId: request.payload.agentId as AgentId,
         capabilities: ["SendText"]
-      }),
+      }).pipe(
+        Effect.withSpan("CLIAdapterEntity.initialize"),
+        Effect.annotateLogs({ module: "CLIAdapterEntity", entityId: request.address.entityId })
+      ),
 
     receiveMessage: (request) => {
       const channelId = String(request.address.entityId) as ChannelId
@@ -37,11 +40,16 @@ export const layer = CLIAdapterEntity.toLayer(Effect.gen(function*() {
         }).pipe(
           Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
         )
+      ).pipe(
+        Stream.withSpan("CLIAdapterEntity.receiveMessage")
       )
     },
 
     getHistory: (request) =>
-      channelCore.getHistory(String(request.address.entityId) as ChannelId),
+      channelCore.getHistory(String(request.address.entityId) as ChannelId).pipe(
+        Effect.withSpan("CLIAdapterEntity.getHistory"),
+        Effect.annotateLogs({ module: "CLIAdapterEntity", entityId: request.address.entityId })
+      ),
 
     getStatus: (request) =>
       Effect.gen(function*() {
@@ -58,6 +66,9 @@ export const layer = CLIAdapterEntity.toLayer(Effect.gen(function*() {
           activeConversationId: channel.activeConversationId,
           createdAt: channel.createdAt
         }
-      })
+      }).pipe(
+        Effect.withSpan("CLIAdapterEntity.getStatus"),
+        Effect.annotateLogs({ module: "CLIAdapterEntity", entityId: request.address.entityId })
+      )
   }
 }))

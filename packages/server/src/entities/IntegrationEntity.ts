@@ -82,7 +82,10 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
         } as IntegrationRecord
 
         yield* integrationPort.createIntegration(integrationRecord)
-      }),
+      }).pipe(
+        Effect.withSpan("IntegrationEntity.connect"),
+        Effect.annotateLogs({ module: "IntegrationEntity", entityId: request.address.entityId })
+      ),
 
     disconnect: (request) =>
       Effect.gen(function*() {
@@ -92,7 +95,10 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
           return yield* new IntegrationNotFound({ integrationId })
         }
         yield* integrationPort.updateStatus(integrationId, "Disconnected")
-      }),
+      }).pipe(
+        Effect.withSpan("IntegrationEntity.disconnect"),
+        Effect.annotateLogs({ module: "IntegrationEntity", entityId: request.address.entityId })
+      ),
 
     getIntegrationStatus: (request) =>
       Effect.gen(function*() {
@@ -107,6 +113,9 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
           status: integration.status,
           capabilities: [...integration.capabilities]
         }
-      })
+      }).pipe(
+        Effect.withSpan("IntegrationEntity.getIntegrationStatus"),
+        Effect.annotateLogs({ module: "IntegrationEntity", entityId: request.address.entityId })
+      )
   }
 }))

@@ -1,7 +1,7 @@
 import { TurnStreamEvent } from "@template/domain/events"
 import type { ConversationId, SessionId } from "@template/domain/ids"
 import { ContentBlock } from "@template/domain/ports"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SessionTurnPortTag } from "../PortTags.js"
@@ -53,14 +53,20 @@ export const layer = SessionEntity.toLayer(Effect.gen(function*() {
   const runtime = yield* TurnProcessingRuntime
 
   return {
-    startSession: ({ payload }) =>
+    startSession: ({ payload, address }) =>
       sessionPort.startSession({
         sessionId: payload.sessionId as SessionId,
         conversationId: payload.conversationId as ConversationId,
         tokenCapacity: payload.tokenCapacity,
         tokensUsed: payload.tokensUsed
-      }),
+      }).pipe(
+        Effect.withSpan("SessionEntity.startSession"),
+        Effect.annotateLogs({ module: "SessionEntity", entityId: address.entityId })
+      ),
 
-    processTurn: ({ payload }) => runtime.processTurnStream(payload)
+    processTurn: ({ payload }) =>
+      runtime.processTurnStream(payload).pipe(
+        Stream.withSpan("SessionEntity.processTurn")
+      )
   }
 }))

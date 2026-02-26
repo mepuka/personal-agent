@@ -24,7 +24,10 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
         channelType: "WebChat",
         agentId: request.payload.agentId as AgentId,
         capabilities: ["SendText", "Typing", "StreamingDelivery"]
-      }),
+      }).pipe(
+        Effect.withSpan("WebChatAdapterEntity.initialize"),
+        Effect.annotateLogs({ module: "WebChatAdapterEntity", entityId: request.address.entityId })
+      ),
 
     receiveMessage: (request) => {
       const channelId = String(request.address.entityId) as ChannelId
@@ -37,11 +40,16 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
         }).pipe(
           Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
         )
+      ).pipe(
+        Stream.withSpan("WebChatAdapterEntity.receiveMessage")
       )
     },
 
     getHistory: (request) =>
-      channelCore.getHistory(String(request.address.entityId) as ChannelId),
+      channelCore.getHistory(String(request.address.entityId) as ChannelId).pipe(
+        Effect.withSpan("WebChatAdapterEntity.getHistory"),
+        Effect.annotateLogs({ module: "WebChatAdapterEntity", entityId: request.address.entityId })
+      ),
 
     getStatus: (request) =>
       Effect.gen(function*() {
@@ -58,6 +66,9 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
           activeConversationId: channel.activeConversationId,
           createdAt: channel.createdAt
         }
-      })
+      }).pipe(
+        Effect.withSpan("WebChatAdapterEntity.getStatus"),
+        Effect.annotateLogs({ module: "WebChatAdapterEntity", entityId: request.address.entityId })
+      )
   }
 }))

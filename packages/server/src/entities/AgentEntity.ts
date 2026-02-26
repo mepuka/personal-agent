@@ -51,7 +51,10 @@ export const layer = AgentEntity.toLayer(Effect.gen(function*() {
   return {
     getState: ({ address }) => {
       const agentId = String(address.entityId) as AgentId
-      return port.get(agentId)
+      return port.get(agentId).pipe(
+        Effect.withSpan("AgentEntity.getState"),
+        Effect.annotateLogs({ module: "AgentEntity", entityId: address.entityId })
+      )
     },
 
     upsertState: ({ address, payload }) => {
@@ -59,7 +62,10 @@ export const layer = AgentEntity.toLayer(Effect.gen(function*() {
       return port.upsert({
         ...payload,
         agentId
-      })
+      }).pipe(
+        Effect.withSpan("AgentEntity.upsertState"),
+        Effect.annotateLogs({ module: "AgentEntity", entityId: address.entityId })
+      )
     },
 
     consumeTokenBudget: ({ address, payload }) => {
@@ -68,6 +74,9 @@ export const layer = AgentEntity.toLayer(Effect.gen(function*() {
         agentId,
         payload.requestedTokens,
         payload.now
+      ).pipe(
+        Effect.withSpan("AgentEntity.consumeTokenBudget"),
+        Effect.annotateLogs({ module: "AgentEntity", entityId: address.entityId })
       )
     }
   }
