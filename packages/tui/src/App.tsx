@@ -2,6 +2,8 @@ import { ChatClient } from "@template/client/ChatClient"
 import { RegistryContext } from "@effect/atom-react"
 import { Effect, ServiceMap } from "effect"
 import * as React from "react"
+// @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
+import { useKeyboard } from "@opentui/react"
 import { channelIdAtom, connectionStatusAtom, messagesAtom } from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
@@ -12,9 +14,23 @@ import type { ChatMessage } from "./types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
+/** Focus targets for Tab cycling */
+type FocusTarget = "input" | "tools"
+
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
   const sendMessage = useSendMessage(client)
+  const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
+
+  // Global keyboard handler for Ctrl+C and Tab
+  useKeyboard((key: { name: string; ctrl: boolean }) => {
+    if (key.ctrl && key.name === "c") {
+      process.exit(0)
+    }
+    if (key.name === "tab") {
+      setFocusTarget((prev) => (prev === "input" ? "tools" : "input"))
+    }
+  })
 
   // Initialize channel on mount
   React.useEffect(() => {
@@ -52,9 +68,9 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     <box flexDirection="column" flexGrow={1}>
       <box flexDirection="row" flexGrow={1}>
         <ChatPane />
-        <ToolPane />
+        <ToolPane focused={focusTarget === "tools"} />
       </box>
-      <InputBar onSubmit={sendMessage} />
+      <InputBar onSubmit={sendMessage} focused={focusTarget === "input"} />
       <StatusBar />
     </box>
   )

@@ -1,13 +1,13 @@
 import { useAtomValue } from "@effect/atom-react"
 import { toolEventsAtom } from "../atoms/session.js"
 
-export function ToolPane() {
+export function ToolPane({ focused }: { readonly focused: boolean }) {
   const toolEvents = useAtomValue(toolEventsAtom)
 
   return (
     <box flexDirection="column" flexGrow={1} border={true} borderStyle="single" padding={1}>
       <text content=" Tools " fg="yellow" />
-      <scrollbox flexGrow={1}>
+      <scrollbox flexGrow={1} focused={focused}>
         {toolEvents.length === 0 ? (
           <text content="No tool calls." fg="gray" />
         ) : (
