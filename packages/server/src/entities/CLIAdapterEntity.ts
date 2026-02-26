@@ -58,7 +58,8 @@ export const layer = CLIAdapterEntity.toLayer(Effect.gen(function*() {
         channelCore.buildTurnPayload({
           channelId,
           content: request.payload.content,
-          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: request.payload.content }]
+          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: request.payload.content }],
+          userId: "user:cli:local"
         }).pipe(
           Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
         )

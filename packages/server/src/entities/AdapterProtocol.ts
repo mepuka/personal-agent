@@ -40,7 +40,8 @@ export const ChannelStatusSchema = Schema.Struct({
 export const InitializeRpc = Rpc.make("initialize", {
   payload: {
     channelType: ChannelType,
-    agentId: Schema.String
+    agentId: Schema.String,
+    userId: Schema.String
   },
   success: Schema.Void,
   error: ChannelTypeMismatch,
@@ -52,7 +53,8 @@ export const InitializeRpc = Rpc.make("initialize", {
  */
 export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
   payload: {
-    content: Schema.String
+    content: Schema.String,
+    userId: Schema.String
   },
   success: TurnStreamEvent,
   error: Schema.Union([ChannelNotFound, TurnProcessingError]),

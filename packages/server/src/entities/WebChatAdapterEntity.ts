@@ -32,7 +32,8 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
         channelCore.buildTurnPayload({
           channelId,
           content: request.payload.content,
-          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: request.payload.content }]
+          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: request.payload.content }],
+          userId: request.payload.userId
         }).pipe(
           Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
         )

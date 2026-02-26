@@ -101,6 +101,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         readonly channelId: ChannelId
         readonly content: string
         readonly contentBlocks: ReadonlyArray<ContentBlock>
+        readonly userId: string
       }) =>
         Effect.gen(function*() {
           const channel = yield* channelPort.get(params.channelId)
@@ -116,6 +117,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             sessionId: channel.activeSessionId,
             conversationId: channel.activeConversationId,
             agentId: channel.agentId,
+            userId: params.userId,
             content: params.content,
             contentBlocks: params.contentBlocks,
             createdAt: now,
@@ -205,6 +207,7 @@ export type ChannelCoreService = {
     readonly channelId: ChannelId
     readonly content: string
     readonly contentBlocks: ReadonlyArray<ContentBlock>
+    readonly userId: string
   }) => Effect.Effect<ProcessTurnPayload, ChannelNotFound>
 
   readonly processTurn: (

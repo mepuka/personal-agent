@@ -26,6 +26,7 @@ const ProcessTurnPayloadFields = {
   sessionId: Schema.String,
   conversationId: Schema.String,
   agentId: Schema.String,
+  userId: Schema.String,
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
   createdAt: Schema.DateTimeUtcFromString,

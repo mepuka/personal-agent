@@ -361,6 +361,7 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
   sessionId: overrides.sessionId ?? "session:default",
   conversationId: overrides.conversationId ?? "conversation:default",
   agentId: overrides.agentId ?? "agent:default",
+  userId: overrides.userId ?? "user:test",
   content: overrides.content ?? "hello",
   contentBlocks: overrides.contentBlocks ?? [{ contentBlockType: "TextBlock", text: overrides.content ?? "hello" }],
   createdAt: overrides.createdAt ?? instant("2026-02-25T12:00:00.000Z"),

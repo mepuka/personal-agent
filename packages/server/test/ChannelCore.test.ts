@@ -252,7 +252,8 @@ describe("ChannelCore", () => {
       const payload = yield* core.buildTurnPayload({
         channelId,
         content: "hello world",
-        contentBlocks: [{ contentBlockType: "TextBlock", text: "hello world" }]
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "hello world" }],
+        userId: "user:test"
       })
 
       expect(payload.turnId).toMatch(/^turn:/)
@@ -277,7 +278,8 @@ describe("ChannelCore", () => {
       const error = yield* core.buildTurnPayload({
         channelId,
         content: "this should fail",
-        contentBlocks: [{ contentBlockType: "TextBlock", text: "this should fail" }]
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "this should fail" }],
+        userId: "user:test"
       }).pipe(Effect.flip)
 
       expect(error._tag).toBe("ChannelNotFound")
@@ -405,7 +407,8 @@ describe("ChannelCore", () => {
       const payload = yield* core.buildTurnPayload({
         channelId,
         content: "hello from core",
-        contentBlocks: [{ contentBlockType: "TextBlock", text: "hello from core" }]
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "hello from core" }],
+        userId: "user:test"
       })
 
       const events = yield* core.processTurn(payload).pipe(Stream.runCollect)

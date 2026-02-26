@@ -108,6 +108,7 @@ const wsChat = HttpRouter.add(
 
       // Mutable state for the connection lifecycle
       let initialized = false
+      let userId = "user:web:anon"
       const makeClient = yield* WebChatAdapterEntity.client
 
       const handleFrame = (
@@ -128,9 +129,11 @@ const wsChat = HttpRouter.add(
             )
           }
           const client = makeClient(channelId)
+          userId = frame.userId
           return client.initialize({
             channelType: "WebChat",
-            agentId: frame.agentId
+            agentId: frame.agentId,
+            userId
           }).pipe(
             Effect.andThen(() => {
               initialized = true
@@ -151,7 +154,7 @@ const wsChat = HttpRouter.add(
             )
           }
           const client = makeClient(channelId)
-          return client.receiveMessage({ content: frame.content }).pipe(
+          return client.receiveMessage({ content: frame.content, userId }).pipe(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
               const err = cause.toString()

@@ -132,7 +132,8 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-1"
+        agentId: "agent:webchat-1",
+        userId: "user:web:test"
       })
 
       const channelPort = yield* ChannelPortSqlite
@@ -155,7 +156,8 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-idempotent"
+        agentId: "agent:webchat-idempotent",
+        userId: "user:web:test"
       })
 
       const channelPort = yield* ChannelPortSqlite
@@ -165,7 +167,8 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-idempotent"
+        agentId: "agent:webchat-idempotent",
+        userId: "user:web:test"
       })
 
       const second = yield* channelPort.get(channelId)
@@ -187,7 +190,8 @@ describe("WebChatAdapterEntity", () => {
       // Even if we send channelType: "CLI", the adapter should use "WebChat"
       yield* client.initialize({
         channelType: "CLI",
-        agentId: "agent:webchat-forced"
+        agentId: "agent:webchat-forced",
+        userId: "user:web:test"
       })
 
       const channelPort = yield* ChannelPortSqlite
@@ -209,11 +213,13 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-receive"
+        agentId: "agent:webchat-receive",
+        userId: "user:web:test"
       })
 
       const events = yield* client.receiveMessage({
-        content: "hello from webchat"
+        content: "hello from webchat",
+        userId: "user:web:test"
       }).pipe(Stream.runCollect)
 
       expect(events.length).toBeGreaterThan(0)
@@ -234,7 +240,8 @@ describe("WebChatAdapterEntity", () => {
       const client = yield* makeClient(channelId)
 
       const error = yield* client.receiveMessage({
-        content: "this should fail"
+        content: "this should fail",
+        userId: "user:web:test"
       }).pipe(Stream.runCollect, Effect.flip)
 
       expect(error._tag).toBe("ChannelNotFound")
@@ -253,7 +260,8 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-history"
+        agentId: "agent:webchat-history",
+        userId: "user:web:test"
       })
 
       const history = yield* client.getHistory({})
@@ -273,7 +281,8 @@ describe("WebChatAdapterEntity", () => {
 
       yield* client.initialize({
         channelType: "WebChat",
-        agentId: "agent:webchat-status"
+        agentId: "agent:webchat-status",
+        userId: "user:web:test"
       })
 
       const status = yield* client.getStatus({})
