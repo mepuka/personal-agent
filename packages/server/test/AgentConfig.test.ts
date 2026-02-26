@@ -73,4 +73,47 @@ describe("AgentConfig", () => {
       expect(config.providers.get("anthropic")?.apiKeyEnv).toBe("PA_ANTHROPIC_API_KEY")
     }).pipe(Effect.provide(testLayer))
   )
+
+  it.effect("channels default to enabled when omitted", () =>
+    Effect.gen(function*() {
+      const config = yield* AgentConfig
+      expect(config.channels.cli.enabled).toBe(true)
+      expect(config.channels.webchat.enabled).toBe(true)
+    }).pipe(Effect.provide(testLayer))
+  )
+
+  it.effect("channels reflect explicit config values", () =>
+    Effect.gen(function*() {
+      const config = yield* AgentConfig
+      expect(config.channels.cli.enabled).toBe(false)
+      expect(config.channels.webchat.enabled).toBe(true)
+    }).pipe(
+      Effect.provide(
+        AgentConfig.layerFromParsed({
+          ...testYaml,
+          channels: {
+            cli: { enabled: false },
+            webchat: { enabled: true }
+          }
+        })
+      )
+    )
+  )
+
+  it.effect("channels default individual entries when partially specified", () =>
+    Effect.gen(function*() {
+      const config = yield* AgentConfig
+      expect(config.channels.cli.enabled).toBe(false)
+      expect(config.channels.webchat.enabled).toBe(true)
+    }).pipe(
+      Effect.provide(
+        AgentConfig.layerFromParsed({
+          ...testYaml,
+          channels: {
+            cli: { enabled: false }
+          }
+        })
+      )
+    )
+  )
 })

@@ -42,3 +42,11 @@ agents:
 
 server:
   port: 3000
+
+# Channel adapters — controls which communication channels are active.
+# Both default to enabled if this section is omitted.
+channels:
+  cli:
+    enabled: true
+  webchat:
+    enabled: true

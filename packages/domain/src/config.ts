@@ -57,9 +57,32 @@ export const ServerConfigSchema = Schema.Struct({
 })
 export type ServerConfig = typeof ServerConfigSchema.Type
 
+export const ChannelConfigSchema = Schema.Struct({
+  enabled: Schema.Boolean
+})
+export type ChannelConfig = typeof ChannelConfigSchema.Type
+
+export const ChannelsConfigSchema = Schema.Struct({
+  cli: ChannelConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => ({ enabled: true }))
+  ),
+  webchat: ChannelConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => ({ enabled: true }))
+  )
+})
+export type ChannelsConfig = typeof ChannelsConfigSchema.Type
+
+const defaultChannelsConfig: ChannelsConfig = {
+  cli: { enabled: true },
+  webchat: { enabled: true }
+}
+
 export const AgentConfigFileSchema = Schema.Struct({
   providers: Schema.Record(Schema.String, ProviderConfigSchema),
   agents: Schema.Record(Schema.String, AgentProfileSchema),
-  server: ServerConfigSchema
+  server: ServerConfigSchema,
+  channels: ChannelsConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultChannelsConfig)
+  )
 })
 export type AgentConfigFile = typeof AgentConfigFileSchema.Type
