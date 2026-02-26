@@ -3,7 +3,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import type { AgentId, ChannelId, ConversationId, SessionId } from "../../domain/src/ids.js"
 import type { ChannelPort, ChannelRecord } from "../../domain/src/ports.js"
-import { ChannelType } from "../../domain/src/status.js"
+import { ChannelCapability, ChannelType } from "../../domain/src/status.js"
 
 const ChannelRowSchema = Schema.Struct({
   channel_id: Schema.String,
@@ -11,12 +11,16 @@ const ChannelRowSchema = Schema.Struct({
   agent_id: Schema.String,
   active_session_id: Schema.String,
   active_conversation_id: Schema.String,
+  capabilities_json: Schema.String,
   created_at: Schema.String
 })
 type ChannelRow = typeof ChannelRowSchema.Type
 
 const ChannelIdRequest = Schema.Struct({ channelId: Schema.String })
+const CapabilitiesFromJsonString = Schema.fromJsonString(Schema.Array(ChannelCapability))
 const InstantFromSqlString = Schema.DateTimeUtcFromString
+const decodeCapabilitiesJson = Schema.decodeUnknownSync(CapabilitiesFromJsonString)
+const encodeCapabilitiesJson = Schema.encodeSync(CapabilitiesFromJsonString)
 const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
 const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
@@ -37,6 +41,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
               agent_id,
               active_session_id,
               active_conversation_id,
+              capabilities_json,
               created_at
             FROM channels
             WHERE channel_id = ${channelId}
@@ -63,6 +68,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             agent_id,
             active_session_id,
             active_conversation_id,
+            capabilities_json,
             created_at
           ) VALUES (
             ${channel.channelId},
@@ -70,13 +76,15 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             ${channel.agentId},
             ${channel.activeSessionId},
             ${channel.activeConversationId},
+            ${encodeCapabilitiesJson(channel.capabilities)},
             ${encodeSqlInstant(channel.createdAt)}
           )
           ON CONFLICT(channel_id) DO UPDATE SET
             channel_type = excluded.channel_type,
             agent_id = excluded.agent_id,
             active_session_id = excluded.active_session_id,
-            active_conversation_id = excluded.active_conversation_id
+            active_conversation_id = excluded.active_conversation_id,
+            capabilities_json = excluded.capabilities_json
         `.unprepared.pipe(
           Effect.asVoid,
           Effect.orDie
@@ -98,5 +106,6 @@ const decodeChannelRow = (row: ChannelRow): ChannelRecord => ({
   agentId: row.agent_id as AgentId,
   activeSessionId: row.active_session_id as SessionId,
   activeConversationId: row.active_conversation_id as ConversationId,
+  capabilities: decodeCapabilitiesJson(row.capabilities_json),
   createdAt: decodeSqlInstant(row.created_at)
 })

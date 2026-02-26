@@ -29,6 +29,7 @@ import type {
 } from "./memory.js"
 import type {
   AuthorizationDecision,
+  ChannelCapability,
   ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
@@ -311,6 +312,7 @@ export interface ChannelRecord {
   readonly agentId: AgentId
   readonly activeSessionId: SessionId
   readonly activeConversationId: ConversationId
+  readonly capabilities: ReadonlyArray<ChannelCapability>
   readonly createdAt: Instant
 }
 

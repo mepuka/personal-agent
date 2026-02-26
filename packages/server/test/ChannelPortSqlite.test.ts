@@ -34,6 +34,7 @@ describe("ChannelPortSqlite", () => {
         agentId: "agent:test" as AgentId,
         activeSessionId: "session:s1" as SessionId,
         activeConversationId: "conv:c1" as ConversationId,
+        capabilities: ["SendText"],
         createdAt: now
       }
 
@@ -46,6 +47,7 @@ describe("ChannelPortSqlite", () => {
       expect(result!.agentId).toBe("agent:test")
       expect(result!.activeSessionId).toBe("session:s1")
       expect(result!.activeConversationId).toBe("conv:c1")
+      expect(result!.capabilities).toEqual(["SendText"])
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -64,6 +66,7 @@ describe("ChannelPortSqlite", () => {
         agentId: "agent:test" as AgentId,
         activeSessionId: "session:s1" as SessionId,
         activeConversationId: "conv:c1" as ConversationId,
+        capabilities: ["SendText"],
         createdAt: now
       }
 

@@ -123,6 +123,7 @@ export const layer = ChannelEntity.toLayer(Effect.gen(function*() {
           agentId,
           activeSessionId: sessionId,
           activeConversationId: conversationId,
+          capabilities: ["SendText"],
           createdAt: now
         })
       }),

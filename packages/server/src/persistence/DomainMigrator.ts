@@ -130,6 +130,7 @@ const loader = SqliteMigrator.fromRecord({
         agent_id TEXT NOT NULL,
         active_session_id TEXT NOT NULL,
         active_conversation_id TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL DEFAULT '["SendText"]',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `.unprepared
