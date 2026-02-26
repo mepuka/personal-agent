@@ -24,6 +24,7 @@ import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEnt
 import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "./MemoryPortSqlite.js"
@@ -274,9 +275,20 @@ const ProxyApiLive = HttpApiBuilder.layer(ProxyApi).pipe(
   Layer.provide(ProxyHandlersLive)
 )
 
+const webChatRoutesLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    if (!config.channels.webchat.enabled) {
+      return Layer.empty
+    }
+    return WebChatRoutesLayer
+  }).pipe(Effect.provide(agentConfigLayer))
+)
+
 const HttpApiAndRoutesLive = Layer.mergeAll(
   ProxyApiLive,
-  ChannelRoutesLayer
+  ChannelRoutesLayer,
+  webChatRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
