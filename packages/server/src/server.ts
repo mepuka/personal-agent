@@ -214,10 +214,18 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(sessionEntityLayer)
 )
 
-const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(channelCoreLayer),
-  Layer.provide(channelPortTagLayer)
+const cliAdapterEntityLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    if (!config.channels.cli.enabled) {
+      return Layer.empty
+    }
+    return CLIAdapterEntityLayer.pipe(
+      Layer.provide(clusterLayer),
+      Layer.provide(channelCoreLayer),
+      Layer.provide(channelPortTagLayer)
+    )
+  }).pipe(Effect.provide(agentConfigLayer))
 )
 
 const webChatAdapterEntityLayer = Layer.unwrap(
@@ -286,10 +294,20 @@ const webChatRoutesLayer = Layer.unwrap(
   }).pipe(Effect.provide(agentConfigLayer))
 )
 
+const cliRoutesLayer = Layer.unwrap(
+  Effect.gen(function*() {
+    const config = yield* AgentConfig
+    if (!config.channels.cli.enabled) {
+      return Layer.empty
+    }
+    return ChannelRoutesLayer
+  }).pipe(Effect.provide(agentConfigLayer))
+)
+
 const HttpApiAndRoutesLive = Layer.mergeAll(
   ProxyApiLive,
   HealthRoutesLayer,
-  ChannelRoutesLayer,
+  cliRoutesLayer,
   webChatRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
