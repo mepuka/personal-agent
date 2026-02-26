@@ -168,7 +168,7 @@ const wsChat = HttpRouter.add(
               return writeFn(encodeInitialized({ type: "initialized" as const }))
             }),
             Effect.catchCause((cause) =>
-              writeFn(errorFrame("INIT_FAILED", String(cause))).pipe(
+              writeFn(errorFrame("INIT_FAILED", Cause.pretty(cause))).pipe(
                 Effect.ignore
               )
             )
@@ -185,14 +185,13 @@ const wsChat = HttpRouter.add(
           return client.receiveMessage({ content: frame.content, userId }).pipe(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
-              const err = Cause.squash(cause)
               const failedEvent = new TurnFailedEvent({
                 type: "turn.failed",
                 sequence: Number.MAX_SAFE_INTEGER,
                 turnId: "",
                 sessionId: "",
                 errorCode: "MESSAGE_ERROR",
-                message: err instanceof Error ? err.message : String(err)
+                message: Cause.pretty(cause)
               })
               return writeFn(encodeToJson(failedEvent)).pipe(Effect.ignore)
             })
