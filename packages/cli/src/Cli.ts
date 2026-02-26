@@ -27,7 +27,7 @@ const chat = Command.make("chat", { channel: channelFlag }).pipe(
           : `channel:${crypto.randomUUID()}`
 
         yield* Effect.logInfo(`Channel: ${channelId}`)
-        yield* client.createChannel(channelId, "agent:bootstrap")
+        yield* client.initialize(channelId, "agent:bootstrap")
         yield* Effect.logInfo("Ready. Type your message (Ctrl+C to exit).\n")
 
         const rl = readline.createInterface({

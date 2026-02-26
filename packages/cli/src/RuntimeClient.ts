@@ -14,9 +14,9 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient
       HttpClient.filterStatusOk
     )
 
-    const createChannel = (channelId: string, agentId: string) =>
+    const initialize = (channelId: string, agentId: string) =>
       HttpClientRequest.bodyJsonUnsafe(
-        HttpClientRequest.post(`${baseUrl}/channels/${channelId}/create`),
+        HttpClientRequest.post(`${baseUrl}/channels/${channelId}/initialize`),
         { channelType: "CLI", agentId }
       ).pipe(
         (request) => httpClient.execute(request),
@@ -47,7 +47,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("cli/ChatClient
       Effect.scoped
     )
 
-    return { createChannel, sendMessage, health } as const
+    return { initialize, sendMessage, health } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)

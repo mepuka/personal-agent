@@ -23,7 +23,7 @@ const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   data: JSON.stringify(event)
 })
 
-const CreateChannelRequest = Schema.Struct({
+const InitializeChannelRequest = Schema.Struct({
   channelType: Schema.Union([ChannelType, Schema.Undefined]),
   agentId: Schema.Union([Schema.String, Schema.Undefined])
 })
@@ -32,7 +32,7 @@ const SendMessageRequest = Schema.Struct({
   content: Schema.String
 })
 
-const decodeCreateChannelRequest = Schema.decodeUnknownOption(CreateChannelRequest)
+const decodeInitializeChannelRequest = Schema.decodeUnknownOption(InitializeChannelRequest)
 const decodeSendMessageRequest = Schema.decodeUnknownOption(SendMessageRequest)
 
 const badRequest = (message: string) =>
@@ -107,9 +107,9 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
 // Routes
 // ---------------------------------------------------------------------------
 
-const createChannel = HttpRouter.add(
+const initializeChannel = HttpRouter.add(
   "POST",
-  "/channels/:channelId/create",
+  "/channels/:channelId/initialize",
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
@@ -123,16 +123,17 @@ const createChannel = HttpRouter.add(
         channelType: rawBody.channelType ?? "CLI",
         agentId: rawBody.agentId ?? "agent:bootstrap"
       }
-      const decodedBody = decodeCreateChannelRequest(normalizedBody)
+      const decodedBody = decodeInitializeChannelRequest(normalizedBody)
       if (Option.isNone(decodedBody)) {
-        return yield* badRequest("Invalid create channel payload")
+        return yield* badRequest("Invalid initialize channel payload")
       }
 
       const client = makeClient(channelId)
 
-      yield* client.createChannel({
+      yield* client.initialize({
         channelType: decodedBody.value.channelType ?? "CLI",
-        agentId: decodedBody.value.agentId ?? "agent:bootstrap"
+        agentId: decodedBody.value.agentId ?? "agent:bootstrap",
+        userId: "user:cli:local"
       })
 
       return yield* HttpServerResponse.json({ ok: true })
@@ -161,8 +162,9 @@ const sendMessage = HttpRouter.add(
 
       const client = makeClient(channelId)
 
-      const stream = client.sendMessage({
-        content: decodedBody.value.content
+      const stream = client.receiveMessage({
+        content: decodedBody.value.content,
+        userId: "user:cli:local"
       }).pipe(
         Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
         Stream.map(toSseEvent),
@@ -181,7 +183,7 @@ const sendMessage = HttpRouter.add(
 )
 
 const getHistory = HttpRouter.add(
-  "POST",
+  "GET",
   "/channels/:channelId/history",
   (request) =>
     Effect.gen(function*() {
@@ -207,6 +209,33 @@ const getHistory = HttpRouter.add(
     )
 )
 
+const getStatus = HttpRouter.add(
+  "GET",
+  "/channels/:channelId/status",
+  (request) =>
+    Effect.gen(function*() {
+      const makeClient = yield* CLIAdapterEntity.client
+      const channelId = extractParam(request.url, 1)
+      const client = makeClient(channelId)
+
+      const status = yield* client.getStatus({})
+
+      return yield* HttpServerResponse.json(status)
+    }).pipe(
+      Effect.catchTag("ChannelNotFound", (error) =>
+        HttpServerResponse.json(
+          { error: "ChannelNotFound", channelId: error.channelId },
+          { status: 404 }
+        )),
+      Effect.catchCause(() =>
+        HttpServerResponse.json(
+          { error: "InternalServerError" },
+          { status: 500 }
+        )
+      )
+    )
+)
+
 const health = HttpRouter.add(
   "GET",
   "/health",
@@ -214,7 +243,8 @@ const health = HttpRouter.add(
 )
 
 // ---------------------------------------------------------------------------
-// Combined layer
+// Combined layers
 // ---------------------------------------------------------------------------
 
-export const layer = Layer.mergeAll(createChannel, sendMessage, getHistory, health)
+export const healthLayer = health // always-on, never gated
+export const layer = Layer.mergeAll(initializeChannel, sendMessage, getHistory, getStatus) // gatable

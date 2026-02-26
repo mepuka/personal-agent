@@ -18,7 +18,7 @@ import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { layer as CLIAdapterEntityLayer } from "../src/entities/CLIAdapterEntity.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
-import { layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
+import { layer as ChannelRoutesLayer, healthLayer as HealthRoutesLayer } from "../src/gateway/ChannelRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
@@ -133,7 +133,8 @@ const makeAppLayer = (dbPath: string) => {
 
   const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
     Layer.provide(clusterLayer),
-    Layer.provide(channelCoreLayer)
+    Layer.provide(channelCoreLayer),
+    Layer.provide(channelPortTagLayer)
   )
 
   return Layer.mergeAll(
@@ -164,6 +165,8 @@ const cleanupDatabase = (path: string) =>
     rmSync(path, { force: true })
   })
 
+const AllRoutesLayer = Layer.mergeAll(ChannelRoutesLayer, HealthRoutesLayer)
+
 // ---------------------------------------------------------------------------
 // Tests — using Layer.build pattern for streaming support
 // ---------------------------------------------------------------------------
@@ -172,7 +175,7 @@ describe("ChannelRoutes e2e", () => {
   it.effect("GET /health returns ok", () => {
     const dbPath = testDatabasePath("e2e-health")
     return Effect.gen(function*() {
-      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true }).pipe(
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
         Layer.provide(makeAppLayer(dbPath)),
         Layer.build
       )
@@ -254,17 +257,17 @@ describe("ChannelRoutes e2e", () => {
       expect(body).toContain("hello")
     }).pipe(Effect.provide(NodeHttpServer.layerTest)))
 
-  it.live("create channel + send message returns SSE stream", () => {
+  it.live("initialize channel + send message returns SSE stream", () => {
     const dbPath = testDatabasePath("e2e-send")
     return Effect.gen(function*() {
-      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
         Layer.provide(makeAppLayer(dbPath)),
         Layer.build
       )
       const client = yield* HttpClient.HttpClient
       const channelId = `channel:${crypto.randomUUID()}` as ChannelId
 
-      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/create`).pipe(
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
         HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
       )
       const createStatus = yield* client.execute(createReq).pipe(
@@ -288,17 +291,17 @@ describe("ChannelRoutes e2e", () => {
     )
   })
 
-  it.effect("create channel via entity route returns 200", () => {
+  it.effect("initialize channel via entity route returns 200", () => {
     const dbPath = testDatabasePath("e2e-create")
     return Effect.gen(function*() {
-      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true }).pipe(
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
         Layer.provide(makeAppLayer(dbPath)),
         Layer.build
       )
       const client = yield* HttpClient.HttpClient
       const channelId = `channel:${crypto.randomUUID()}` as ChannelId
 
-      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/create`).pipe(
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
         HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
       )
       const response = yield* client.execute(createReq)
@@ -314,22 +317,19 @@ describe("ChannelRoutes e2e", () => {
   it.effect("get history endpoint returns array for created channel", () => {
     const dbPath = testDatabasePath("e2e-history")
     return Effect.gen(function*() {
-      yield* HttpRouter.serve(ChannelRoutesLayer, { disableLogger: true }).pipe(
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
         Layer.provide(makeAppLayer(dbPath)),
         Layer.build
       )
       const client = yield* HttpClient.HttpClient
       const channelId = `channel:${crypto.randomUUID()}` as ChannelId
 
-      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/create`).pipe(
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
         HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
       )
       yield* client.execute(createReq).pipe(Effect.scoped)
 
-      const historyReq = yield* HttpClientRequest.post(`/channels/${channelId}/history`).pipe(
-        HttpClientRequest.bodyJson({})
-      )
-      const historyResponse = yield* client.execute(historyReq)
+      const historyResponse = yield* client.get(`/channels/${channelId}/history`)
       expect(historyResponse.status).toBe(200)
       const turns = (yield* historyResponse.json) as Array<unknown>
 

@@ -23,7 +23,7 @@ import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
-import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { layer as ChannelRoutesLayer, healthLayer as HealthRoutesLayer } from "./gateway/ChannelRoutes.js"
 import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
@@ -216,7 +216,8 @@ const channelCoreLayer = ChannelCore.layer.pipe(
 
 const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
   Layer.provide(clusterLayer),
-  Layer.provide(channelCoreLayer)
+  Layer.provide(channelCoreLayer),
+  Layer.provide(channelPortTagLayer)
 )
 
 const webChatAdapterEntityLayer = Layer.unwrap(
@@ -287,6 +288,7 @@ const webChatRoutesLayer = Layer.unwrap(
 
 const HttpApiAndRoutesLive = Layer.mergeAll(
   ProxyApiLive,
+  HealthRoutesLayer,
   ChannelRoutesLayer,
   webChatRoutesLayer
 ).pipe(

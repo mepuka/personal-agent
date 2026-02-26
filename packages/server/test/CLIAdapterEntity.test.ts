@@ -120,16 +120,17 @@ const makeTestLayer = (dbPath: string) => {
 }
 
 describe("CLIAdapterEntity", () => {
-  it.effect("createChannel + getHistory returns empty", () => {
+  it.effect("initialize + getHistory returns empty", () => {
     const dbPath = testDatabasePath("cli-adapter-create")
     return Effect.gen(function*() {
       const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-create" as ChannelId
       const client = yield* makeClient(channelId)
 
-      yield* client.createChannel({
+      yield* client.initialize({
         channelType: "CLI",
-        agentId: "agent:test-1"
+        agentId: "agent:test-1",
+        userId: "user:cli:local"
       })
 
       const history = yield* client.getHistory({})
@@ -140,16 +141,17 @@ describe("CLIAdapterEntity", () => {
     )
   })
 
-  it.effect("createChannel is idempotent", () => {
+  it.effect("initialize is idempotent", () => {
     const dbPath = testDatabasePath("cli-adapter-idempotent")
     return Effect.gen(function*() {
       const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-idempotent" as ChannelId
       const client = yield* makeClient(channelId)
 
-      yield* client.createChannel({
+      yield* client.initialize({
         channelType: "CLI",
-        agentId: "agent:test-idempotent"
+        agentId: "agent:test-idempotent",
+        userId: "user:cli:local"
       })
 
       const channelPort = yield* ChannelPortSqlite
@@ -157,9 +159,10 @@ describe("CLIAdapterEntity", () => {
       expect(first).not.toBeNull()
       const firstSessionId = first!.activeSessionId
 
-      yield* client.createChannel({
+      yield* client.initialize({
         channelType: "CLI",
-        agentId: "agent:test-idempotent"
+        agentId: "agent:test-idempotent",
+        userId: "user:cli:local"
       })
 
       const second = yield* channelPort.get(channelId)
@@ -171,20 +174,22 @@ describe("CLIAdapterEntity", () => {
     )
   })
 
-  it.effect("sendMessage returns stream of TurnStreamEvents", () => {
+  it.effect("receiveMessage returns stream of TurnStreamEvents", () => {
     const dbPath = testDatabasePath("cli-adapter-send")
     return Effect.gen(function*() {
       const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-send" as ChannelId
       const client = yield* makeClient(channelId)
 
-      yield* client.createChannel({
+      yield* client.initialize({
         channelType: "CLI",
-        agentId: "agent:test-send"
+        agentId: "agent:test-send",
+        userId: "user:cli:local"
       })
 
-      const events = yield* client.sendMessage({
-        content: "hello from channel"
+      const events = yield* client.receiveMessage({
+        content: "hello from channel",
+        userId: "user:cli:local"
       }).pipe(Stream.runCollect)
 
       expect(events.length).toBeGreaterThan(0)
@@ -197,17 +202,59 @@ describe("CLIAdapterEntity", () => {
     )
   })
 
-  it.effect("sendMessage to non-existent channel fails with ChannelNotFound", () => {
+  it.effect("receiveMessage to non-existent channel fails with ChannelNotFound", () => {
     const dbPath = testDatabasePath("cli-adapter-notfound")
     return Effect.gen(function*() {
       const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:nonexistent" as ChannelId
       const client = yield* makeClient(channelId)
 
-      const error = yield* client.sendMessage({
-        content: "this should fail"
+      const error = yield* client.receiveMessage({
+        content: "this should fail",
+        userId: "user:cli:local"
       }).pipe(Stream.runCollect, Effect.flip)
 
+      expect(error._tag).toBe("ChannelNotFound")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("getStatus returns correct channel info", () => {
+    const dbPath = testDatabasePath("cli-adapter-status")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
+      const channelId = "channel:test-status" as ChannelId
+      const client = yield* makeClient(channelId)
+
+      yield* client.initialize({
+        channelType: "CLI",
+        agentId: "agent:test-status",
+        userId: "user:cli:local"
+      })
+
+      const status = yield* client.getStatus({})
+      expect(status.channelId).toBe(channelId)
+      expect(status.channelType).toBe("CLI")
+      expect(status.capabilities).toEqual(["SendText"])
+      expect(status.activeSessionId).toBeTruthy()
+      expect(status.activeConversationId).toBeTruthy()
+      expect(status.createdAt).toBeDefined()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("getStatus for non-existent channel fails with ChannelNotFound", () => {
+    const dbPath = testDatabasePath("cli-adapter-status-notfound")
+    return Effect.gen(function*() {
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
+      const channelId = "channel:no-status" as ChannelId
+      const client = yield* makeClient(channelId)
+
+      const error = yield* client.getStatus({}).pipe(Effect.flip)
       expect(error._tag).toBe("ChannelNotFound")
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
