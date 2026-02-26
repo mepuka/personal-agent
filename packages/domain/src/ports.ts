@@ -7,20 +7,22 @@ import type {
   TokenBudgetExceeded,
   ToolQuotaExceeded
 } from "./errors.js"
-import type {
+import {
   AgentId,
+  ConversationId,
+  MessageId,
+  SessionId,
+  TurnId
+} from "./ids.js"
+import type {
   AuditEntryId,
   ChannelId,
-  ConversationId,
   MemoryItemId,
   PolicyId,
   ScheduledExecutionId,
   ScheduleId,
-  SessionId,
-  ToolName,
-  TurnId
+  ToolName
 } from "./ids.js"
-import { MessageId } from "./ids.js"
 import type {
   MemoryScope,
   MemorySource,
@@ -34,12 +36,11 @@ import type {
   ConcurrencyPolicy,
   ExecutionOutcome,
   MemorySortOrder,
-  ModelFinishReason,
   PermissionMode,
   QuotaPeriod,
   ScheduleStatus
 } from "./status.js"
-import { AgentRole } from "./status.js"
+import { AgentRole, ModelFinishReason } from "./status.js"
 
 export const Instant = Schema.DateTimeUtc
 export type Instant = typeof Instant.Type
@@ -107,18 +108,18 @@ export const MessageRecord = Schema.Struct({
 })
 export type MessageRecord = typeof MessageRecord.Type
 
-export interface TurnRecord {
-  readonly turnId: TurnId
-  readonly sessionId: SessionId
-  readonly conversationId: ConversationId
-  readonly turnIndex: number
-  readonly participantRole: AgentRole
-  readonly participantAgentId: AgentId | null
-  readonly message: MessageRecord
-  readonly modelFinishReason: ModelFinishReason | null
-  readonly modelUsageJson: string | null
-  readonly createdAt: Instant
-}
+export class TurnRecord extends Schema.Class<TurnRecord>("TurnRecord")({
+  turnId: TurnId,
+  sessionId: SessionId,
+  conversationId: ConversationId,
+  turnIndex: Schema.Number,
+  participantRole: AgentRole,
+  participantAgentId: Schema.Union([AgentId, Schema.Null]),
+  message: MessageRecord,
+  modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
+  modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
+  createdAt: Schema.DateTimeUtcFromString
+}) {}
 
 export interface MemorySearchQuery {
   readonly query?: string

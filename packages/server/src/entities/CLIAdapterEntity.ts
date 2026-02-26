@@ -1,11 +1,11 @@
 import { ChannelNotFound } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId } from "@template/domain/ids"
+import { TurnRecord } from "@template/domain/ports"
 import { ChannelType } from "@template/domain/status"
 import { Effect, Schema, Stream } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { TurnRecordSchema } from "./AdapterProtocol.js"
 import { ChannelCore } from "../ChannelCore.js"
 import { TurnProcessingError } from "../turn/TurnProcessingWorkflow.js"
 
@@ -29,7 +29,7 @@ const SendMessageRpc = Rpc.make("sendMessage", {
 
 const GetHistoryRpc = Rpc.make("getHistory", {
   payload: {},
-  success: Schema.Array(TurnRecordSchema),
+  success: Schema.Array(TurnRecord),
   error: ChannelNotFound
 })
 

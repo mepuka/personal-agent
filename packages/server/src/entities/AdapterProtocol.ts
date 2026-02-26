@@ -6,8 +6,8 @@
  */
 import { ChannelNotFound } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
-import { ContentBlock } from "@template/domain/ports"
-import { ChannelCapability, ChannelType, ModelFinishReason } from "@template/domain/status"
+import { TurnRecord } from "@template/domain/ports"
+import { ChannelCapability, ChannelType } from "@template/domain/status"
 import { Schema } from "effect"
 import { ClusterSchema } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -16,30 +16,6 @@ import { TurnProcessingError } from "../turn/TurnProcessingWorkflow.js"
 // ---------------------------------------------------------------------------
 // Shared schemas
 // ---------------------------------------------------------------------------
-
-/**
- * Schema representation of a TurnRecord for RPC serialisation.
- *
- * TODO: Promote to a Schema.Class in the domain package so the interface
- * `TurnRecord` and this schema stay in sync automatically.
- */
-export const TurnRecordSchema = Schema.Struct({
-  turnId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String,
-  turnIndex: Schema.Number,
-  participantRole: Schema.String,
-  participantAgentId: Schema.Union([Schema.String, Schema.Null]),
-  message: Schema.Struct({
-    messageId: Schema.String,
-    role: Schema.String,
-    content: Schema.String,
-    contentBlocks: Schema.Array(ContentBlock)
-  }),
-  modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
-  modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
-  createdAt: Schema.DateTimeUtcFromString
-})
 
 /** Status snapshot returned by `GetStatusRpc`. */
 export const ChannelStatusSchema = Schema.Struct({
@@ -87,7 +63,7 @@ export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
  */
 export const GetHistoryRpc = Rpc.make("getHistory", {
   payload: {},
-  success: Schema.Array(TurnRecordSchema),
+  success: Schema.Array(TurnRecord),
   error: ChannelNotFound
 })
 
