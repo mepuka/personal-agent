@@ -4,7 +4,7 @@ import { Effect, Layer, Option, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
-import { ChannelEntity } from "../entities/ChannelEntity.js"
+import { CLIAdapterEntity } from "../entities/CLIAdapterEntity.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,7 +112,7 @@ const createChannel = HttpRouter.add(
   "/channels/:channelId/create",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* ChannelEntity.client
+      const makeClient = yield* CLIAdapterEntity.client
       const channelId = extractParam(request.url, 1)
       const rawBody = yield* request.json
       if (!isRecord(rawBody)) {
@@ -151,7 +151,7 @@ const sendMessage = HttpRouter.add(
   "/channels/:channelId/messages",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* ChannelEntity.client
+      const makeClient = yield* CLIAdapterEntity.client
       const channelId = extractParam(request.url, 1)
       const rawBody = yield* request.json
       const decodedBody = decodeSendMessageRequest(rawBody)
@@ -185,7 +185,7 @@ const getHistory = HttpRouter.add(
   "/channels/:channelId/history",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* ChannelEntity.client
+      const makeClient = yield* CLIAdapterEntity.client
       const channelId = extractParam(request.url, 1)
       const client = makeClient(channelId)
 

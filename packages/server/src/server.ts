@@ -16,9 +16,10 @@ import { AgentConfig } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
+import { ChannelCore } from "./ChannelCore.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
-import { layer as ChannelEntityLayer } from "./entities/ChannelEntity.js"
+import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
 import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
@@ -202,13 +203,18 @@ const sessionEntityLayer = SessionEntityLayer.pipe(
   Layer.provide(turnProcessingRuntimeLayer)
 )
 
-const channelEntityLayer = ChannelEntityLayer.pipe(
+const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(clusterLayer),
   Layer.provide(agentStatePortTagLayer),
   Layer.provide(channelPortTagLayer),
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(turnProcessingRuntimeLayer),
   Layer.provide(sessionEntityLayer)
+)
+
+const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(channelCoreLayer)
 )
 
 const portTagsLayer = Layer.mergeAll(
@@ -230,7 +236,7 @@ const workflowLayer = turnProcessingRuntimeLayer.pipe(
   Layer.provideMerge(turnProcessingWorkflowLayer)
 )
 
-const entityLayer = channelEntityLayer.pipe(
+const entityLayer = cliAdapterEntityLayer.pipe(
   Layer.provideMerge(sessionEntityLayer),
   Layer.provideMerge(agentEntityLayer),
   Layer.provideMerge(memoryEntityLayer)

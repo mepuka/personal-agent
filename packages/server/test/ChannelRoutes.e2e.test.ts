@@ -15,7 +15,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
-import { layer as ChannelEntityLayer } from "../src/entities/ChannelEntity.js"
+import { ChannelCore } from "../src/ChannelCore.js"
+import { layer as CLIAdapterEntityLayer } from "../src/entities/CLIAdapterEntity.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
@@ -26,7 +27,7 @@ import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
 // ---------------------------------------------------------------------------
-// Mock TurnProcessingRuntime — same as ChannelEntity.test.ts
+// Mock TurnProcessingRuntime — same as CLIAdapterEntity.test.ts
 // ---------------------------------------------------------------------------
 
 const makeMockTurnProcessingRuntime = () =>
@@ -121,13 +122,18 @@ const makeAppLayer = (dbPath: string) => {
     Layer.provide(mockTurnProcessingRuntimeLayer)
   )
 
-  const channelEntityLayer = ChannelEntityLayer.pipe(
+  const channelCoreLayer = ChannelCore.layer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(agentStateTagLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
     Layer.provide(sessionEntityLayer)
+  )
+
+  const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
+    Layer.provide(clusterLayer),
+    Layer.provide(channelCoreLayer)
   )
 
   return Layer.mergeAll(
@@ -140,7 +146,7 @@ const makeAppLayer = (dbPath: string) => {
     channelPortTagLayer,
     mockTurnProcessingRuntimeLayer,
     sessionEntityLayer,
-    channelEntityLayer
+    cliAdapterEntityLayer
   ).pipe(
     Layer.provideMerge(clusterLayer)
   )

@@ -3,13 +3,14 @@ import type { TurnStreamEvent } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
 import { Effect, Layer, Stream } from "effect"
-import { Entity, ShardingConfig } from "effect/unstable/cluster"
+import { Entity, Sharding, ShardingConfig } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
+import { ChannelCore } from "../src/ChannelCore.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
-import { ChannelEntity, layer as ChannelEntityLayer } from "../src/entities/ChannelEntity.js"
+import { CLIAdapterEntity, layer as CLIAdapterEntityLayer } from "../src/entities/CLIAdapterEntity.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
@@ -93,6 +94,17 @@ const makeTestLayer = (dbPath: string) => {
     })
   ).pipe(Layer.provide(channelPortSqliteLayer))
 
+  const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const mockShardingLayer = Layer.succeed(Sharding.Sharding, {} as any)
+
+  const channelCoreLayer = ChannelCore.layer.pipe(
+    Layer.provide(agentStateTagLayer),
+    Layer.provide(channelPortTagLayer),
+    Layer.provide(sessionTurnTagLayer),
+    Layer.provide(mockTurnProcessingRuntimeLayer),
+    Layer.provide(mockShardingLayer)
+  )
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     agentStateSqliteLayer,
@@ -101,16 +113,17 @@ const makeTestLayer = (dbPath: string) => {
     sessionTurnTagLayer,
     channelPortSqliteLayer,
     channelPortTagLayer,
-    makeMockTurnProcessingRuntime(),
+    mockTurnProcessingRuntimeLayer,
+    channelCoreLayer,
     ShardingConfig.layer()
   )
 }
 
-describe("ChannelEntity", () => {
+describe("CLIAdapterEntity", () => {
   it.effect("createChannel + getHistory returns empty", () => {
-    const dbPath = testDatabasePath("channel-entity-create")
+    const dbPath = testDatabasePath("cli-adapter-create")
     return Effect.gen(function*() {
-      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-create" as ChannelId
       const client = yield* makeClient(channelId)
 
@@ -128,9 +141,9 @@ describe("ChannelEntity", () => {
   })
 
   it.effect("createChannel is idempotent", () => {
-    const dbPath = testDatabasePath("channel-entity-idempotent")
+    const dbPath = testDatabasePath("cli-adapter-idempotent")
     return Effect.gen(function*() {
-      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-idempotent" as ChannelId
       const client = yield* makeClient(channelId)
 
@@ -159,9 +172,9 @@ describe("ChannelEntity", () => {
   })
 
   it.effect("sendMessage returns stream of TurnStreamEvents", () => {
-    const dbPath = testDatabasePath("channel-entity-send")
+    const dbPath = testDatabasePath("cli-adapter-send")
     return Effect.gen(function*() {
-      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:test-send" as ChannelId
       const client = yield* makeClient(channelId)
 
@@ -185,9 +198,9 @@ describe("ChannelEntity", () => {
   })
 
   it.effect("sendMessage to non-existent channel fails with ChannelNotFound", () => {
-    const dbPath = testDatabasePath("channel-entity-notfound")
+    const dbPath = testDatabasePath("cli-adapter-notfound")
     return Effect.gen(function*() {
-      const makeClient = yield* Entity.makeTestClient(ChannelEntity, ChannelEntityLayer)
+      const makeClient = yield* Entity.makeTestClient(CLIAdapterEntity, CLIAdapterEntityLayer)
       const channelId = "channel:nonexistent" as ChannelId
       const client = yield* makeClient(channelId)
 
