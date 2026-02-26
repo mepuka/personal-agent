@@ -15,6 +15,7 @@
     "lint-fix": "bun run lint --fix",
     "start": "bun packages/server/src/server.ts",
     "dev": "bun --watch packages/server/src/server.ts",
+    "tui": "bun packages/tui/src/bin.tsx",
     "test": "vitest",
     "coverage": "vitest --coverage",
     "changeset-version": "changeset version && node scripts/version.mjs",

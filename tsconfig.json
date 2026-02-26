@@ -5,6 +5,7 @@
     { "path": "packages/cli" },
     { "path": "packages/client" },
     { "path": "packages/domain" },
-    { "path": "packages/server" }
+    { "path": "packages/server" },
+    { "path": "packages/tui" }
   ]
 }
