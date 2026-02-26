@@ -126,7 +126,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
             : null
 
           return { items, cursor: nextCursor, totalCount } as MemorySearchResult
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
 
       const encode = (
         agentId: AgentId,
@@ -158,7 +158,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           }
 
           return ids
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
 
       const retrieve = (
         agentId: AgentId,
@@ -216,7 +216,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
             LIMIT ${limit}
           `.unprepared
           return rows.map(parseRow)
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
 
       const forget = (
         agentId: AgentId,
@@ -253,7 +253,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           }
 
           return count
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
 
       const listAll = (
         agentId: AgentId,
@@ -277,7 +277,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
             LIMIT ${filters.limit}
           `.unprepared
           return rows.map(parseRow)
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
 
       return { search, encode, retrieve, forget, listAll } as const
     })

@@ -57,6 +57,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
               onSome: decodeChannelRow
             })
           ),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -87,6 +88,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             capabilities_json = excluded.capabilities_json
         `.unprepared.pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 

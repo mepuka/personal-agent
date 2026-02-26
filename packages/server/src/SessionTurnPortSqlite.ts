@@ -126,6 +126,7 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
               onSome: decodeSessionRow
             })
           ),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -151,19 +152,21 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
             updated_at = CURRENT_TIMESTAMP
         `.unprepared.pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
       const appendTurn: SessionTurnPort["appendTurn"] = (turn) =>
         sql.withTransaction(
           Effect.gen(function*() {
-            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(Effect.orDie)
+            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
             if (Option.isSome(existing)) {
               return
             }
 
             const nextTurnIndex = yield* findNextTurnIndex({ sessionId: turn.sessionId }).pipe(
               Effect.map((row) => row.next_turn_index),
+              Effect.tapDefect(Effect.logError),
               Effect.orDie
             )
 
@@ -199,6 +202,7 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
           })
         ).pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -242,12 +246,14 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
       const getSession = (sessionId: SessionId) =>
         readSession(sessionId).pipe(
           Effect.map((state) => state === null ? null : state),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
       const listTurns = (sessionId: SessionId) =>
         findTurnsBySessionId({ sessionId }).pipe(
           Effect.map((rows) => rows.map(decodeTurnRow)),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 

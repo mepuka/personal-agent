@@ -71,12 +71,14 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
               onSome: decodeAgentStateRow
             })
           ),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
       const get: AgentStatePort["get"] = (agentId) =>
         readAgentState(agentId).pipe(
           Effect.map((state) => state === null ? null : state),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -108,6 +110,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
             updated_at = CURRENT_TIMESTAMP
         `.unprepared.pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -165,6 +168,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
       const listAgentStates = () =>
         findAllAgentStates({}).pipe(
           Effect.map((rows) => rows.map(decodeAgentStateRow)),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 

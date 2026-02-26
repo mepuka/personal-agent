@@ -69,6 +69,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
           )
         `.unprepared.pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
@@ -86,6 +87,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
               createdAt: fromRequiredSqlInstant(row.created_at)
             }))
           ),
+          Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
 
