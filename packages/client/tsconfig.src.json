@@ -2,8 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "include": ["src"],
   "references": [
-    { "path": "../domain" },
-    { "path": "../client" }
+    { "path": "../domain" }
   ],
   "compilerOptions": {
     "types": ["node"],

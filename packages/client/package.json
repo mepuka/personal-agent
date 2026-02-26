@@ -1,20 +1,19 @@
 {
-  "name": "@template/cli",
+  "name": "@template/client",
   "version": "0.0.0",
   "type": "module",
   "license": "MIT",
-  "description": "The CLI template",
+  "description": "Shared HTTP/SSE client for the personal agent server",
   "repository": {
     "type": "git",
     "url": "<PLACEHOLDER>",
-    "directory": "packages/cli"
+    "directory": "packages/client"
   },
   "publishConfig": {
     "access": "public",
     "directory": "dist"
   },
   "scripts": {
-    "dev": "bun --watch src/bin.ts",
     "codegen": "build-utils prepare-v2",
     "build": "pnpm build-esm && pnpm build-annotate && pnpm build-cjs && build-utils pack-v2",
     "build-esm": "tsc -b tsconfig.build.json",
@@ -25,21 +24,15 @@
     "coverage": "vitest --coverage"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.11",
-    "@template/client": "workspace:^",
     "@template/domain": "workspace:^",
     "effect": "4.0.0-beta.11"
   },
   "effect": {
     "generateExports": {
-      "include": [
-        "**/*.ts"
-      ]
+      "include": ["**/*.ts"]
     },
     "generateIndex": {
-      "include": [
-        "**/*.ts"
-      ]
+      "include": ["**/*.ts"]
     }
   }
 }

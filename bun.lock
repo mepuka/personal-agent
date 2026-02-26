@@ -40,6 +40,15 @@
       "version": "0.0.0",
       "dependencies": {
         "@effect/platform-bun": "4.0.0-beta.11",
+        "@template/client": "workspace:^",
+        "@template/domain": "workspace:^",
+        "effect": "4.0.0-beta.11",
+      },
+    },
+    "packages/client": {
+      "name": "@template/client",
+      "version": "0.0.0",
+      "dependencies": {
         "@template/domain": "workspace:^",
         "effect": "4.0.0-beta.11",
       },
@@ -376,6 +385,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@template/cli": ["@template/cli@workspace:packages/cli"],
+
+    "@template/client": ["@template/client@workspace:packages/client"],
 
     "@template/domain": ["@template/domain@workspace:packages/domain"],
 
