@@ -72,8 +72,8 @@ const StoreMemoryTool = Tool.make("store_memory", {
   description: "Store a semantic memory item for this agent.",
   parameters: Schema.Struct({
     content: Schema.String,
-    tags: Schema.optional(Schema.Array(Schema.String)),
-    scope: Schema.optional(Schema.Literals(["SessionScope", "GlobalScope"]))
+    tags: Schema.optionalKey(Schema.Array(Schema.String)),
+    scope: Schema.optionalKey(Schema.Literals(["SessionScope", "GlobalScope"]))
   }),
   success: Schema.Struct({
     memoryId: Schema.String,
@@ -86,7 +86,7 @@ const RetrieveMemoriesTool = Tool.make("retrieve_memories", {
   description: "Retrieve relevant memories for a natural language query.",
   parameters: Schema.Struct({
     query: Schema.String,
-    limit: Schema.optional(Schema.Number)
+    limit: Schema.optionalKey(Schema.Number)
   }),
   success: Schema.Struct({
     memories: Schema.Array(Schema.Struct({

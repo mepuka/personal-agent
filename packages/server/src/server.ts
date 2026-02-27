@@ -198,7 +198,8 @@ const chatPersistenceLayer = ChatPersistence.layer.pipe(
 
 const toolRegistryLayer = ToolRegistry.layer.pipe(
   Layer.provide(governancePortTagLayer),
-  Layer.provide(memoryPortTagLayer)
+  Layer.provide(memoryPortTagLayer),
+  Layer.provide(agentConfigLayer)
 )
 
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
@@ -230,7 +231,8 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(channelPortTagLayer),
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(turnProcessingRuntimeLayer),
-  Layer.provide(sessionEntityLayer)
+  Layer.provide(sessionEntityLayer),
+  Layer.provide(agentConfigLayer)
 )
 
 const cliAdapterEntityLayer = Layer.unwrap(
