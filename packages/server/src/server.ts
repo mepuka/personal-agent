@@ -28,6 +28,7 @@ import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { healthLayer as HealthRoutesLayer, layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { layer as CheckpointRoutesLayer } from "./gateway/CheckpointRoutes.js"
 import { layer as GovernanceRoutesLayer } from "./gateway/GovernanceRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
@@ -248,7 +249,8 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(turnProcessingRuntimeLayer),
   Layer.provide(sessionEntityLayer),
-  Layer.provide(agentConfigLayer)
+  Layer.provide(agentConfigLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const cliAdapterEntityLayer = Layer.unwrap(
@@ -325,6 +327,7 @@ const entityLayer = cliAdapterEntityLayer.pipe(
 )
 
 const PortsLive = entityLayer.pipe(
+  Layer.provideMerge(channelCoreLayer),
   Layer.provideMerge(workflowLayer),
   Layer.provideMerge(toolRegistryLayer),
   Layer.provideMerge(modelRegistryLayer),
@@ -371,7 +374,8 @@ const HttpApiAndRoutesLive = Layer.mergeAll(
   HealthRoutesLayer,
   cliRoutesLayer,
   webChatRoutesLayer,
-  governanceRoutesLayer
+  governanceRoutesLayer,
+  CheckpointRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
@@ -396,7 +400,8 @@ Layer.launch(HttpLive).pipe(
     Logger.layer([Logger.consoleJson]),
     agentStatePortTagLayer,
     governancePortTagLayer,
-    sessionTurnPortTagLayer
+    sessionTurnPortTagLayer,
+    channelCoreLayer
   )),
   BunRuntime.runMain
 )

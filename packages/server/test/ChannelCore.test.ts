@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentStatePort, ChannelPort, SessionTurnPort, TurnRecord } from "@template/domain/ports"
+import type { AgentStatePort, ChannelPort, CheckpointPort, SessionTurnPort, TurnRecord } from "@template/domain/ports"
 import { Effect, Layer, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
@@ -10,10 +10,11 @@ import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
+import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
@@ -175,6 +176,16 @@ const makeTestLayer = (dbPath: string) => {
     })
   ).pipe(Layer.provide(channelPortSqliteLayer))
 
+  const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const checkpointPortTagLayer = Layer.effect(
+    CheckpointPortTag,
+    Effect.gen(function*() {
+      return (yield* CheckpointPortSqlite) as CheckpointPort
+    })
+  ).pipe(Layer.provide(checkpointPortSqliteLayer))
+
   const mockRuntimeLayer = makeMockTurnProcessingRuntime().pipe(
     Layer.provide(sessionTurnTagLayer)
   )
@@ -187,6 +198,7 @@ const makeTestLayer = (dbPath: string) => {
     Layer.provide(agentStateTagLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
+    Layer.provide(checkpointPortTagLayer),
     Layer.provide(mockRuntimeLayer),
     Layer.provide(mockShardingLayer),
     Layer.provide(mockAgentConfigLayer)
@@ -200,6 +212,8 @@ const makeTestLayer = (dbPath: string) => {
     sessionTurnTagLayer,
     channelPortSqliteLayer,
     channelPortTagLayer,
+    checkpointPortSqliteLayer,
+    checkpointPortTagLayer,
     mockRuntimeLayer,
     channelCoreLayer
   )

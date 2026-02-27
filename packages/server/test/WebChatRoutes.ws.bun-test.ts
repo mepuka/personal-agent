@@ -9,7 +9,7 @@
  */
 import { BunHttpServer } from "@effect/platform-bun"
 import type { TurnStreamEvent } from "@template/domain/events"
-import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
+import type { AgentStatePort, ChannelPort, CheckpointPort, SessionTurnPort } from "@template/domain/ports"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
@@ -21,13 +21,14 @@ import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
+import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "../src/entities/WebChatAdapterEntity.js"
 import { layer as WebChatRoutesLayer } from "../src/gateway/WebChatRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
@@ -163,6 +164,17 @@ const makeWsTestLayer = (dbPath: string) => {
   ).pipe(Layer.provide(channelPortSqliteLayer))
 
   const clusterLayer = SingleRunner.layer().pipe(Layer.provide(sqlInfrastructureLayer), Layer.orDie)
+
+  const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const checkpointPortTagLayer = Layer.effect(
+    CheckpointPortTag,
+    Effect.gen(function*() {
+      return (yield* CheckpointPortSqlite) as CheckpointPort
+    })
+  ).pipe(Layer.provide(checkpointPortSqliteLayer))
+
   const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
   const mockAgentConfigLayer = AgentConfig.layerFromParsed({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
@@ -187,6 +199,7 @@ const makeWsTestLayer = (dbPath: string) => {
     Layer.provide(agentStateTagLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
+    Layer.provide(checkpointPortTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
     Layer.provide(sessionEntityLayer),
     Layer.provide(mockAgentConfigLayer)
@@ -206,6 +219,8 @@ const makeWsTestLayer = (dbPath: string) => {
     sessionTurnTagLayer,
     channelPortSqliteLayer,
     channelPortTagLayer,
+    checkpointPortSqliteLayer,
+    checkpointPortTagLayer,
     mockTurnProcessingRuntimeLayer,
     sessionEntityLayer,
     webChatAdapterEntityLayer
