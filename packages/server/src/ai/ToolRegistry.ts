@@ -16,8 +16,7 @@ const TimeNowTool = Tool.make("time_now", {
   success: Schema.Struct({
     nowIso: Schema.String
   }),
-  failure: ToolFailure,
-  failureMode: "return"
+  failure: ToolFailure
 })
 
 const MathCalculateTool = Tool.make("math_calculate", {
@@ -28,8 +27,7 @@ const MathCalculateTool = Tool.make("math_calculate", {
   success: Schema.Struct({
     result: Schema.Number
   }),
-  failure: ToolFailure,
-  failureMode: "return"
+  failure: ToolFailure
 })
 
 const EchoTextTool = Tool.make("echo_text", {
@@ -40,8 +38,7 @@ const EchoTextTool = Tool.make("echo_text", {
   success: Schema.Struct({
     text: Schema.String
   }),
-  failure: ToolFailure,
-  failureMode: "return"
+  failure: ToolFailure
 })
 
 const SafeToolkit = Toolkit.make(TimeNowTool, MathCalculateTool, EchoTextTool)
