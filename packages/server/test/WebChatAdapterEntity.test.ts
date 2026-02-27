@@ -10,10 +10,7 @@ import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
-import {
-  WebChatAdapterEntity,
-  layer as WebChatAdapterEntityLayer
-} from "../src/entities/WebChatAdapterEntity.js"
+import { layer as WebChatAdapterEntityLayer, WebChatAdapterEntity } from "../src/entities/WebChatAdapterEntity.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"

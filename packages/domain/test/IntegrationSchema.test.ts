@@ -30,9 +30,7 @@ describe("ServiceToolCapability", () => {
   })
 
   it("rejects missing name", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(ServiceToolCapability)({ _tag: "ServiceToolCapability" })
-    ).toThrow()
+    expect(() => Schema.decodeUnknownSync(ServiceToolCapability)({ _tag: "ServiceToolCapability" })).toThrow()
   })
 })
 

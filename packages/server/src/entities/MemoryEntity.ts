@@ -1,13 +1,12 @@
 import { MemoryAccessDenied } from "@template/domain/errors"
 import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
-import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import type { MemorySearchQuery } from "@template/domain/ports"
-import { MemorySortOrder } from "@template/domain/status"
+import { MemoryScope, MemorySortOrder, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DateTime, Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
+import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 
 const MemoryItemResultSchema = Schema.Struct({
   memoryItemId: Schema.String,

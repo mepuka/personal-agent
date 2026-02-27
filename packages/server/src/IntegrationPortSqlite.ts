@@ -212,21 +212,23 @@ export class IntegrationPortSqlite extends ServiceMap.Service<IntegrationPortSql
 // Row decoders
 // ---------------------------------------------------------------------------
 
-const decodeServiceRow = (row: ExternalServiceRow): ExternalServiceRecord => ({
-  serviceId: row.service_id as ExternalServiceId,
-  name: row.name,
-  endpoint: row.endpoint,
-  transport: row.transport,
-  identifier: row.identifier,
-  createdAt: decodeSqlInstant(row.created_at)
-}) as ExternalServiceRecord
+const decodeServiceRow = (row: ExternalServiceRow): ExternalServiceRecord =>
+  ({
+    serviceId: row.service_id as ExternalServiceId,
+    name: row.name,
+    endpoint: row.endpoint,
+    transport: row.transport,
+    identifier: row.identifier,
+    createdAt: decodeSqlInstant(row.created_at)
+  }) as ExternalServiceRecord
 
-const decodeIntegrationRow = (row: IntegrationRow): IntegrationRecord => ({
-  integrationId: row.integration_id as IntegrationId,
-  agentId: row.agent_id as AgentId,
-  serviceId: row.service_id as ExternalServiceId,
-  status: row.status,
-  capabilities: decodeCapabilitiesJson(row.capabilities_json),
-  createdAt: decodeSqlInstant(row.created_at),
-  updatedAt: decodeSqlInstant(row.updated_at)
-}) as IntegrationRecord
+const decodeIntegrationRow = (row: IntegrationRow): IntegrationRecord =>
+  ({
+    integrationId: row.integration_id as IntegrationId,
+    agentId: row.agent_id as AgentId,
+    serviceId: row.service_id as ExternalServiceId,
+    status: row.status,
+    capabilities: decodeCapabilitiesJson(row.capabilities_json),
+    createdAt: decodeSqlInstant(row.created_at),
+    updatedAt: decodeSqlInstant(row.updated_at)
+  }) as IntegrationRecord

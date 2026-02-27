@@ -44,7 +44,12 @@ describe("Memory API e2e", () => {
           requestId: "store:memory-api-1",
           items: [
             { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "User's name is Alex" },
-            { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User prefers concise responses" }
+            {
+              tier: "SemanticMemory",
+              scope: "GlobalScope",
+              source: "AgentSource",
+              content: "User prefers concise responses"
+            }
           ]
         })
       )

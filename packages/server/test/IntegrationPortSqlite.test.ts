@@ -1,11 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ExternalServiceId, IntegrationId } from "@template/domain/ids"
 import type { ExternalServiceRecord, IntegrationRecord } from "@template/domain/integration"
-import {
-  ServicePromptCapability,
-  ServiceResourceCapability,
-  ServiceToolCapability
-} from "@template/domain/integration"
+import { ServicePromptCapability, ServiceResourceCapability, ServiceToolCapability } from "@template/domain/integration"
 import type { Instant } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
 import { rmSync } from "node:fs"

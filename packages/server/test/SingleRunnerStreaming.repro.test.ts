@@ -7,13 +7,14 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Schema } from "effect"
-import { ClusterSchema, Entity, Sharding, SingleRunner } from "effect/unstable/cluster"
+import type { Sharding } from "effect/unstable/cluster"
+import { ClusterSchema, Entity, SingleRunner } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
+import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 
 // ---------------------------------------------------------------------------
 // Entity A: Persisted + primaryKey + ClientTracingEnabled=false

@@ -31,8 +31,7 @@ describe("AgentConfig", () => {
       const profile = yield* config.getAgent("default")
       expect(profile.persona.name).toBe("Test Assistant")
       expect(profile.model.provider).toBe("anthropic")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("getAgent returns named profiles", () =>
     Effect.gen(function*() {
@@ -40,47 +39,41 @@ describe("AgentConfig", () => {
       const profile = yield* config.getAgent("summarizer")
       expect(profile.persona.name).toBe("Summarizer")
       expect(profile.model.provider).toBe("openai")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("getAgent maps agent:bootstrap to default profile", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       const profile = yield* config.getAgent("agent:bootstrap")
       expect(profile.persona.name).toBe("Test Assistant")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("getAgent falls back to default for unknown agent", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       const profile = yield* config.getAgent("nonexistent")
       expect(profile.persona.name).toBe("Test Assistant")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("defaultAgent returns the default profile", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       expect(config.defaultAgent.persona.name).toBe("Test Assistant")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("providers map is populated", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       expect(config.providers.size).toBe(2)
       expect(config.providers.get("anthropic")?.apiKeyEnv).toBe("PA_ANTHROPIC_API_KEY")
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("channels default to enabled when omitted", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       expect(config.channels.cli.enabled).toBe(true)
       expect(config.channels.webchat.enabled).toBe(true)
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 
   it.effect("channels reflect explicit config values", () =>
     Effect.gen(function*() {
@@ -97,8 +90,7 @@ describe("AgentConfig", () => {
           }
         })
       )
-    )
-  )
+    ))
 
   it.effect("channels default individual entries when partially specified", () =>
     Effect.gen(function*() {
@@ -114,13 +106,11 @@ describe("AgentConfig", () => {
           }
         })
       )
-    )
-  )
+    ))
 
   it.effect("integrations defaults to empty array when omitted", () =>
     Effect.gen(function*() {
       const config = yield* AgentConfig
       expect(config.integrations).toEqual([])
-    }).pipe(Effect.provide(testLayer))
-  )
+    }).pipe(Effect.provide(testLayer)))
 })

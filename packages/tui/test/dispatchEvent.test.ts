@@ -141,14 +141,14 @@ describe("dispatchEvent", () => {
       sessionId: "s1",
       toolCallId: "tc1",
       toolName: "search",
-      outputJson: '{"result": "found"}',
+      outputJson: "{\"result\": \"found\"}",
       isError: false
     } as any)
 
     const tools = registry.get(toolEventsAtom)
     expect(tools[0]).toMatchObject({
       status: "completed",
-      outputJson: '{"result": "found"}',
+      outputJson: "{\"result\": \"found\"}",
       isError: false
     })
   })

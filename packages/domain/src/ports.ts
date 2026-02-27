@@ -7,13 +7,7 @@ import type {
   TokenBudgetExceeded,
   ToolQuotaExceeded
 } from "./errors.js"
-import {
-  AgentId,
-  ConversationId,
-  MessageId,
-  SessionId,
-  TurnId
-} from "./ids.js"
+import { AgentId, ConversationId, MessageId, SessionId, TurnId } from "./ids.js"
 import type {
   AuditEntryId,
   ChannelId,
@@ -27,22 +21,20 @@ import type {
 } from "./ids.js"
 import type { ExternalServiceRecord, IntegrationRecord } from "./integration.js"
 import type {
-  MemoryScope,
-  MemorySource,
-  MemoryTier,
-  SensitivityLevel
-} from "./status.js"
-import type {
   AuthorizationDecision,
   ChannelCapability,
   ChannelType,
   ConcurrencyPolicy,
   ExecutionOutcome,
   IntegrationStatus,
+  MemoryScope,
   MemorySortOrder,
+  MemorySource,
+  MemoryTier,
   PermissionMode,
   QuotaPeriod,
-  ScheduleStatus
+  ScheduleStatus,
+  SensitivityLevel
 } from "./status.js"
 import { AgentRole, ModelFinishReason } from "./status.js"
 
@@ -341,6 +333,9 @@ export interface IntegrationPort {
   readonly getService: (serviceId: ExternalServiceId) => Effect.Effect<ExternalServiceRecord | null>
   readonly createIntegration: (integration: IntegrationRecord) => Effect.Effect<void>
   readonly getIntegration: (integrationId: IntegrationId) => Effect.Effect<IntegrationRecord | null>
-  readonly getIntegrationByService: (agentId: AgentId, serviceId: ExternalServiceId) => Effect.Effect<IntegrationRecord | null>
+  readonly getIntegrationByService: (
+    agentId: AgentId,
+    serviceId: ExternalServiceId
+  ) => Effect.Effect<IntegrationRecord | null>
   readonly updateStatus: (integrationId: IntegrationId, status: IntegrationStatus) => Effect.Effect<void>
 }

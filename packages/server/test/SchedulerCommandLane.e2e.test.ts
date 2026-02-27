@@ -11,12 +11,12 @@ import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { GovernancePortTag, SchedulePortTag } from "../src/PortTags.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
+import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
 import {
   layer as SchedulerCommandLayer,
   SchedulerCommandEntity,
   type SchedulerExecutePayload
 } from "../src/scheduler/SchedulerCommandEntity.js"
-import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Schema } from "effect"
 import {
-  AgentProfileSchema,
   AgentConfigFileSchema,
+  AgentProfileSchema,
   ChannelConfigSchema,
   ChannelsConfigSchema,
   IntegrationConfigSchema,

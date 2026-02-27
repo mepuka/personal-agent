@@ -84,8 +84,14 @@ const waitForOpen = (ws: WebSocket, timeoutMs = 5000): Promise<void> =>
   new Promise((resolve, reject) => {
     if (ws.readyState === WebSocket.OPEN) return resolve()
     const timer = setTimeout(() => reject(new Error("WS open timeout")), timeoutMs)
-    ws.addEventListener("open", () => { clearTimeout(timer); resolve() }, { once: true })
-    ws.addEventListener("error", (e) => { clearTimeout(timer); reject(e) }, { once: true })
+    ws.addEventListener("open", () => {
+      clearTimeout(timer)
+      resolve()
+    }, { once: true })
+    ws.addEventListener("error", (e) => {
+      clearTimeout(timer)
+      reject(e)
+    }, { once: true })
   })
 
 const readMessage = (ws: WebSocket, timeoutMs = 5000): Promise<string> =>
@@ -104,7 +110,7 @@ const readMessage = (ws: WebSocket, timeoutMs = 5000): Promise<string> =>
 const testDatabasePath = (name: string): string =>
   join(tmpdir(), `personal-agent-ws-${name}-${crypto.randomUUID()}.sqlite`)
 
-const dbPaths: string[] = []
+const dbPaths: Array<string> = []
 afterEach(() => {
   for (const p of dbPaths) rmSync(p, { force: true })
   dbPaths.length = 0
@@ -122,19 +128,25 @@ const makeWsTestLayer = (dbPath: string) => {
   const agentStateSqliteLayer = AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
   const agentStateTagLayer = Layer.effect(
     AgentStatePortTag,
-    Effect.gen(function*() { return (yield* AgentStatePortSqlite) as AgentStatePort })
+    Effect.gen(function*() {
+      return (yield* AgentStatePortSqlite) as AgentStatePort
+    })
   ).pipe(Layer.provide(agentStateSqliteLayer))
 
   const sessionTurnSqliteLayer = SessionTurnPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
   const sessionTurnTagLayer = Layer.effect(
     SessionTurnPortTag,
-    Effect.gen(function*() { return (yield* SessionTurnPortSqlite) as SessionTurnPort })
+    Effect.gen(function*() {
+      return (yield* SessionTurnPortSqlite) as SessionTurnPort
+    })
   ).pipe(Layer.provide(sessionTurnSqliteLayer))
 
   const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
   const channelPortTagLayer = Layer.effect(
     ChannelPortTag,
-    Effect.gen(function*() { return (yield* ChannelPortSqlite) as ChannelPort })
+    Effect.gen(function*() {
+      return (yield* ChannelPortSqlite) as ChannelPort
+    })
   ).pipe(Layer.provide(channelPortSqliteLayer))
 
   const clusterLayer = SingleRunner.layer().pipe(Layer.provide(sqlInfrastructureLayer), Layer.orDie)
@@ -162,9 +174,15 @@ const makeWsTestLayer = (dbPath: string) => {
   )
 
   const appDepsLayer = Layer.mergeAll(
-    sqlInfrastructureLayer, agentStateSqliteLayer, agentStateTagLayer,
-    sessionTurnSqliteLayer, sessionTurnTagLayer, channelPortSqliteLayer,
-    channelPortTagLayer, mockTurnProcessingRuntimeLayer, sessionEntityLayer,
+    sqlInfrastructureLayer,
+    agentStateSqliteLayer,
+    agentStateTagLayer,
+    sessionTurnSqliteLayer,
+    sessionTurnTagLayer,
+    channelPortSqliteLayer,
+    channelPortTagLayer,
+    mockTurnProcessingRuntimeLayer,
+    sessionEntityLayer,
     webChatAdapterEntityLayer
   ).pipe(Layer.provideMerge(clusterLayer))
 
@@ -205,137 +223,154 @@ const runWsTest = (
 // ---------------------------------------------------------------------------
 
 describe("WebChatRoutes WebSocket", () => {
-  test("happy path: connect -> init -> message -> streamed events", () =>
-    runWsTest("ws-happy", (port) =>
-      Effect.gen(function*() {
-        const channelId = `channel:${crypto.randomUUID()}`
-        const ws = new WebSocket(`ws://localhost:${port}/ws/chat/${channelId}`)
-        yield* Effect.promise(() => waitForOpen(ws))
+  test(
+    "happy path: connect -> init -> message -> streamed events",
+    () =>
+      runWsTest("ws-happy", (port) =>
+        Effect.gen(function*() {
+          const channelId = `channel:${crypto.randomUUID()}`
+          const ws = new WebSocket(`ws://localhost:${port}/ws/chat/${channelId}`)
+          yield* Effect.promise(() => waitForOpen(ws))
 
-        try {
-          const connected = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(connected).type).toBe("connected")
+          try {
+            const connected = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(connected).type).toBe("connected")
 
-          ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
-          const initialized = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(initialized).type).toBe("initialized")
+            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            const initialized = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(initialized).type).toBe("initialized")
 
-          ws.send(JSON.stringify({ type: "message", content: "hello" }))
+            ws.send(JSON.stringify({ type: "message", content: "hello" }))
 
-          const events: Array<any> = []
-          let done = false
-          while (!done) {
-            const msg = yield* Effect.promise(() => readMessage(ws))
-            const event = JSON.parse(msg)
-            events.push(event)
-            if (event.type === "turn.completed" || event.type === "turn.failed") done = true
+            const events: Array<any> = []
+            let done = false
+            while (!done) {
+              const msg = yield* Effect.promise(() => readMessage(ws))
+              const event = JSON.parse(msg)
+              events.push(event)
+              if (event.type === "turn.completed" || event.type === "turn.failed") done = true
+            }
+
+            expect(events.some((e: any) => e.type === "turn.started")).toBe(true)
+            expect(events.some((e: any) => e.type === "assistant.delta")).toBe(true)
+            expect(events.some((e: any) => e.type === "turn.completed")).toBe(true)
+          } finally {
+            ws.close()
+            // Allow close event to propagate to server before scope teardown
+            yield* Effect.sleep("200 millis")
           }
+        })),
+    15000
+  )
 
-          expect(events.some((e: any) => e.type === "turn.started")).toBe(true)
-          expect(events.some((e: any) => e.type === "assistant.delta")).toBe(true)
-          expect(events.some((e: any) => e.type === "turn.completed")).toBe(true)
-        } finally {
-          ws.close()
-          // Allow close event to propagate to server before scope teardown
-          yield* Effect.sleep("200 millis")
-        }
-      })
-    ), 15000)
-
-  test("malformed frame: receives INVALID_FRAME error", () =>
-    runWsTest("ws-malformed", (port) =>
-      Effect.gen(function*() {
-        const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
-        yield* Effect.promise(() => waitForOpen(ws))
-
-        try {
-          const connected = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(connected).type).toBe("connected")
-
-          ws.send("this is not valid json {{{")
-          const errorMsg = yield* Effect.promise(() => readMessage(ws))
-          const errorData = JSON.parse(errorMsg)
-          expect(errorData.type).toBe("error")
-          expect(errorData.code).toBe("INVALID_FRAME")
-        } finally {
-          ws.close()
-          yield* Effect.sleep("200 millis")
-        }
-      })
-    ), 15000)
-
-  test("message before init: receives NOT_INITIALIZED error", () =>
-    runWsTest("ws-no-init", (port) =>
-      Effect.gen(function*() {
-        const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
-        yield* Effect.promise(() => waitForOpen(ws))
-
-        try {
-          const connected = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(connected).type).toBe("connected")
-
-          ws.send(JSON.stringify({ type: "message", content: "premature" }))
-          const errorMsg = yield* Effect.promise(() => readMessage(ws))
-          const errorData = JSON.parse(errorMsg)
-          expect(errorData.type).toBe("error")
-          expect(errorData.code).toBe("NOT_INITIALIZED")
-        } finally {
-          ws.close()
-          yield* Effect.sleep("200 millis")
-        }
-      })
-    ), 15000)
-
-  test("double init: receives ALREADY_INITIALIZED error", () =>
-    runWsTest("ws-double-init", (port) =>
-      Effect.gen(function*() {
-        const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
-        yield* Effect.promise(() => waitForOpen(ws))
-
-        try {
-          const connected = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(connected).type).toBe("connected")
-
-          ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
-          const initialized = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(initialized).type).toBe("initialized")
-
-          ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
-          const errorMsg = yield* Effect.promise(() => readMessage(ws))
-          const errorData = JSON.parse(errorMsg)
-          expect(errorData.type).toBe("error")
-          expect(errorData.code).toBe("ALREADY_INITIALIZED")
-        } finally {
-          ws.close()
-          yield* Effect.sleep("200 millis")
-        }
-      })
-    ), 15000)
-
-  test("disconnect cleanup: no unhandled promise rejections", () =>
-    runWsTest("ws-disconnect", (port) =>
-      Effect.gen(function*() {
-        const rejections: Array<unknown> = []
-        const handler = (event: PromiseRejectionEvent) => { rejections.push(event.reason) }
-        globalThis.addEventListener("unhandledrejection", handler)
-
-        try {
+  test(
+    "malformed frame: receives INVALID_FRAME error",
+    () =>
+      runWsTest("ws-malformed", (port) =>
+        Effect.gen(function*() {
           const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
           yield* Effect.promise(() => waitForOpen(ws))
 
-          const connected = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(connected).type).toBe("connected")
+          try {
+            const connected = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(connected).type).toBe("connected")
 
-          ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
-          const initialized = yield* Effect.promise(() => readMessage(ws))
-          expect(JSON.parse(initialized).type).toBe("initialized")
+            ws.send("this is not valid json {{{")
+            const errorMsg = yield* Effect.promise(() => readMessage(ws))
+            const errorData = JSON.parse(errorMsg)
+            expect(errorData.type).toBe("error")
+            expect(errorData.code).toBe("INVALID_FRAME")
+          } finally {
+            ws.close()
+            yield* Effect.sleep("200 millis")
+          }
+        })),
+    15000
+  )
 
-          ws.close()
-          yield* Effect.sleep("200 millis")
-          expect(rejections).toEqual([])
-        } finally {
-          globalThis.removeEventListener("unhandledrejection", handler)
-        }
-      })
-    ), 15000)
+  test(
+    "message before init: receives NOT_INITIALIZED error",
+    () =>
+      runWsTest("ws-no-init", (port) =>
+        Effect.gen(function*() {
+          const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
+          yield* Effect.promise(() => waitForOpen(ws))
+
+          try {
+            const connected = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(connected).type).toBe("connected")
+
+            ws.send(JSON.stringify({ type: "message", content: "premature" }))
+            const errorMsg = yield* Effect.promise(() => readMessage(ws))
+            const errorData = JSON.parse(errorMsg)
+            expect(errorData.type).toBe("error")
+            expect(errorData.code).toBe("NOT_INITIALIZED")
+          } finally {
+            ws.close()
+            yield* Effect.sleep("200 millis")
+          }
+        })),
+    15000
+  )
+
+  test(
+    "double init: receives ALREADY_INITIALIZED error",
+    () =>
+      runWsTest("ws-double-init", (port) =>
+        Effect.gen(function*() {
+          const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
+          yield* Effect.promise(() => waitForOpen(ws))
+
+          try {
+            const connected = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(connected).type).toBe("connected")
+
+            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            const initialized = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(initialized).type).toBe("initialized")
+
+            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            const errorMsg = yield* Effect.promise(() => readMessage(ws))
+            const errorData = JSON.parse(errorMsg)
+            expect(errorData.type).toBe("error")
+            expect(errorData.code).toBe("ALREADY_INITIALIZED")
+          } finally {
+            ws.close()
+            yield* Effect.sleep("200 millis")
+          }
+        })),
+    15000
+  )
+
+  test(
+    "disconnect cleanup: no unhandled promise rejections",
+    () =>
+      runWsTest("ws-disconnect", (port) =>
+        Effect.gen(function*() {
+          const rejections: Array<unknown> = []
+          const handler = (event: PromiseRejectionEvent) => {
+            rejections.push(event.reason)
+          }
+          globalThis.addEventListener("unhandledrejection", handler)
+
+          try {
+            const ws = new WebSocket(`ws://localhost:${port}/ws/chat/channel:${crypto.randomUUID()}`)
+            yield* Effect.promise(() => waitForOpen(ws))
+
+            const connected = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(connected).type).toBe("connected")
+
+            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            const initialized = yield* Effect.promise(() => readMessage(ws))
+            expect(JSON.parse(initialized).type).toBe("initialized")
+
+            ws.close()
+            yield* Effect.sleep("200 millis")
+            expect(rejections).toEqual([])
+          } finally {
+            globalThis.removeEventListener("unhandledrejection", handler)
+          }
+        })),
+    15000
+  )
 })

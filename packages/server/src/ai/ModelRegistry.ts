@@ -52,8 +52,8 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
               const apiUrl = provider === "openrouter"
                 ? OPENROUTER_API_URL
                 : provider === "google"
-                  ? GOOGLE_GEMINI_API_URL
-                  : undefined
+                ? GOOGLE_GEMINI_API_URL
+                : undefined
               return OpenAi.OpenAiLanguageModel.layer({
                 model: modelId
               }).pipe(

@@ -159,7 +159,10 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
       const appendTurn: SessionTurnPort["appendTurn"] = (turn) =>
         sql.withTransaction(
           Effect.gen(function*() {
-            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(Effect.tapDefect(Effect.logError), Effect.orDie)
+            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(
+              Effect.tapDefect(Effect.logError),
+              Effect.orDie
+            )
             if (Option.isSome(existing)) {
               return
             }

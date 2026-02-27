@@ -33,7 +33,14 @@ describe("InboundMessage", () => {
       threadId: "thread-99",
       isGroup: true,
       attachments: [
-        { id: "att-1", name: "photo.png", mimeType: "image/png", size: 1024, url: "https://example.com/photo.png", kind: "image" }
+        {
+          id: "att-1",
+          name: "photo.png",
+          mimeType: "image/png",
+          size: 1024,
+          url: "https://example.com/photo.png",
+          kind: "image"
+        }
       ],
       metadata: { source: "telegram", messageId: 12345 }
     }

@@ -27,10 +27,7 @@ import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
-import {
-  layer as TurnProcessingWorkflowLayer,
-  type ProcessTurnPayload
-} from "../src/turn/TurnProcessingWorkflow.js"
+import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
 const TEST_SYSTEM_PROMPT = "You are a test bot. Always respond with 'Hello from test bot!'"
 
@@ -503,8 +500,8 @@ const makeMockLanguageModel = (
         content: typeof msg.content === "string"
           ? msg.content
           : Array.isArray(msg.content)
-            ? msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n")
-            : String(msg.content)
+          ? msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n")
+          : String(msg.content)
       }))
       capturedMessages.push(messages)
     }

@@ -6,26 +6,21 @@ import { Effect, Layer, Stream } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
 import * as HttpClient from "effect/unstable/http/HttpClient"
+import { rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "../src/entities/WebChatAdapterEntity.js"
-import { layer as WebChatRoutesLayer } from "../src/gateway/WebChatRoutes.js"
-import {
-  errorFrame,
-  extractChannelId,
-  parseFrame
-} from "../src/gateway/WebChatRoutes.js"
+import { errorFrame, extractChannelId, layer as WebChatRoutesLayer, parseFrame } from "../src/gateway/WebChatRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
-import { rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // Mock TurnProcessingRuntime

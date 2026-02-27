@@ -105,8 +105,7 @@ export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
   }
 }
 
-const turnEventToFrame = (event: TurnStreamEvent): string =>
-  encodeToJson(event)
+const turnEventToFrame = (event: TurnStreamEvent): string => encodeToJson(event)
 
 /** @internal — exported for testing. Transport-level errors only (not message processing). */
 export const errorFrame = (code: string, message: string): string =>

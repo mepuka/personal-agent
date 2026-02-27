@@ -53,7 +53,7 @@ export const layer = SessionEntity.toLayer(Effect.gen(function*() {
   const runtime = yield* TurnProcessingRuntime
 
   return {
-    startSession: ({ payload, address }) =>
+    startSession: ({ address, payload }) =>
       sessionPort.startSession({
         sessionId: payload.sessionId as SessionId,
         conversationId: payload.conversationId as ConversationId,

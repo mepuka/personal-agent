@@ -37,7 +37,7 @@ describe("ContentBlockCodec", () => {
             contentBlockType: "ToolUseBlock",
             toolCallId: "call_1",
             toolName: "my_tool",
-            inputJson: '{"foo":1}'
+            inputJson: "{\"foo\":1}"
           }
         ])
       }))
@@ -63,7 +63,9 @@ describe("ContentBlockCodec", () => {
           toolName: "my_tool",
           isError: false
         })
-        const outputJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))((blocks[0] as any).outputJson)
+        const outputJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
+          (blocks[0] as any).outputJson
+        )
         expect(outputJson).toEqual({ text: "ok" })
       }))
 
@@ -173,8 +175,14 @@ describe("ContentBlockCodec", () => {
   describe("encodeFinishReason", () => {
     it("maps all FinishReason values to ModelFinishReason", () => {
       const reasons = [
-        "stop", "length", "content-filter", "tool-calls",
-        "error", "pause", "other", "unknown"
+        "stop",
+        "length",
+        "content-filter",
+        "tool-calls",
+        "error",
+        "pause",
+        "other",
+        "unknown"
       ] as const
 
       for (const reason of reasons) {

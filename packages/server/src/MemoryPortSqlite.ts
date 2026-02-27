@@ -1,12 +1,11 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
-import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import type { Instant, MemoryItemRecord, MemoryPort, MemorySearchResult } from "@template/domain/ports"
+import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
 const InstantFromSqlString = Schema.DateTimeUtcFromString
 const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-
 
 // --- Cursor codec via Schema ---
 
@@ -89,7 +88,9 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           if (cursor !== null) {
             const op = query.sort === "CreatedAsc" ? ">" : "<"
             conditions.push(
-              `(created_at ${op} '${escapeSql(cursor.createdAt)}' OR (created_at = '${escapeSql(cursor.createdAt)}' AND rowid ${op} ${cursor.rowid}))`
+              `(created_at ${op} '${escapeSql(cursor.createdAt)}' OR (created_at = '${
+                escapeSql(cursor.createdAt)
+              }' AND rowid ${op} ${cursor.rowid}))`
             )
           }
 
@@ -135,7 +136,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
       ): Effect.Effect<ReadonlyArray<MemoryItemId>> =>
         Effect.gen(function*() {
           const nowStr = DateTime.formatIso(now)
-          const ids: MemoryItemId[] = []
+          const ids: Array<MemoryItemId> = []
 
           for (const item of items) {
             const id = `memory:${crypto.randomUUID()}` as MemoryItemId
@@ -165,7 +166,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
         filters: RetrieveFilters
       ): Effect.Effect<ReadonlyArray<MemoryItemRow>> =>
         Effect.gen(function*() {
-          const { query, tier, scope, limit } = filters
+          const { limit, query, scope, tier } = filters
           const conditions = [`m.agent_id = '${agentId}'`]
           if (tier) conditions.push(`m.tier = '${tier}'`)
           if (scope) conditions.push(`m.scope = '${scope}'`)
@@ -338,8 +339,7 @@ const decodeCursor = (cursor: string): { readonly createdAt: string; readonly ro
     )
   )
 
-const escapeSql = (value: string): string =>
-  value.replace(/'/g, "''")
+const escapeSql = (value: string): string => value.replace(/'/g, "''")
 
 /** Sanitize user input for FTS5 MATCH by quoting each word as a literal term
  *  joined with OR so any matching term produces a result.
@@ -347,9 +347,9 @@ const escapeSql = (value: string): string =>
  *  double quotes so characters like commas, colons, and parentheses are safe. */
 const sanitizeFts5Query = (input: string): string =>
   input
-    .replace(/[^\w\s]/g, " ")           // strip non-word, non-space chars
-    .split(/\s+/)                        // split on whitespace
+    .replace(/[^\w\s]/g, " ") // strip non-word, non-space chars
+    .split(/\s+/) // split on whitespace
     .map((w) => w.trim())
     .filter((w) => w.length > 0)
-    .map((w) => `"${w}"`)               // quote each term for FTS5
+    .map((w) => `"${w}"`) // quote each term for FTS5
     .join(" OR ")

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
-import fc from "fast-check"
 import type { AgentId } from "@template/domain/ids"
 import type { Instant, MemorySearchQuery } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Option, Schema } from "effect"
+import fc from "fast-check"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -24,7 +24,12 @@ describe("MemoryPortSqlite", () => {
       yield* port.encode(AGENT_ID, [
         { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "User's name is Alex" },
         { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User likes pizza and pasta" },
-        { tier: "EpisodicMemory", scope: "SessionScope", source: "AgentSource", content: "Discussed TypeScript patterns" }
+        {
+          tier: "EpisodicMemory",
+          scope: "SessionScope",
+          source: "AgentSource",
+          content: "Discussed TypeScript patterns"
+        }
       ], now)
 
       const result = yield* port.search(AGENT_ID, { query: "Alex", limit: 10 })
@@ -375,7 +380,12 @@ describe("MemoryPortSqlite", () => {
       yield* port.encode(AGENT_ID, [
         { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User likes pizza and pasta" },
         { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "The weather is sunny today" },
-        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User's favorite pizza is margherita" }
+        {
+          tier: "SemanticMemory",
+          scope: "GlobalScope",
+          source: "AgentSource",
+          content: "User's favorite pizza is margherita"
+        }
       ], now)
 
       const results = yield* port.retrieve(AGENT_ID, { query: "pizza", limit: 10 })
@@ -452,7 +462,7 @@ describe("MemoryPortSqlite", () => {
       expect(result2.items).toHaveLength(2)
 
       // Valid base64 but wrong JSON shape
-      const badJson = Buffer.from('{"wrong":"shape"}').toString("base64url")
+      const badJson = Buffer.from("{\"wrong\":\"shape\"}").toString("base64url")
       const result3 = yield* port.search(AGENT_ID, { limit: 10, cursor: badJson })
       expect(result3.items).toHaveLength(2)
     }).pipe(

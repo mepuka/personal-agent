@@ -1,8 +1,9 @@
-import { ChatClient } from "@template/client/ChatClient"
-import type { TurnStreamEvent } from "@template/domain/events"
-import { Effect, ServiceMap, Stream } from "effect"
-import type * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
 import { RegistryContext } from "@effect/atom-react"
+import type { ChatClient } from "@template/client/ChatClient"
+import type { TurnStreamEvent } from "@template/domain/events"
+import type { ServiceMap } from "effect"
+import { Effect, Stream } from "effect"
+import type * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
 import * as React from "react"
 import {
   channelIdAtom,
@@ -39,9 +40,7 @@ export function useSendMessage(client: ChatClientShape) {
       const program = Effect.gen(function*() {
         const eventStream = yield* client.sendMessage(chId, content)
         yield* eventStream.pipe(
-          Stream.tap((event) =>
-            Effect.sync(() => dispatchEvent(registry, event))
-          ),
+          Stream.tap((event) => Effect.sync(() => dispatchEvent(registry, event))),
           Stream.runDrain
         )
       }).pipe(
@@ -115,8 +114,7 @@ export function dispatchEvent(
           t.toolCallId === event.toolCallId
             ? { ...t, outputJson: event.outputJson, isError: event.isError, status: "completed" as const }
             : t
-        )
-      )
+        ))
       break
     }
     case "turn.completed": {

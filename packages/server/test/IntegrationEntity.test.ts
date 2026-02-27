@@ -6,10 +6,7 @@ import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
-import {
-  IntegrationEntity,
-  layer as IntegrationEntityLayer
-} from "../src/entities/IntegrationEntity.js"
+import { IntegrationEntity, layer as IntegrationEntityLayer } from "../src/entities/IntegrationEntity.js"
 import { IntegrationPortSqlite } from "../src/IntegrationPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"

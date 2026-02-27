@@ -179,11 +179,13 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const semanticMemories = yield* sqlitePort.retrieve(
       payload.agentId as AgentId,
       { query: payload.content, tier: "SemanticMemory", limit: 20 }
-    ).pipe(Effect.catch((error) =>
-      Effect.logWarning("Semantic memory retrieval failed, continuing without memories", Cause.die(error)).pipe(
-        Effect.as([] as ReadonlyArray<{ content: string }>)
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Semantic memory retrieval failed, continuing without memories", Cause.die(error)).pipe(
+          Effect.as([] as ReadonlyArray<{ content: string }>)
+        )
       )
-    ))
+    )
 
     const modelResponse = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer

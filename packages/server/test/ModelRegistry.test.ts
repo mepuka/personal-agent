@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
-import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 
 const testConfig = {
   providers: {
@@ -28,6 +28,5 @@ describe("ModelRegistry", () => {
           Layer.provide(AgentConfig.layerFromParsed(testConfig))
         )
       )
-    )
-  )
+    ))
 })
