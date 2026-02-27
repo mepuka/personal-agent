@@ -1,5 +1,11 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
-import type { Instant, MemoryItemRecord, MemoryPort, MemorySearchResult } from "@template/domain/ports"
+import type {
+  Instant,
+  MemoryForgetFilters,
+  MemoryItemRecord,
+  MemoryPort,
+  MemorySearchResult
+} from "@template/domain/ports"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
@@ -32,12 +38,6 @@ interface RetrieveFilters {
   readonly tier?: MemoryTier | undefined
   readonly scope?: MemoryScope | undefined
   readonly limit: number
-}
-
-interface ForgetFilters {
-  readonly cutoffDate?: Instant | undefined
-  readonly scope?: MemoryScope | undefined
-  readonly itemIds?: ReadonlyArray<string> | undefined
 }
 
 interface ListFilters {
@@ -221,23 +221,27 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
 
       const forget = (
         agentId: AgentId,
-        filtersOrCutoff: ForgetFilters | Instant
+        filters: MemoryForgetFilters
       ): Effect.Effect<number> =>
         Effect.gen(function*() {
-          // Support both the MemoryPort interface (cutoff: Instant) and the richer ForgetFilters
-          const filters: ForgetFilters = typeof filtersOrCutoff === "object" && "cutoffDate" in (filtersOrCutoff as any)
-            ? filtersOrCutoff as ForgetFilters
-            : { cutoffDate: filtersOrCutoff as Instant }
+          const hasFilter =
+            filters.cutoffDate !== undefined
+            || filters.scope !== undefined
+            || (filters.itemIds !== undefined && filters.itemIds.length > 0)
+
+          if (!hasFilter) {
+            return 0
+          }
 
           const conditions = [`agent_id = '${agentId}'`]
           if (filters.cutoffDate) {
             conditions.push(`created_at < '${DateTime.formatIso(filters.cutoffDate)}'`)
           }
           if (filters.scope) {
-            conditions.push(`scope = '${filters.scope}'`)
+            conditions.push(`scope = '${escapeSql(filters.scope)}'`)
           }
           if (filters.itemIds && filters.itemIds.length > 0) {
-            const idList = filters.itemIds.map((id) => `'${id}'`).join(",")
+            const idList = filters.itemIds.map((id) => `'${escapeSql(id)}'`).join(",")
             conditions.push(`memory_item_id IN (${idList})`)
           }
           const whereClause = conditions.join(" AND ")

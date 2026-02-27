@@ -39,6 +39,7 @@ describe("AgentEntity", () => {
         agentId,
         permissionMode: "Standard",
         tokenBudget: 100_000,
+        maxToolIterations: 10,
         quotaPeriod: "Daily",
         tokensConsumed: 0,
         budgetResetAt: DateTime.add(now, { hours: 1 })
@@ -65,6 +66,7 @@ describe("AgentEntity", () => {
         agentId,
         permissionMode: "Standard",
         tokenBudget: 200,
+        maxToolIterations: 10,
         quotaPeriod: "Daily",
         tokensConsumed: 0,
         budgetResetAt: DateTime.add(now, { hours: 1 })
@@ -93,6 +95,7 @@ describe("AgentEntity", () => {
         agentId,
         permissionMode: "Standard",
         tokenBudget: 10,
+        maxToolIterations: 10,
         quotaPeriod: "Daily",
         tokensConsumed: 5,
         budgetResetAt: DateTime.add(now, { hours: 1 })

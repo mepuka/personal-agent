@@ -42,6 +42,7 @@ type PolicyRow = {
 
 type ToolInvocationListRow = {
   readonly tool_invocation_id: string
+  readonly idempotency_key: string
   readonly audit_entry_id: string
   readonly tool_definition_id: string | null
   readonly audit_log_id: string
@@ -300,6 +301,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
         sql`
           INSERT OR REPLACE INTO tool_invocations (
             tool_invocation_id,
+            idempotency_key,
             audit_entry_id,
             tool_definition_id,
             audit_log_id,
@@ -318,6 +320,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             completed_at
           ) VALUES (
             ${record.toolInvocationId},
+            ${record.idempotencyKey},
             ${record.auditEntryId},
             ${record.toolDefinitionId},
             ${record.auditLogId},
@@ -337,6 +340,52 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
           )
         `.unprepared.pipe(
           Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
+      const findToolInvocationByIdempotencyKey: GovernancePort["findToolInvocationByIdempotencyKey"] = (
+        idempotencyKey
+      ) =>
+        sql`
+          SELECT
+            ti.tool_invocation_id,
+            ti.idempotency_key,
+            ti.audit_entry_id,
+            ti.tool_definition_id,
+            ti.audit_log_id,
+            ti.agent_id,
+            ti.session_id,
+            ti.conversation_id,
+            ti.turn_id,
+            ti.tool_name,
+            ti.input_json,
+            ti.output_json,
+            ti.decision,
+            ti.compliance_status,
+            ti.policy_id,
+            ti.reason,
+            ti.invoked_at,
+            ti.completed_at,
+            pp.selector AS policy_selector,
+            pp.decision AS policy_decision,
+            pp.reason_template AS policy_reason_template,
+            pp.permission_mode AS policy_permission_mode,
+            pp.precedence AS policy_precedence,
+            td.source_kind AS tool_source_kind,
+            td.is_safe_standard AS tool_is_safe_standard,
+            td.integration_id AS tool_integration_id
+          FROM tool_invocations ti
+          LEFT JOIN permission_policies pp ON pp.policy_id = ti.policy_id
+          LEFT JOIN tool_definitions td ON td.tool_definition_id = ti.tool_definition_id
+          WHERE ti.idempotency_key = ${idempotencyKey}
+          LIMIT 1
+        `.unprepared.pipe(
+          Effect.map((rows) =>
+            rows.length > 0
+              ? decodeToolInvocationRow(rows[0] as ToolInvocationListRow)
+              : null
+          ),
           Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
@@ -386,6 +435,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
           const rows = yield* sql`
             SELECT
               ti.tool_invocation_id,
+              ti.idempotency_key,
               ti.audit_entry_id,
               ti.tool_definition_id,
               ti.audit_log_id,
@@ -514,6 +564,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
         writeAudit,
         recordToolInvocation,
         recordToolInvocationWithAudit,
+        findToolInvocationByIdempotencyKey,
         listToolInvocationsBySession,
         listPoliciesForAgent,
         listAuditEntries,
@@ -527,6 +578,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
 
 const decodeToolInvocationRow = (row: ToolInvocationListRow): ToolInvocationRecord => ({
   toolInvocationId: row.tool_invocation_id as ToolInvocationRecord["toolInvocationId"],
+  idempotencyKey: row.idempotency_key,
   auditEntryId: row.audit_entry_id as ToolInvocationRecord["auditEntryId"],
   toolDefinitionId: row.tool_definition_id as ToolInvocationRecord["toolDefinitionId"],
   auditLogId: row.audit_log_id as ToolInvocationRecord["auditLogId"],

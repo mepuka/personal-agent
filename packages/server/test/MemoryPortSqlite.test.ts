@@ -307,7 +307,9 @@ describe("MemoryPortSqlite", () => {
         { tier: "SemanticMemory", scope: "GlobalScope", source: "UserSource", content: "New fact" }
       ], instant("2026-02-25T14:00:00.000Z"))
 
-      const deleted = yield* port.forget(AGENT_ID, instant("2026-02-25T12:00:00.000Z"))
+      const deleted = yield* port.forget(AGENT_ID, {
+        cutoffDate: instant("2026-02-25T12:00:00.000Z")
+      })
       expect(deleted).toBe(1)
 
       const remaining = yield* port.search(AGENT_ID, { limit: 10 })

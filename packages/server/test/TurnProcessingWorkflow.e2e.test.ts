@@ -543,6 +543,7 @@ const makeAgentState = (overrides: Partial<AgentState>): AgentState => ({
   agentId: "agent:default" as AgentId,
   permissionMode: "Standard",
   tokenBudget: 100,
+  maxToolIterations: 10,
   quotaPeriod: "Daily",
   tokensConsumed: 0,
   budgetResetAt: null,

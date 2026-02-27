@@ -24,6 +24,9 @@ const makeMockTurnProcessingRuntime = () =>
         auditReasonCode: "turn_processing_accepted" as const,
         assistantContent: "mock response",
         assistantContentBlocks: [{ contentBlockType: "TextBlock" as const, text: "mock response" }],
+        iterationsUsed: 1,
+        toolCallsTotal: 0,
+        iterationStats: [],
         modelFinishReason: "stop",
         modelUsageJson: "{}"
       }),
@@ -50,6 +53,8 @@ const makeMockTurnProcessingRuntime = () =>
           sessionId: input.sessionId,
           accepted: true,
           auditReasonCode: "turn_processing_accepted",
+          iterationsUsed: 1,
+          toolCallsTotal: 0,
           modelFinishReason: "stop",
           modelUsageJson: "{}"
         }

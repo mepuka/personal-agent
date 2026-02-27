@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, GovernancePort, Instant } from "@template/domain/ports"
+import type { AgentState, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync } from "node:fs"
@@ -9,9 +9,10 @@ import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { GovernancePortTag } from "../src/PortTags.js"
+import { GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
 
 const SESSION_ID = "session:tool-registry" as SessionId
 const CONVERSATION_ID = "conversation:tool-registry" as ConversationId
@@ -214,12 +215,27 @@ const makeToolRegistryLayer = (
     })
   ).pipe(Layer.provide(governanceSqliteLayer))
 
+  const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const memoryPortTagLayer = Layer.effect(
+    MemoryPortTag,
+    Effect.gen(function*() {
+      return (yield* MemoryPortSqlite) as MemoryPort
+    })
+  ).pipe(Layer.provide(memoryPortSqliteLayer))
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
     governanceSqliteLayer,
     governanceTagLayer,
-    ToolRegistry.layer.pipe(Layer.provide(governanceTagLayer))
+    memoryPortSqliteLayer,
+    memoryPortTagLayer,
+    ToolRegistry.layer.pipe(
+      Layer.provide(governanceTagLayer),
+      Layer.provide(memoryPortTagLayer)
+    )
   )
 }
 
@@ -227,6 +243,7 @@ const makeAgentState = (overrides: Partial<AgentState>): AgentState => ({
   agentId: "agent:default" as AgentId,
   permissionMode: "Standard",
   tokenBudget: 1_000,
+  maxToolIterations: 10,
   quotaPeriod: "Daily",
   tokensConsumed: 0,
   budgetResetAt: null,

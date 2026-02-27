@@ -68,6 +68,20 @@ const toSuccessEvents = (
   let sequence = 2
   const events: Array<TurnStreamEvent> = []
 
+  for (const iteration of result.iterationStats) {
+    events.push({
+      type: "iteration.completed",
+      sequence,
+      turnId: input.turnId,
+      sessionId: input.sessionId,
+      iteration: iteration.iteration,
+      finishReason: iteration.finishReason,
+      toolCallsThisIteration: iteration.toolCallsThisIteration,
+      toolCallsTotal: iteration.toolCallsTotal
+    })
+    sequence += 1
+  }
+
   for (const block of result.assistantContentBlocks) {
     switch (block.contentBlockType) {
       case "TextBlock": {
@@ -121,6 +135,8 @@ const toSuccessEvents = (
     sessionId: input.sessionId,
     accepted: result.accepted,
     auditReasonCode: result.auditReasonCode,
+    iterationsUsed: result.iterationsUsed,
+    toolCallsTotal: result.toolCallsTotal,
     modelFinishReason: result.modelFinishReason,
     modelUsageJson: result.modelUsageJson
   })

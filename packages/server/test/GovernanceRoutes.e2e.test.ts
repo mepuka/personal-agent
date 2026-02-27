@@ -41,6 +41,7 @@ describe("GovernanceRoutes e2e", () => {
       yield* governance.recordToolInvocationWithAudit({
         invocation: {
           toolInvocationId: "toolinv:1" as ToolInvocationRecord["toolInvocationId"],
+          idempotencyKey: "tool-idem:test:1",
           auditEntryId: "audit:1" as ToolInvocationRecord["auditEntryId"],
           toolDefinitionId: "tooldef:echo_text:v1" as ToolInvocationRecord["toolDefinitionId"],
           auditLogId: "auditlog:governance:default:v1" as ToolInvocationRecord["auditLogId"],
@@ -251,6 +252,7 @@ const makeAgentState = (overrides: Partial<AgentState>): AgentState => ({
   agentId: "agent:default" as AgentId,
   permissionMode: "Standard",
   tokenBudget: 1_000,
+  maxToolIterations: 10,
   quotaPeriod: "Daily",
   tokensConsumed: 0,
   budgetResetAt: null,

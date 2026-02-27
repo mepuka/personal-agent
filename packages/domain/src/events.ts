@@ -49,6 +49,19 @@ export class ToolResultEvent extends Schema.Class<ToolResultEvent>("ToolResultEv
   isError: Schema.Boolean
 }) {}
 
+export class IterationCompletedEvent extends Schema.Class<IterationCompletedEvent>(
+  "IterationCompletedEvent"
+)({
+  type: Schema.Literal("iteration.completed"),
+  sequence: Schema.Number,
+  turnId: Schema.String,
+  sessionId: Schema.String,
+  iteration: Schema.Number,
+  finishReason: ModelFinishReason,
+  toolCallsThisIteration: Schema.Number,
+  toolCallsTotal: Schema.Number
+}) {}
+
 export class TurnCompletedEvent extends Schema.Class<TurnCompletedEvent>(
   "TurnCompletedEvent"
 )({
@@ -58,6 +71,8 @@ export class TurnCompletedEvent extends Schema.Class<TurnCompletedEvent>(
   sessionId: Schema.String,
   accepted: Schema.Boolean,
   auditReasonCode: Schema.String,
+  iterationsUsed: Schema.Number,
+  toolCallsTotal: Schema.Number,
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null])
 }) {}
@@ -76,6 +91,7 @@ export const TurnStreamEvent = Schema.Union([
   AssistantDeltaEvent,
   ToolCallEvent,
   ToolResultEvent,
+  IterationCompletedEvent,
   TurnCompletedEvent,
   TurnFailedEvent
 ])
