@@ -1,6 +1,7 @@
 import type {
   AgentStatePort,
   ChannelPort,
+  CheckpointPort,
   GovernancePort,
   IntegrationPort,
   MemoryPort,
@@ -26,3 +27,5 @@ export const MemoryPortTag = ServiceMap.Service<MemoryPort>("server/ports/Memory
 export const ChannelPortTag = ServiceMap.Service<ChannelPort>("server/ports/ChannelPort")
 
 export const IntegrationPortTag = ServiceMap.Service<IntegrationPort>("server/ports/IntegrationPort")
+
+export const CheckpointPortTag = ServiceMap.Service<CheckpointPort>("server/ports/CheckpointPort")

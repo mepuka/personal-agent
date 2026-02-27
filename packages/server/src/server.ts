@@ -2,6 +2,7 @@ import { BunFileSystem, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import type {
   AgentStatePort,
   ChannelPort,
+  CheckpointPort,
   GovernancePort,
   IntegrationPort,
   MemoryPort,
@@ -18,6 +19,7 @@ import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { ChannelCore } from "./ChannelCore.js"
+import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
 import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
@@ -37,6 +39,7 @@ import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
 import {
   AgentStatePortTag,
   ChannelPortTag,
+  CheckpointPortTag,
   GovernancePortTag,
   IntegrationPortTag,
   MemoryPortTag,
@@ -103,6 +106,17 @@ const governancePortTagLayer = Layer.effect(
     return (yield* GovernancePortSqlite) as GovernancePort
   })
 ).pipe(Layer.provide(governancePortSqliteLayer))
+
+const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
+const checkpointPortTagLayer = Layer.effect(
+  CheckpointPortTag,
+  Effect.gen(function*() {
+    return (yield* CheckpointPortSqlite) as CheckpointPort
+  })
+).pipe(Layer.provide(checkpointPortSqliteLayer))
 
 const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
@@ -285,6 +299,7 @@ const portTagsLayer = Layer.mergeAll(
   sessionTurnPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
+  checkpointPortTagLayer,
   channelPortTagLayer,
   integrationPortTagLayer
 )
