@@ -16,3 +16,10 @@ export interface ToolEvent {
 }
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error"
+
+export type ModalId =
+  | "command-palette"
+  | "session-picker"
+  | "settings"
+  | "memory-search"
+  | "tool-inspector"
