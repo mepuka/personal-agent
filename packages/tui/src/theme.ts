@@ -12,5 +12,5 @@ export const theme = {
   streaming: "#e0af68",
   statusConnected: "#9ece6a",
   statusError: "#f7768e",
-  statusPending: "#e0af68",
+  statusPending: "#e0af68"
 } as const
