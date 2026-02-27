@@ -10,6 +10,7 @@ const AgentStateRowSchema = Schema.Struct({
   agent_id: Schema.String,
   permission_mode: PermissionMode,
   token_budget: Schema.Number,
+  max_tool_iterations: Schema.Number,
   quota_period: QuotaPeriod,
   tokens_consumed: Schema.Number,
   budget_reset_at: Schema.Union([Schema.String, Schema.Null])
@@ -37,6 +38,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
               agent_id,
               permission_mode,
               token_budget,
+              max_tool_iterations,
               quota_period,
               tokens_consumed,
               budget_reset_at
@@ -55,6 +57,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
               agent_id,
               permission_mode,
               token_budget,
+              max_tool_iterations,
               quota_period,
               tokens_consumed,
               budget_reset_at
@@ -88,6 +91,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
             agent_id,
             permission_mode,
             token_budget,
+            max_tool_iterations,
             quota_period,
             tokens_consumed,
             budget_reset_at,
@@ -96,6 +100,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
             ${agentState.agentId},
             ${agentState.permissionMode},
             ${agentState.tokenBudget},
+            ${agentState.maxToolIterations},
             ${agentState.quotaPeriod},
             ${agentState.tokensConsumed},
             ${toSqlInstant(agentState.budgetResetAt)},
@@ -104,6 +109,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
           ON CONFLICT(agent_id) DO UPDATE SET
             permission_mode = excluded.permission_mode,
             token_budget = excluded.token_budget,
+            max_tool_iterations = excluded.max_tool_iterations,
             quota_period = excluded.quota_period,
             tokens_consumed = excluded.tokens_consumed,
             budget_reset_at = excluded.budget_reset_at,
@@ -149,6 +155,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
               SET
                 permission_mode = ${updated.permissionMode},
                 token_budget = ${updated.tokenBudget},
+                max_tool_iterations = ${updated.maxToolIterations},
                 quota_period = ${updated.quotaPeriod},
                 tokens_consumed = ${updated.tokensConsumed},
                 budget_reset_at = ${toSqlInstant(updated.budgetResetAt)},
@@ -188,6 +195,7 @@ const decodeAgentStateRow = (row: AgentStateRow): AgentState => ({
   agentId: row.agent_id as AgentId,
   permissionMode: row.permission_mode,
   tokenBudget: row.token_budget,
+  maxToolIterations: row.max_tool_iterations,
   quotaPeriod: row.quota_period,
   tokensConsumed: row.tokens_consumed,
   budgetResetAt: fromSqlInstant(row.budget_reset_at)

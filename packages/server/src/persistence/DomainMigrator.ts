@@ -472,6 +472,58 @@ const loader = SqliteMigrator.fromRecord({
       )
       WHERE tool_invocation_id IS NULL
     `.unprepared
+  }),
+  "0008_agent_loop_controls": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      ALTER TABLE agents
+      ADD COLUMN max_tool_iterations INTEGER NOT NULL DEFAULT 10
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      UPDATE agents
+      SET max_tool_iterations = 10
+      WHERE max_tool_iterations IS NULL
+    `.unprepared
+  }),
+  "0009_tool_invocation_idempotency": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      ALTER TABLE tool_invocations
+      ADD COLUMN idempotency_key TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      UPDATE tool_invocations
+      SET idempotency_key = 'legacy:' || tool_invocation_id
+      WHERE idempotency_key IS NULL
+    `.unprepared
+
+    yield* sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS tool_invocations_idempotency_key_idx
+      ON tool_invocations (idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+    `.unprepared
+  }),
+  "0010_memory_tool_definitions": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const now = new Date().toISOString()
+
+    yield* sql`
+      INSERT OR IGNORE INTO tool_definitions (
+        tool_definition_id,
+        tool_name,
+        source_kind,
+        integration_id,
+        is_safe_standard,
+        created_at
+      ) VALUES
+        ('tooldef:store_memory:v1', 'store_memory', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:retrieve_memories:v1', 'retrieve_memories', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:forget_memories:v1', 'forget_memories', 'BuiltIn', NULL, 1, ${now})
+    `.unprepared
   })
 })
 

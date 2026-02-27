@@ -1,6 +1,7 @@
 import { MemoryAccessDenied } from "@template/domain/errors"
 import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
-import type { MemorySearchQuery } from "@template/domain/ports"
+import { toMemoryItemIds } from "@template/domain/memory"
+import type { MemoryForgetFilters, MemorySearchQuery } from "@template/domain/ports"
 import { MemoryScope, MemorySortOrder, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DateTime, Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
@@ -82,7 +83,8 @@ const RetrieveRpc = Rpc.make("retrieve", {
 const ForgetRpc = Rpc.make("forget", {
   payload: {
     requestId: Schema.String,
-    cutoff: Schema.DateTimeUtcFromString
+    cutoff: Schema.optional(Schema.DateTimeUtcFromString),
+    memoryIds: Schema.optional(Schema.Array(Schema.String))
   },
   success: Schema.Number,
   error: MemoryAccessDenied,
@@ -254,6 +256,10 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
 
     forget: ({ address, payload }) => {
       const agentId = String(address.entityId) as AgentId
+      const filters: MemoryForgetFilters = {
+        ...(payload.cutoff === undefined ? {} : { cutoffDate: payload.cutoff }),
+        ...(payload.memoryIds === undefined ? {} : { itemIds: toMemoryItemIds(payload.memoryIds) })
+      }
       return withPolicy({
         agentId,
         action: "WriteMemory",
@@ -262,7 +268,7 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
         auditBeforeExecute: true,
         allowReason: "memory_forget_allowed",
         denyReason: "memory_forget_denied",
-        execute: port.forget(agentId, payload.cutoff)
+        execute: port.forget(agentId, filters)
       })
     },
 
@@ -294,3 +300,4 @@ const makeAuditEntryId = (
   requestId === undefined
     ? (`audit:memory:${operation}:${action}:${agentId}:${crypto.randomUUID()}`) as AuditEntryId
     : (`audit:memory:${operation}:${action}:${agentId}:${requestId}`) as AuditEntryId
+

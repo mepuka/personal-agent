@@ -117,6 +117,9 @@ export function dispatchEvent(
         ))
       break
     }
+    case "iteration.completed": {
+      break
+    }
     case "turn.completed": {
       registry.update(messagesAtom, (msgs) => {
         if (msgs.length === 0) return msgs

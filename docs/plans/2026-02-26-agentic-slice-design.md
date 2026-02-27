@@ -1,181 +1,221 @@
-# Full Agentic Slice Design
+# Full Agentic Slice Design (Revised)
 
-**Goal:** Enable true agentic behavior — memory tools, multi-step tool calling, and loop control — so the agent can autonomously use tools across multiple LLM calls within a single turn.
-
-**Scope:** Memory tools (store, retrieve, forget) + recursive tool loop + loop control + stream observability events.
+**Updated:** February 27, 2026  
+**Goal:** Enable safe, scalable agentic behavior for the single-agent slice: memory tools + multi-iteration tool loop + loop controls + observability, without breaking governance or replay safety.
 
 ---
 
-## 1. Memory Tools
+## 0. Current Status
 
-Three tools added to the existing `SafeToolkit` in `ToolRegistry.ts`, following the same `runGovernedTool` governance pattern as `time_now`, `math_calculate`, and `echo_text`.
+### Built today
+- Single `chat.generateText()` call per turn in [`TurnProcessingWorkflow.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/turn/TurnProcessingWorkflow.ts).
+- Safe tool set in [`ToolRegistry.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/ai/ToolRegistry.ts): `time_now`, `math_calculate`, `echo_text`.
+- Memory persistence/search primitives in [`MemoryPortSqlite.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/MemoryPortSqlite.ts).
+- Memory governance wrapper in [`MemoryEntity.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/entities/MemoryEntity.ts).
 
-### store_memory
+### Gaps this slice closes
+- No recursive tool loop (`finishReason: "tool-calls"` ends the turn today).
+- No memory tools exposed via toolkit.
+- No max loop depth control in `AgentState`.
+- No loop-level stream metadata.
 
-Persists a semantic memory scoped to the agent.
+### Pre-existing risk that must be addressed in this slice
+- Channel path currently sends `inputTokens: 0` in [`ChannelCore.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/ChannelCore.ts), weakening budget enforcement.
 
-- **Parameters:** `{ content: string, tags: string[] }`
+---
+
+## 1. Scope and Non-Goals
+
+### In scope (this slice)
+1. Add memory tools (`store_memory`, `retrieve_memories`, `forget_memories`) to `SafeToolkit`.
+2. Replace single-call model execution with recursive `Effect.suspend` loop.
+3. Add loop caps and loop metadata (`iterationsUsed`, `toolCallsTotal`).
+4. Add loop observability event(s) that are consistent with current runtime shape.
+
+### Not in scope (next slice)
+1. Sub-agent orchestration (`pao:SubAgent`).
+2. Task ontology + delegation graph (`pao:Task`, `pao:Goal`).
+3. Parallel child-agent fan-out.
+
+Those remain separate because architecture review still marks multi-agent orchestration as low-readiness and not yet modeled.
+
+---
+
+## 2. Memory Tools (Canonical Contracts)
+
+Memory tools must align with current memory storage contracts in [`ports.ts`](/Users/pooks/Dev/personal-agent/packages/domain/src/ports.ts) and [`MemoryPortSqlite.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/MemoryPortSqlite.ts).
+
+### `store_memory`
+- **Parameters:**
+  - `content: string`
+  - `tags?: string[]`
+  - `scope?: "SessionScope" | "GlobalScope"` (default `GlobalScope`)
 - **Success:** `{ memoryId: string, stored: true }`
-- **Backend:** `MemoryPortSqlite.encode(agentId, content, tags)`
+- **Mapping:**
+  - `tier = "SemanticMemory"`
+  - `source = "AgentSource"`
+  - `metadataJson = JSON.stringify({ tags })` when tags provided
 
-### retrieve_memories
-
-Searches stored memories by natural language query using FTS5.
-
+### `retrieve_memories`
 - **Parameters:** `{ query: string, limit?: number }`
-- **Success:** `{ memories: Array<{ memoryId, content, tags, similarity }> }`
-- **Backend:** `MemoryPortSqlite.retrieve(agentId, query, limit)`
-- **Default limit:** 5
+- **Success:**
+  - `{ memories: Array<{ memoryId, content, metadataJson, createdAt }> }`
+- **Notes:**
+  - Do not promise `similarity` in v1; current retrieve API does not expose a stable similarity field.
 
-### forget_memories
-
-Removes memories by ID.
-
+### `forget_memories`
 - **Parameters:** `{ memoryIds: string[] }`
 - **Success:** `{ forgotten: number }`
-- **Backend:** `MemoryPortSqlite.forget(agentId, memoryIds)`
+- **Important:** handler/backend must support deletion-by-itemIds explicitly (current cutoff-only `MemoryPort` contract needs extension).
 
-All three tools go through the full governance pipeline: `evaluatePolicy -> checkQuota -> execute -> recordInvocation + audit`. The `ToolExecutionContext` already carries `agentId` and `sessionId` for scoping. `MemoryPortSqlite` is already in the server's dependency graph.
+### Governance boundary
+Tool invocation governance remains in `runGovernedTool` (`InvokeTool`).  
+Memory read/write policy governance remains in memory layer (`ReadMemory` / `WriteMemory`) via the memory governance path.
+
+**Design rule:** do not bypass memory governance checks when adding toolkit handlers.
 
 ---
 
-## 2. Tool Loop
+## 3. Recursive Tool Loop
 
-The current `TurnProcessingWorkflow` makes a single `chat.generateText()` call. When the model returns `finishReason: "tool-calls"`, the Chat API resolves the tools but does not re-call the model. The agent can't act on tool results.
+### 3.1 Loop pattern
 
-### Recursive loop pattern
+Use stack-safe recursion with `Effect.suspend`:
 
-Replace the single call with an idiomatic `Effect.suspend` recursive loop:
+```ts
+interface ToolLoopResult {
+  readonly finalResponse: LanguageModel.GenerateTextResponse<any>
+  readonly allContentParts: ReadonlyArray<Response.Part.Any>
+  readonly iterationsUsed: number
+  readonly toolCallsTotal: number
+}
 
-```typescript
 const processWithToolLoop = (
   chat: Chat.Chat,
-  toolkit: typeof SafeToolkit,
-  handlerLayer: Layer.Layer<any>,
+  toolkitBundle: { readonly toolkit: any; readonly handlerLayer: Layer.Layer<any> },
+  userPrompt: Prompt.RawInput,
   maxIterations: number
-): Effect.Effect<AssistantResponse, TurnProcessingError> =>
+): Effect.Effect<ToolLoopResult, TurnProcessingError> =>
   Effect.suspend(function loop(
-    iteration: number = 0
-  ): Effect.Effect<AssistantResponse, TurnProcessingError> {
+    iteration = 0,
+    toolCallsTotal = 0,
+    allParts: ReadonlyArray<Response.Part.Any> = []
+  ): Effect.Effect<ToolLoopResult, TurnProcessingError> {
     if (iteration >= maxIterations) {
-      return Effect.succeed(buildMaxIterationsResponse(iteration))
+      return Effect.succeed(makeMaxIterationsResult(iteration, toolCallsTotal, allParts))
     }
 
-    return chat.generateText({ prompt: Prompt.empty, toolkit }).pipe(
-      Effect.provide(handlerLayer),
+    return chat.generateText({
+      prompt: iteration === 0 ? userPrompt : Prompt.empty,
+      toolkit: toolkitBundle.toolkit
+    }).pipe(
+      Effect.provide(toolkitBundle.handlerLayer),
       Effect.flatMap((response) => {
+        const mergedParts = [...allParts, ...response.content]
+        const callsThisIteration = response.content.filter((p) => p.type === "tool-call").length
+        const nextCallsTotal = toolCallsTotal + callsThisIteration
+
         if (response.finishReason === "tool-calls") {
-          return loop(iteration + 1)
+          return loop(iteration + 1, nextCallsTotal, mergedParts)
         }
-        return Effect.succeed(buildAssistantResponse(response, iteration))
+
+        return Effect.succeed({
+          finalResponse: response,
+          allContentParts: mergedParts,
+          iterationsUsed: iteration + 1,
+          toolCallsTotal: nextCallsTotal
+        })
       })
     )
   })
 ```
 
-### Why this pattern
-
-- **`Effect.suspend`** — stack-safe; Effect trampolines the recursion.
-- **Chat's `Ref<Prompt>`** — auto-appends each response (including tool results) to conversation history. No manual history management.
-- **`finishReason` drives the loop** — `"tool-calls"` means recurse; anything else (`"stop"`, `"end_turn"`, `"length"`) terminates.
-- **No while loops** — idiomatic Effect iteration via recursive function.
-
-### Workflow integration
-
-The loop is **inline** between durable Activity checkpoints, not wrapped as an Activity itself:
-
-```
-Activity: PersistUserTurn          <- Checkpoint
-  |
-  v
-processWithToolLoop(...)           <- Inline (recursive Effect.suspend)
-  |
-  v
-Activity: PersistAssistantTurn     <- Checkpoint
-Activity: WriteAudit               <- Checkpoint
-```
-
-If the process crashes mid-loop, the workflow resumes from `PersistUserTurn` and re-runs the loop. This is safe because:
-- LLM calls are deterministic per attempt
-- Tool executions use idempotency keys via `runGovernedTool`
-- Chat history is rebuilt on restart
+### 3.2 Important correctness rules
+- First call must pass actual user prompt (not `undefined`).
+- Subsequent calls use `Prompt.empty`; chat history already holds prior exchange.
+- Persist/stream should use accumulated `allContentParts`, not only final iteration response.
 
 ---
 
-## 3. Loop Control & Safety
+## 4. Replay Safety and Idempotency
 
-Three existing mechanisms prevent runaway loops — only one new field is needed.
+Previous assumption that replay is safe due to deterministic LLM behavior is incorrect.
+
+### Required safety model
+1. Assume LLM output is non-deterministic between retries.
+2. Treat side-effecting tools as at-least-once unless explicit dedupe exists.
+3. Add tool idempotency key for side-effecting writes:
+   - `idempotencyKey = hash(turnId + iteration + toolName + canonicalInputJson)`
+4. Persist and enforce unique key at invocation storage boundary.
+5. On duplicate key, return prior output without re-executing side effect.
+
+This is required before enabling recursive loop in production.
+
+---
+
+## 5. Loop Control, Budgets, and Quotas
 
 ### Max iterations
+- New `AgentState.maxToolIterations` (default `10`).
+- Hard cap enforced at loop entry each iteration.
 
-Hard cap checked at the top of each `loop(iteration)` call. Default: `10`. Sourced from a new `maxToolIterations` field on `AgentState`. The governance layer can override per-agent.
+### Token governance
+- Fix channel input token estimation bug first (`inputTokens: 0` -> estimated token count).
+- Existing pre-loop budget check remains.
+- Add per-turn usage accounting from model usage totals in final result (minimum).
+- Prefer per-iteration accounting in follow-up hardening if provider usage can be trusted per call.
 
-When hit, the loop returns a structured response telling the model it reached the limit, including what it accomplished so far.
+### Tool quotas
+- Keep `checkToolQuota` in `runGovernedTool` before execution.
 
-### Token budget
-
-The existing `CheckTokenBudget` Activity runs before the loop starts. Inside the loop, the model provider enforces context window limits. No per-iteration budget check needed.
-
-### Tool-level quota
-
-Already exists. `runGovernedTool` calls `governance.checkToolQuota()` before every tool execution. If quota is exceeded mid-loop, the tool returns `ToolQuotaExceeded` as a failure, which the model sees and can respond to gracefully.
-
-### Error handling
-
-- **Tool execution failure** — not fatal. The tool returns a `ToolFailure`, the model sees it, decides whether to retry or respond. Already how `runGovernedTool` works.
-- **LLM provider error** — fatal. Breaks out of the loop, falls through to the existing `WriteAudit` failure path.
-- **Unexpected error** — `Effect.catchAll` at the loop boundary converts to `TurnProcessingError`.
+### Timeout protection
+- Add loop wall-clock timeout per turn (e.g., 10-15s default, configurable).
 
 ---
 
-## 4. Stream Events & Observability
+## 6. Stream Observability
 
-New ephemeral stream events so the client can observe multi-step tool loops in real time.
+### 6.1 V1 (this slice, compatible with current runtime)
+- Add `iteration.completed` event.
+- Add `iterationsUsed` and `toolCallsTotal` to `turn.completed`.
+- Runtime can emit these after workflow completion (current post-hoc streaming model).
 
-| Event | Emitted when | Payload |
-|-------|-------------|---------|
-| `tool.calls.started` | Model returns `finishReason: "tool-calls"` | `{ iteration, toolCalls: [{ toolName, inputJson }] }` |
-| `tool.call.result` | Each tool finishes executing | `{ iteration, toolName, outputJson, decision }` |
-| `iteration.completed` | Loop iteration finishes, about to re-call model | `{ iteration, toolCallCount }` |
-
-These nest inside the existing `turn.started` / `turn.completed` envelope. The TUI's `ToolPane` can render them for real-time visibility.
-
-`turn.completed` gains two fields: `iterationsUsed: number` and `toolCallsTotal: number`.
-
-These are ephemeral stream events only — the durable record is the `ToolInvocationRecord` already persisted by `runGovernedTool`.
+### 6.2 V2 (future, real-time loop tracing)
+- `tool.calls.started` and per-call result events require runtime/workflow streaming refactor.
+- Also requires downstream consumer updates (`client`, `tui`, `cli`) and fixture updates.
 
 ---
 
-## 5. Integration & Wiring
+## 7. Integration Surface (Revised)
 
-### ToolRegistry (`packages/server/src/ai/ToolRegistry.ts`)
+### Domain / contracts
+- [`packages/domain/src/ports.ts`](/Users/pooks/Dev/personal-agent/packages/domain/src/ports.ts): add `maxToolIterations`; extend memory forget contract for item-id deletion.
+- [`packages/domain/src/events.ts`](/Users/pooks/Dev/personal-agent/packages/domain/src/events.ts): add loop event and completion metadata.
 
-Add 3 tool definitions (Schema structs) and 3 handlers to `SafeToolkit`. Each handler follows the `runGovernedTool(context, toolName, input, execute)` pattern. `MemoryPortSqlite` is injected via the handler layer.
+### Server
+- [`packages/server/src/ai/ToolRegistry.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/ai/ToolRegistry.ts): memory tools + idempotency-aware execution path.
+- [`packages/server/src/turn/TurnProcessingWorkflow.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/turn/TurnProcessingWorkflow.ts): recursive loop + accumulation + metadata.
+- [`packages/server/src/turn/TurnProcessingRuntime.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/turn/TurnProcessingRuntime.ts): emit new events.
+- [`packages/server/src/persistence/DomainMigrator.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/persistence/DomainMigrator.ts): migrations for `max_tool_iterations`, memory tool definitions, invocation idempotency key.
+- [`packages/server/src/entities/AgentEntity.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/entities/AgentEntity.ts): schema parity with `AgentState`.
+- [`packages/server/src/ChannelCore.ts`](/Users/pooks/Dev/personal-agent/packages/server/src/ChannelCore.ts): token estimation fix.
 
-### TurnProcessingWorkflow (`packages/server/src/turn/TurnProcessingWorkflow.ts`)
+### Client/UI
+- [`packages/client/src/ChatClient.ts`](/Users/pooks/Dev/personal-agent/packages/client/src/ChatClient.ts)
+- [`packages/tui/src/hooks/useSendMessage.ts`](/Users/pooks/Dev/personal-agent/packages/tui/src/hooks/useSendMessage.ts)
+- [`packages/cli/src/Cli.ts`](/Users/pooks/Dev/personal-agent/packages/cli/src/Cli.ts)
 
-Replace the single `chat.generateText()` with `processWithToolLoop()`. Read `maxToolIterations` from `AgentState` before entering the loop. Activities before and after the loop are unchanged.
-
-### AgentState (`packages/domain/src/ports.ts`)
-
-Add `maxToolIterations: number` (default `10`).
-
-### DomainMigrator (`packages/server/src/persistence/DomainMigrator.ts`)
-
-Migration to add `max_tool_iterations` column with default value.
-
-### Domain events (`packages/domain/src/events.ts`)
-
-Add the three new `TurnStreamEvent` variants and updated `turn.completed` payload.
+### Tests (minimum)
+- Tool registry tests (memory tools + policy outcomes + dedupe).
+- Workflow e2e (multi-iteration loop, max iterations, replay dedupe).
+- Event consumers/fixtures updates for new event schema.
 
 ---
 
-## Files Summary
+## 8. Product Rollout Recommendation
 
-| File | Change |
-|------|--------|
-| `packages/domain/src/events.ts` | New stream event types |
-| `packages/domain/src/ports.ts` | `AgentState.maxToolIterations` field |
-| `packages/server/src/ai/ToolRegistry.ts` | 3 memory tool definitions + handlers |
-| `packages/server/src/turn/TurnProcessingWorkflow.ts` | Recursive tool loop replacing single `generateText` |
-| `packages/server/src/persistence/DomainMigrator.ts` | Migration for `maxToolIterations` column |
+1. **Phase 0:** Baseline hardening (token accounting + idempotency + schema parity).
+2. **Phase 1:** Agentic loop v1 behind feature flag.
+3. **Phase 2:** Sub-agent control plane (`SubAgent`, `Task`) as separate milestone.
+
+This keeps the current slice focused and production-safe while preserving a clean path to actor-based sub-agents.

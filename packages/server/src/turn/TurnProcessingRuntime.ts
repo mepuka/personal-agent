@@ -14,7 +14,7 @@ export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRunt
     make: Effect.gen(function*() {
       const workflowEngine = yield* WorkflowEngine.WorkflowEngine
 
-      const processTurn = (input: ProcessTurnPayload) =>
+      const processTurn = (input: ProcessTurnPayload): Effect.Effect<ProcessTurnResult, TurnProcessingError> =>
         Effect.gen(function*() {
           const withEngine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
             effect.pipe(
@@ -32,7 +32,7 @@ export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRunt
           }
 
           return yield* withEngine(TurnProcessingWorkflow.execute(input))
-        }) as Effect.Effect<ProcessTurnResult, TurnProcessingError>
+        })
 
       const processTurnStream = (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent, TurnProcessingError> => {
         const startedEvent: TurnStreamEvent = {
@@ -65,67 +65,57 @@ const toSuccessEvents = (
   input: ProcessTurnPayload,
   result: ProcessTurnResult
 ): ReadonlyArray<TurnStreamEvent> => {
-  let sequence = 2
-  const events: Array<TurnStreamEvent> = []
+  const base = { turnId: input.turnId, sessionId: input.sessionId }
 
-  for (const block of result.assistantContentBlocks) {
-    switch (block.contentBlockType) {
-      case "TextBlock": {
-        events.push({
-          type: "assistant.delta",
-          sequence,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          delta: block.text
-        })
-        sequence += 1
-        break
-      }
-      case "ToolUseBlock": {
-        events.push({
-          type: "tool.call",
-          sequence,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          toolCallId: block.toolCallId,
-          toolName: block.toolName,
-          inputJson: block.inputJson
-        })
-        sequence += 1
-        break
-      }
-      case "ToolResultBlock": {
-        events.push({
-          type: "tool.result",
-          sequence,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          toolCallId: block.toolCallId,
-          toolName: block.toolName,
-          outputJson: block.outputJson,
-          isError: block.isError
-        })
-        sequence += 1
-        break
-      }
-      case "ImageBlock": {
-        break
+  const iterationEvents: ReadonlyArray<TurnStreamEvent> = result.iterationStats.map(
+    (stat) => ({
+      type: "iteration.completed" as const,
+      ...base,
+      sequence: 0,
+      iteration: stat.iteration,
+      finishReason: stat.finishReason,
+      toolCallsThisIteration: stat.toolCallsThisIteration,
+      toolCallsTotal: stat.toolCallsTotal
+    })
+  )
+
+  const contentEvents: ReadonlyArray<TurnStreamEvent> = result.assistantContentBlocks.flatMap(
+    (block): ReadonlyArray<TurnStreamEvent> => {
+      switch (block.contentBlockType) {
+        case "TextBlock":
+          return [{ type: "assistant.delta" as const, ...base, sequence: 0, delta: block.text }]
+        case "ToolUseBlock":
+          return [{
+            type: "tool.call" as const, ...base, sequence: 0,
+            toolCallId: block.toolCallId, toolName: block.toolName, inputJson: block.inputJson
+          }]
+        case "ToolResultBlock":
+          return [{
+            type: "tool.result" as const, ...base, sequence: 0,
+            toolCallId: block.toolCallId, toolName: block.toolName,
+            outputJson: block.outputJson, isError: block.isError
+          }]
+        case "ImageBlock":
+          return []
       }
     }
-  }
+  )
 
-  events.push({
+  const completedEvent: TurnStreamEvent = {
     type: "turn.completed",
-    sequence,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
+    ...base,
+    sequence: 0,
     accepted: result.accepted,
     auditReasonCode: result.auditReasonCode,
+    iterationsUsed: result.iterationsUsed,
+    toolCallsTotal: result.toolCallsTotal,
     modelFinishReason: result.modelFinishReason,
     modelUsageJson: result.modelUsageJson
-  })
+  }
 
-  return events
+  return [...iterationEvents, ...contentEvents, completedEvent].map(
+    (event, i) => ({ ...event, sequence: i + 2 })
+  )
 }
 
 const makeExecutionId = (idempotencyKey: string) =>
@@ -137,11 +127,7 @@ const makeExecutionId = (idempotencyKey: string) =>
       )
     ),
     (buffer) => {
-      const bytes = new Uint8Array(buffer)
-      let digest = ""
-      for (let i = 0; i < 16; i++) {
-        digest += bytes[i].toString(16).padStart(2, "0")
-      }
-      return digest
+      const hex = Array.from(new Uint8Array(buffer).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("")
+      return hex
     }
   )

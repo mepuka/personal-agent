@@ -9,6 +9,7 @@ const AgentStateFields = {
   agentId: Schema.String,
   permissionMode: Schema.Literals(["Permissive", "Standard", "Restrictive"]),
   tokenBudget: Schema.Number,
+  maxToolIterations: Schema.Number,
   quotaPeriod: Schema.Literals(["Daily", "Monthly", "Yearly", "Lifetime"]),
   tokensConsumed: Schema.Number,
   budgetResetAt: Schema.Union([Schema.DateTimeUtc, Schema.Null])

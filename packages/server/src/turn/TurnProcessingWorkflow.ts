@@ -1,23 +1,51 @@
-import { Effect, Layer, Ref, Schema } from "effect"
+import { Effect, Layer, Option, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
+import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
+import * as Response from "effect/unstable/ai/Response"
 import * as Activity from "effect/unstable/workflow/Activity"
 import * as Workflow from "effect/unstable/workflow/Workflow"
-import { ContextWindowExceeded, SessionNotFound, TokenBudgetExceeded } from "../../../domain/src/errors.js"
-import type { AgentId, AuditEntryId, ConversationId, MessageId, SessionId, TurnId } from "../../../domain/src/ids.js"
+import {
+  ContextWindowExceeded,
+  SessionNotFound,
+  TokenBudgetExceeded
+} from "../../../domain/src/errors.js"
+import type {
+  AgentId,
+  AuditEntryId,
+  ConversationId,
+  MessageId,
+  SessionId,
+  TurnId
+} from "../../../domain/src/ids.js"
 import {
   type AuditEntryRecord,
   type ContentBlock,
   ContentBlock as ContentBlockSchema,
+  type Instant,
   type TurnRecord
 } from "../../../domain/src/ports.js"
 import { ModelFinishReason } from "../../../domain/src/status.js"
 import { AgentConfig } from "../ai/AgentConfig.js"
-import { encodeFinishReason, encodePartsToContentBlocks, encodeUsageToJson } from "../ai/ContentBlockCodec.js"
+import {
+  encodeFinishReason,
+  encodePartsToContentBlocks,
+  encodeUsageToJson
+} from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
-import { ToolRegistry } from "../ai/ToolRegistry.js"
+import { ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
 import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
-import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../PortTags.js"
+import {
+  AgentStatePortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SessionTurnPortTag
+} from "../PortTags.js"
+
+const DEFAULT_MAX_TOOL_ITERATIONS = 10
+// TODO: Move to AgentConfig so per-agent iteration caps are formally configurable
+const MAX_TOOL_ITERATIONS_CAP = 200
+const TURN_LOOP_TIMEOUT = "15 seconds"
 
 export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_accepted",
@@ -41,16 +69,36 @@ export const ProcessTurnPayload = Schema.Struct({
 })
 export type ProcessTurnPayload = typeof ProcessTurnPayload.Type
 
+const TurnIterationStats = Schema.Struct({
+  iteration: Schema.Number,
+  finishReason: ModelFinishReason,
+  toolCallsThisIteration: Schema.Number,
+  toolCallsTotal: Schema.Number
+})
+type TurnIterationStats = typeof TurnIterationStats.Type
+
 export const ProcessTurnResult = Schema.Struct({
   turnId: Schema.String,
   accepted: Schema.Boolean,
   auditReasonCode: TurnAuditReasonCode,
   assistantContent: Schema.String,
   assistantContentBlocks: Schema.Array(ContentBlockSchema),
+  iterationsUsed: Schema.Number,
+  toolCallsTotal: Schema.Number,
+  iterationStats: Schema.Array(TurnIterationStats),
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null])
 })
 export type ProcessTurnResult = typeof ProcessTurnResult.Type
+
+interface ToolLoopResult {
+  readonly finalResponse: LanguageModel.GenerateTextResponse<any>
+  readonly allContentParts: ReadonlyArray<Response.Part<any>>
+  readonly iterationsUsed: number
+  readonly toolCallsTotal: number
+  readonly iterationStats: ReadonlyArray<TurnIterationStats>
+  readonly usage: Response.Usage
+}
 
 export class TurnPolicyDenied extends Schema.ErrorClass<TurnPolicyDenied>(
   "TurnPolicyDenied"
@@ -175,6 +223,10 @@ export const layer = TurnProcessingWorkflow.toLayer(
       })
     }).asEffect()
 
+    const maxToolIterations = yield* agentStatePort.get(payload.agentId as AgentId).pipe(
+      Effect.map((state) => Math.min(Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1), MAX_TOOL_ITERATIONS_CAP))
+    )
+
     // Retrieve semantic memories for context injection (snapshot read, not an Activity)
     // Uses FTS5 full-text search via MemoryPortSqlite.retrieve for relevance ranking
     const semanticMemories = yield* sqlitePort.retrieve(
@@ -182,21 +234,13 @@ export const layer = TurnProcessingWorkflow.toLayer(
       { query: payload.content, tier: "SemanticMemory", limit: 20 }
     )
 
-    const modelResponse = yield* Effect.gen(function*() {
+    const modelResult = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
       const lmLayer = yield* modelRegistry.get(
         profile.model.provider,
         profile.model.modelId
       )
-
-      const toolkitBundle = yield* toolRegistry.makeToolkit({
-        agentId: payload.agentId as AgentId,
-        sessionId: payload.sessionId as SessionId,
-        conversationId: payload.conversationId as ConversationId,
-        turnId: payload.turnId as TurnId,
-        now: payload.createdAt
-      })
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
@@ -216,13 +260,31 @@ export const layer = TurnProcessingWorkflow.toLayer(
       // Build prompt with memory context prepended
       const userPrompt = toPromptText(payload.content, payload.contentBlocks)
 
-      return yield* chat.generateText({
-        prompt: userPrompt,
-        toolkit: toolkitBundle.toolkit
+      const loopResultOption = yield* processWithToolLoop({
+        chat,
+        toolRegistry,
+        lmLayer,
+        context: {
+          agentId: payload.agentId as AgentId,
+          sessionId: payload.sessionId as SessionId,
+          conversationId: payload.conversationId as ConversationId,
+          turnId: payload.turnId as TurnId,
+          now: payload.createdAt
+        },
+        userPrompt,
+        maxIterations: maxToolIterations
       }).pipe(
-        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, lmLayer)),
-        Effect.withSpan("TurnProcessing.generateText")
+        Effect.timeoutOption(TURN_LOOP_TIMEOUT)
       )
+
+      if (Option.isNone(loopResultOption)) {
+        return yield* new TurnModelFailure({
+          turnId: payload.turnId,
+          reason: "tool_loop_timeout"
+        })
+      }
+
+      return loopResultOption.value
     }).pipe(
       Effect.catch((error) =>
         writeAuditEntry(
@@ -231,26 +293,22 @@ export const layer = TurnProcessingWorkflow.toLayer(
           "Deny",
           "turn_processing_model_error"
         ).pipe(
-          Effect.andThen(
-            Effect.fail(
-              new TurnModelFailure({
-                turnId: payload.turnId,
-                reason: error instanceof Error ? error.message : String(error)
-              })
-            )
-          )
+          Effect.andThen(Effect.fail(toTurnModelFailure(payload.turnId, error)))
         )
       )
     )
 
     const assistantResult = yield* Effect.gen(function*() {
-      const assistantContent = modelResponse.text
-      const assistantContentBlocks = yield* encodePartsToContentBlocks(modelResponse.content)
-      const modelUsageJson = yield* encodeUsageToJson(modelResponse.usage)
+      const assistantContent = modelResult.finalResponse.text
+      const assistantContentBlocks = yield* encodePartsToContentBlocks(modelResult.allContentParts)
+      const modelUsageJson = yield* encodeUsageToJson(modelResult.usage)
       return {
         assistantContent,
         assistantContentBlocks,
-        modelUsageJson
+        modelUsageJson,
+        iterationsUsed: modelResult.iterationsUsed,
+        toolCallsTotal: modelResult.toolCallsTotal,
+        iterationStats: modelResult.iterationStats
       } as const
     }).pipe(
       Effect.catch((error) =>
@@ -272,7 +330,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     )
 
-    const modelFinishReason = encodeFinishReason(modelResponse.finishReason)
+    const modelFinishReason = encodeFinishReason(modelResult.finalResponse.finishReason)
 
     yield* Activity.make({
       name: "PersistAssistantTurn",
@@ -299,11 +357,96 @@ export const layer = TurnProcessingWorkflow.toLayer(
       auditReasonCode: "turn_processing_accepted",
       assistantContent: assistantResult.assistantContent,
       assistantContentBlocks: assistantResult.assistantContentBlocks,
+      iterationsUsed: assistantResult.iterationsUsed,
+      toolCallsTotal: assistantResult.toolCallsTotal,
+      iterationStats: assistantResult.iterationStats,
       modelFinishReason,
       modelUsageJson: assistantResult.modelUsageJson
     } as const
   })
 )
+
+const processWithToolLoop = (params: {
+  readonly chat: Chat.Persisted
+  readonly toolRegistry: ToolRegistryService
+  readonly lmLayer: Layer.Layer<any>
+  readonly context: {
+    readonly agentId: AgentId
+    readonly sessionId: SessionId
+    readonly conversationId: ConversationId
+    readonly turnId: TurnId
+    readonly now: Instant
+  }
+  readonly userPrompt: string
+  readonly maxIterations: number
+}): Effect.Effect<ToolLoopResult, unknown, never> =>
+  Effect.suspend(function loop(
+    iteration = 0,
+    toolCallsTotal = 0,
+    allParts: ReadonlyArray<Response.Part<any>> = [],
+    usage = zeroUsage(),
+    iterationStats: ReadonlyArray<TurnIterationStats> = []
+  ): Effect.Effect<ToolLoopResult, unknown, never> {
+    const currentIteration = iteration + 1
+
+    return Effect.gen(function*() {
+      const toolkitBundle = yield* params.toolRegistry.makeToolkit({
+        ...params.context,
+        iteration
+      })
+
+      const response = yield* params.chat.generateText({
+        prompt: iteration === 0 ? params.userPrompt : Prompt.empty,
+        toolkit: toolkitBundle.toolkit
+      }).pipe(
+        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, params.lmLayer)),
+        Effect.withSpan("TurnProcessing.generateText")
+      )
+
+      const toolCallsThisIteration = response.content.filter((part) => part.type === "tool-call").length
+      const nextToolCallsTotal = toolCallsTotal + toolCallsThisIteration
+      const mergedParts = [...allParts, ...response.content]
+      const mergedUsage = mergeUsage(usage, response.usage)
+      const mergedIterationStats = [...iterationStats, {
+        iteration: currentIteration,
+        finishReason: encodeFinishReason(response.finishReason),
+        toolCallsThisIteration,
+        toolCallsTotal: nextToolCallsTotal
+      }]
+
+      if (response.finishReason === "tool-calls" && currentIteration < params.maxIterations) {
+        return yield* loop(
+          currentIteration,
+          nextToolCallsTotal,
+          mergedParts,
+          mergedUsage,
+          mergedIterationStats
+        )
+      }
+
+      if (response.finishReason === "tool-calls") {
+        const cappedResponse = makeLoopCapResponse(params.maxIterations, mergedUsage)
+        const allContentParts = [...mergedParts, ...cappedResponse.content]
+        return {
+          finalResponse: cappedResponse,
+          allContentParts,
+          iterationsUsed: currentIteration,
+          toolCallsTotal: nextToolCallsTotal,
+          iterationStats: mergedIterationStats,
+          usage: mergedUsage
+        } as const
+      }
+
+      return {
+        finalResponse: response,
+        allContentParts: mergedParts,
+        iterationsUsed: currentIteration,
+        toolCallsTotal: nextToolCallsTotal,
+        iterationStats: mergedIterationStats,
+        usage: mergedUsage
+      } as const
+    })
+  })
 
 const writeAuditEntry = (
   governancePort: {
@@ -387,3 +530,62 @@ const toPromptText = (
 
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
 }
+
+const toTurnModelFailure = (
+  turnId: string,
+  error: unknown
+): TurnModelFailure =>
+  error instanceof TurnModelFailure
+    ? error
+    : new TurnModelFailure({
+      turnId,
+      reason: error instanceof Error ? error.message : String(error)
+    })
+
+const zeroUsage = (): Response.Usage =>
+  new Response.Usage({
+    inputTokens: {
+      uncached: 0,
+      total: 0,
+      cacheRead: 0,
+      cacheWrite: 0
+    },
+    outputTokens: {
+      total: 0,
+      text: 0,
+      reasoning: 0
+    }
+  })
+
+const addOptional = (a: number | undefined, b: number | undefined): number =>
+  (a ?? 0) + (b ?? 0)
+
+const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage =>
+  new Response.Usage({
+    inputTokens: {
+      uncached: addOptional(left.inputTokens.uncached, right.inputTokens.uncached),
+      total: addOptional(left.inputTokens.total, right.inputTokens.total),
+      cacheRead: addOptional(left.inputTokens.cacheRead, right.inputTokens.cacheRead),
+      cacheWrite: addOptional(left.inputTokens.cacheWrite, right.inputTokens.cacheWrite)
+    },
+    outputTokens: {
+      total: addOptional(left.outputTokens.total, right.outputTokens.total),
+      text: addOptional(left.outputTokens.text, right.outputTokens.text),
+      reasoning: addOptional(left.outputTokens.reasoning, right.outputTokens.reasoning)
+    }
+  })
+
+const makeLoopCapResponse = (
+  maxIterations: number,
+  usage: Response.Usage
+): LanguageModel.GenerateTextResponse<any> =>
+  new LanguageModel.GenerateTextResponse([
+    Response.makePart("text", {
+      text: `Stopped after reaching max tool iterations (${maxIterations}).`
+    }),
+    Response.makePart("finish", {
+      reason: "other",
+      usage,
+      response: undefined
+    })
+  ])

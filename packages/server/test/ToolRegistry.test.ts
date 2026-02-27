@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, GovernancePort, Instant } from "@template/domain/ports"
+import type { AgentState, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync } from "node:fs"
@@ -9,9 +9,10 @@ import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { GovernancePortTag } from "../src/PortTags.js"
+import { GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
 
 const SESSION_ID = "session:tool-registry" as SessionId
 const CONVERSATION_ID = "conversation:tool-registry" as ConversationId
@@ -157,11 +158,126 @@ describe("ToolRegistry", () => {
     )
     await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
   })
+
+  it("store_memory happy path stores and returns memoryId", async () => {
+    const dbPath = testDatabasePath("tool-registry-store-memory")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:store-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const output = yield* invokeTool(agentId, "store_memory", {
+        content: "test fact",
+        tags: ["tag1"]
+      })
+      expect(output).toContain("memoryId")
+      expect(output).toContain("true")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("retrieve_memories returns stored memories", async () => {
+    const dbPath = testDatabasePath("tool-registry-retrieve-memories")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:retrieve-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      yield* invokeTool(agentId, "store_memory", {
+        content: "remembered fact for retrieval"
+      })
+
+      const output = yield* invokeTool(agentId, "retrieve_memories", {
+        query: "remembered fact",
+        limit: 5
+      })
+      expect(output).toContain("remembered fact")
+      expect(output).toContain("memoryId")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("forget_memories removes stored memories", async () => {
+    const dbPath = testDatabasePath("tool-registry-forget-memories")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:forget-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const storeOutput = yield* invokeTool(agentId, "store_memory", {
+        content: "memory to forget"
+      })
+      // Extract memoryId from the JSON output string
+      const memoryIdMatch = storeOutput.match(/"memoryId"\s*:\s*"([^"]+)"/)
+      expect(memoryIdMatch).not.toBeNull()
+      const memoryId = memoryIdMatch![1]
+
+      const forgetOutput = yield* invokeTool(agentId, "forget_memories", {
+        memoryIds: [memoryId]
+      })
+      expect(forgetOutput).toContain("\"forgotten\"")
+      expect(forgetOutput).toContain("1")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("forget_memories with empty IDs returns InvalidMemoryIds error", async () => {
+    const dbPath = testDatabasePath("tool-registry-forget-empty")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:forget-empty" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const failure = (yield* invokeTool(agentId, "forget_memories", {
+        memoryIds: ["", "  "]
+      }).pipe(
+        Effect.flip
+      )) as { readonly errorCode: string }
+      expect(failure.errorCode).toBe("InvalidMemoryIds")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
 })
 
 const invokeTool = (
   agentId: AgentId,
-  toolName: "echo_text" | "math_calculate" | "time_now",
+  toolName: "echo_text" | "math_calculate" | "time_now" | "store_memory" | "retrieve_memories" | "forget_memories",
   params: Record<string, unknown>
 ) =>
   Effect.gen(function*() {
@@ -214,12 +330,27 @@ const makeToolRegistryLayer = (
     })
   ).pipe(Layer.provide(governanceSqliteLayer))
 
+  const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const memoryPortTagLayer = Layer.effect(
+    MemoryPortTag,
+    Effect.gen(function*() {
+      return (yield* MemoryPortSqlite) as MemoryPort
+    })
+  ).pipe(Layer.provide(memoryPortSqliteLayer))
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
     governanceSqliteLayer,
     governanceTagLayer,
-    ToolRegistry.layer.pipe(Layer.provide(governanceTagLayer))
+    memoryPortSqliteLayer,
+    memoryPortTagLayer,
+    ToolRegistry.layer.pipe(
+      Layer.provide(governanceTagLayer),
+      Layer.provide(memoryPortTagLayer)
+    )
   )
 }
 
@@ -227,6 +358,7 @@ const makeAgentState = (overrides: Partial<AgentState>): AgentState => ({
   agentId: "agent:default" as AgentId,
   permissionMode: "Standard",
   tokenBudget: 1_000,
+  maxToolIterations: 10,
   quotaPeriod: "Daily",
   tokensConsumed: 0,
   budgetResetAt: null,

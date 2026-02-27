@@ -37,6 +37,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
               agentId,
               permissionMode: "Standard",
               tokenBudget: 200_000,
+              maxToolIterations: 10,
               quotaPeriod: "Daily",
               tokensConsumed: 0,
               budgetResetAt: null
@@ -119,7 +120,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             content: params.content,
             contentBlocks: params.contentBlocks,
             createdAt: now,
-            inputTokens: 0
+            inputTokens: estimateInputTokens(params.content, params.contentBlocks)
           } satisfies ProcessTurnPayload
         })
 
@@ -214,4 +215,42 @@ export type ChannelCoreService = {
   readonly getHistory: (
     channelId: ChannelId
   ) => Effect.Effect<ReadonlyArray<TurnRecord>, ChannelNotFound>
+}
+
+const estimateInputTokens = (
+  content: string,
+  contentBlocks: ReadonlyArray<ContentBlock>
+): number => {
+  let estimate = estimateTextTokens(content)
+  for (const block of contentBlocks) {
+    switch (block.contentBlockType) {
+      case "TextBlock": {
+        estimate += estimateTextTokens(block.text)
+        break
+      }
+      case "ToolUseBlock": {
+        estimate += estimateTextTokens(block.toolName)
+        estimate += estimateTextTokens(block.inputJson)
+        break
+      }
+      case "ToolResultBlock": {
+        estimate += estimateTextTokens(block.toolName)
+        estimate += estimateTextTokens(block.outputJson)
+        break
+      }
+      case "ImageBlock": {
+        estimate += 64
+        break
+      }
+    }
+  }
+  return Math.max(estimate, 1)
+}
+
+const estimateTextTokens = (text: string): number => {
+  const normalized = text.trim()
+  if (normalized.length === 0) {
+    return 0
+  }
+  return Math.ceil(normalized.length / 4)
 }

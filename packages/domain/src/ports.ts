@@ -51,6 +51,7 @@ export interface AgentState {
   readonly agentId: AgentId
   readonly permissionMode: PermissionMode
   readonly tokenBudget: number
+  readonly maxToolIterations: number
   readonly quotaPeriod: QuotaPeriod
   readonly tokensConsumed: number
   readonly budgetResetAt: Instant | null
@@ -145,6 +146,12 @@ export interface MemoryQuery {
   readonly limit: number
 }
 
+export interface MemoryForgetFilters {
+  readonly cutoffDate?: Instant
+  readonly scope?: MemoryScope
+  readonly itemIds?: ReadonlyArray<MemoryItemId>
+}
+
 export interface MemoryItemRecord {
   readonly memoryItemId: MemoryItemId
   readonly agentId: AgentId
@@ -218,6 +225,7 @@ export interface AuditLogRecord {
 
 export interface ToolInvocationRecord {
   readonly toolInvocationId: ToolInvocationId
+  readonly idempotencyKey: string
   readonly auditEntryId: AuditEntryId
   readonly toolDefinitionId: ToolDefinitionId | null
   readonly auditLogId: AuditLogId
@@ -377,7 +385,7 @@ export interface MemoryPort {
     }>,
     now: Instant
   ) => Effect.Effect<ReadonlyArray<MemoryItemId>>
-  readonly forget: (agentId: AgentId, cutoff: Instant) => Effect.Effect<number>
+  readonly forget: (agentId: AgentId, filters: MemoryForgetFilters) => Effect.Effect<number>
 }
 
 export interface GovernancePort {
@@ -395,6 +403,9 @@ export interface GovernancePort {
     readonly invocation: ToolInvocationRecord
     readonly audit: AuditEntryRecord
   }) => Effect.Effect<void>
+  readonly findToolInvocationByIdempotencyKey: (
+    idempotencyKey: string
+  ) => Effect.Effect<ToolInvocationRecord | null>
   readonly listToolInvocationsBySession: (
     sessionId: SessionId,
     query: ToolInvocationQuery
