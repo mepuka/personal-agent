@@ -2,20 +2,23 @@ import { useAtomValue } from "@effect/atom-react"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { useKeyboard } from "@opentui/react"
 import * as React from "react"
-import { inputHistoryAtom, isStreamingAtom } from "../atoms/session.js"
+import { inputHistoryAtom, isStreamingAtom, pendingCheckpointAtom } from "../atoms/session.js"
 import { theme } from "../theme.js"
 
 export function InputBar({
   onSubmit,
+  onDecision,
   focused,
   inputRef
 }: {
   readonly onSubmit: (content: string) => void
+  readonly onDecision?: (checkpointId: string, decision: "Approved" | "Rejected" | "Deferred") => void
   readonly focused: boolean
   readonly inputRef?: React.RefObject<unknown>
 }) {
   const isStreaming = useAtomValue(isStreamingAtom)
   const inputHistory = useAtomValue(inputHistoryAtom)
+  const checkpoint = useAtomValue(pendingCheckpointAtom)
   const [inputValue, setInputValue] = React.useState("")
   const [historyIndex, setHistoryIndex] = React.useState(-1)
   const [stashedInput, setStashedInput] = React.useState("")
@@ -31,36 +34,84 @@ export function InputBar({
     [onSubmit, isStreaming]
   )
 
-  // useKeyboard already stabilizes via useEffectEvent — no refs needed
-  useKeyboard((key: { name: string }) => {
-    if (!focused || isStreaming) return
-    if (inputHistory.length === 0) return
-
-    const historyAt = (i: number) => inputHistory[inputHistory.length - 1 - i] ?? ""
-
-    if (key.name === "up") {
-      if (historyIndex === -1) {
-        setStashedInput(inputValue)
-        setHistoryIndex(0)
-        setInputValue(historyAt(0))
-      } else if (historyIndex < inputHistory.length - 1) {
-        const newIndex = historyIndex + 1
-        setHistoryIndex(newIndex)
-        setInputValue(historyAt(newIndex))
+  // Checkpoint decision keyboard handler
+  useKeyboard(
+    (key: { name: string }) => {
+      if (!focused || !checkpoint || !onDecision) return
+      switch (key.name.toLowerCase()) {
+        case "y":
+          onDecision(checkpoint.checkpointId, "Approved")
+          break
+        case "n":
+          onDecision(checkpoint.checkpointId, "Rejected")
+          break
+        case "d":
+          onDecision(checkpoint.checkpointId, "Deferred")
+          break
       }
-    }
+    },
+    { active: checkpoint !== null && focused }
+  )
 
-    if (key.name === "down") {
-      if (historyIndex > 0) {
-        const newIndex = historyIndex - 1
-        setHistoryIndex(newIndex)
-        setInputValue(historyAt(newIndex))
-      } else if (historyIndex === 0) {
-        setHistoryIndex(-1)
-        setInputValue(stashedInput)
+  // History navigation — disabled during checkpoint
+  useKeyboard(
+    (key: { name: string }) => {
+      if (!focused || isStreaming) return
+      if (inputHistory.length === 0) return
+
+      const historyAt = (i: number) => inputHistory[inputHistory.length - 1 - i] ?? ""
+
+      if (key.name === "up") {
+        if (historyIndex === -1) {
+          setStashedInput(inputValue)
+          setHistoryIndex(0)
+          setInputValue(historyAt(0))
+        } else if (historyIndex < inputHistory.length - 1) {
+          const newIndex = historyIndex + 1
+          setHistoryIndex(newIndex)
+          setInputValue(historyAt(newIndex))
+        }
       }
-    }
-  })
+
+      if (key.name === "down") {
+        if (historyIndex > 0) {
+          const newIndex = historyIndex - 1
+          setHistoryIndex(newIndex)
+          setInputValue(historyAt(newIndex))
+        } else if (historyIndex === 0) {
+          setHistoryIndex(-1)
+          setInputValue(stashedInput)
+        }
+      }
+    },
+    { active: checkpoint === null }
+  )
+
+  if (checkpoint) {
+    return (
+      <box
+        border={true}
+        borderStyle="single"
+        borderColor={theme.statusPending}
+        padding={0}
+        flexDirection="column"
+      >
+        <text
+          content={` Checkpoint Required `}
+          fg={theme.statusPending}
+          bold={true}
+        />
+        <text
+          content={` ⚠ ${checkpoint.action}: ${checkpoint.reason}`}
+          fg={theme.text}
+        />
+        <text
+          content={` [Y] Approve  [N] Reject  [D] Defer`}
+          fg={theme.statusPending}
+        />
+      </box>
+    )
+  }
 
   const isFocused = focused && !isStreaming
 

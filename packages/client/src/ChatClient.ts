@@ -47,6 +47,29 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         Effect.scoped
       )
 
+    const decideCheckpoint = (
+      checkpointId: string,
+      decision: "Approved" | "Rejected" | "Deferred"
+    ) =>
+      HttpClientRequest.bodyJsonUnsafe(
+        HttpClientRequest.post(`${baseUrl}/checkpoints/${checkpointId}/decide`),
+        { decision, decidedBy: "user:cli:local" }
+      ).pipe(
+        (request) => httpClient.execute(request),
+        Effect.map((response) => {
+          const contentType = response.headers["content-type"] ?? ""
+          if (contentType.includes("text/event-stream")) {
+            const stream = response.stream.pipe(
+              Stream.decodeText(),
+              Stream.pipeThroughChannel(Sse.decodeDataSchema(TurnStreamEvent)),
+              Stream.map((event) => event.data)
+            )
+            return { isStream: true as const, stream }
+          }
+          return { isStream: false as const }
+        })
+      )
+
     const health = httpClient.execute(
       HttpClientRequest.get(`${baseUrl}/health`)
     ).pipe(
@@ -55,7 +78,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       Effect.scoped
     )
 
-    return { initialize, sendMessage, getHistory, health } as const
+    return { initialize, sendMessage, decideCheckpoint, getHistory, health } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)

@@ -10,6 +10,7 @@ import { InputBar } from "./components/InputBar.js"
 import { ModalLayer } from "./components/ModalLayer.js"
 import { StatusBar } from "./components/StatusBar.js"
 import { ToolPane } from "./components/ToolPane.js"
+import { useDecideCheckpoint } from "./hooks/useDecideCheckpoint.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
 import { theme } from "./theme.js"
 import type { ChatMessage } from "./types.js"
@@ -21,6 +22,7 @@ type FocusTarget = "input" | "tools"
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
   const sendMessage = useSendMessage(client)
+  const decideCheckpoint = useDecideCheckpoint(client)
   const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
   const activeModal = useAtomValue(modalAtom)
   const { width } = useTerminalDimensions()
@@ -104,6 +106,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
         </box>
         <InputBar
           onSubmit={sendMessage}
+          onDecision={decideCheckpoint}
           focused={focusTarget === "input" && activeModal === null}
           inputRef={inputRef}
         />
