@@ -1,4 +1,5 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
+import { DEFAULT_MEMORY_SEARCH_LIMIT } from "@template/domain/system-defaults"
 import type {
   Instant,
   MemoryForgetFilters,
@@ -98,7 +99,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
           const orderBy = query.sort === "CreatedAsc"
             ? "created_at ASC, rowid ASC"
             : "created_at DESC, rowid DESC"
-          const limit = query.limit ?? 20
+          const limit = query.limit ?? DEFAULT_MEMORY_SEARCH_LIMIT
 
           // Count total matching (without cursor/limit)
           const countConditions = conditions.filter((c) => !c.startsWith("(created_at"))

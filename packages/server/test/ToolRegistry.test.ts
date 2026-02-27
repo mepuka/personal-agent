@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
@@ -305,6 +306,18 @@ const encodeJsonUnknown = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 const encodeJson = (value: unknown): string => encodeJsonUnknown(value)
 
+const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+  providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
+  agents: {
+    default: {
+      persona: { name: "Test", systemPrompt: "test" },
+      model: { provider: "anthropic", modelId: "test-model" },
+      generation: { temperature: 0.7, maxOutputTokens: 1024 }
+    }
+  },
+  server: { port: 3000 }
+})
+
 const makeToolRegistryLayer = (
   dbPath: string,
   overrides: Partial<GovernancePort> = {}
@@ -349,7 +362,8 @@ const makeToolRegistryLayer = (
     memoryPortTagLayer,
     ToolRegistry.layer.pipe(
       Layer.provide(governanceTagLayer),
-      Layer.provide(memoryPortTagLayer)
+      Layer.provide(memoryPortTagLayer),
+      Layer.provide(mockAgentConfigLayer)
     )
   )
 }

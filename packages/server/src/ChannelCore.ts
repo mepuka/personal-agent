@@ -6,6 +6,7 @@ import type { ChannelCapability, ChannelType } from "@template/domain/status"
 import { Cause, DateTime, Effect, Layer, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
+import { AgentConfig } from "./ai/AgentConfig.js"
 import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "./PortTags.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload, TurnProcessingError } from "./turn/TurnProcessingWorkflow.js"
@@ -24,6 +25,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
       const sessionTurnPort = yield* SessionTurnPortTag
       const runtime = yield* TurnProcessingRuntime
       const sharding = yield* Sharding.Sharding
+      const agentConfig = yield* AgentConfig
 
       const ensureAgentState = (agentId: AgentId) =>
         Effect.gen(function*() {
@@ -32,12 +34,13 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             return
           }
 
+          const profile = yield* agentConfig.getAgent(agentId as string).pipe(Effect.orDie)
           yield* agentStatePort.upsert(
             {
               agentId,
               permissionMode: "Standard",
-              tokenBudget: 200_000,
-              maxToolIterations: 10,
+              tokenBudget: profile.runtime.tokenBudget,
+              maxToolIterations: profile.runtime.maxToolIterations,
               quotaPeriod: "Daily",
               tokensConsumed: 0,
               budgetResetAt: null
@@ -78,10 +81,11 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
 
           yield* ensureAgentState(params.agentId)
 
+          const profile = yield* agentConfig.getAgent(params.agentId as string).pipe(Effect.orDie)
           yield* sessionTurnPort.startSession({
             sessionId,
             conversationId,
-            tokenCapacity: 200_000,
+            tokenCapacity: profile.runtime.tokenBudget,
             tokensUsed: 0
           })
 

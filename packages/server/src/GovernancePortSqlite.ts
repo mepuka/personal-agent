@@ -1,4 +1,5 @@
 import { ToolQuotaExceeded } from "@template/domain/errors"
+import { DEFAULT_PAGINATION_LIMIT } from "@template/domain/system-defaults"
 import type { AgentId, AuditLogId, PolicyId, ToolDefinitionId, ToolInvocationId, ToolName } from "@template/domain/ids"
 import type {
   AuditEntryRecord,
@@ -422,7 +423,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             conditions.push(`ti.tool_name = '${escapeSql(query.toolName)}'`)
           }
           const whereClause = conditions.join(" AND ")
-          const limit = query.limit ?? 100
+          const limit = query.limit ?? DEFAULT_PAGINATION_LIMIT
           const offset = query.offset ?? 0
 
           const countRows = yield* sql`

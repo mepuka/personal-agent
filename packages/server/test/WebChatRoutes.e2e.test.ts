@@ -9,6 +9,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
@@ -117,6 +118,17 @@ const makeAppLayer = (dbPath: string) => {
   )
 
   const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+    providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
+    agents: {
+      default: {
+        persona: { name: "Test", systemPrompt: "test" },
+        model: { provider: "anthropic", modelId: "test-model" },
+        generation: { temperature: 0.7, maxOutputTokens: 1024 }
+      }
+    },
+    server: { port: 3000 }
+  })
   const sessionEntityLayer = SessionEntityLayer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(sessionTurnTagLayer),
@@ -129,7 +141,8 @@ const makeAppLayer = (dbPath: string) => {
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
-    Layer.provide(sessionEntityLayer)
+    Layer.provide(sessionEntityLayer),
+    Layer.provide(mockAgentConfigLayer)
   )
 
   const webChatAdapterEntityLayer = WebChatAdapterEntityLayer.pipe(

@@ -1,4 +1,9 @@
 import { MemoryAccessDenied } from "@template/domain/errors"
+import {
+  DEFAULT_MEMORY_SEARCH_LIMIT,
+  DEFAULT_MEMORY_FORGET_LIMIT,
+  DEFAULT_MEMORY_RETRIEVE_LIMIT
+} from "@template/domain/system-defaults"
 import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
 import { toMemoryItemIds } from "@template/domain/memory"
 import type { MemoryForgetFilters, MemorySearchQuery } from "@template/domain/ports"
@@ -187,7 +192,7 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
           scope: payload.scope,
           source: payload.source,
           sort: payload.sort,
-          limit: payload.limit ?? 20,
+          limit: payload.limit ?? DEFAULT_MEMORY_SEARCH_LIMIT,
           cursor: payload.cursor
         }).filter(([, v]) => v !== undefined)
       ) as MemorySearchQuery
@@ -249,7 +254,7 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
           query: payload.query,
           tier: payload.tier,
           scope: payload.scope,
-          limit: payload.limit ?? 10
+          limit: payload.limit ?? DEFAULT_MEMORY_RETRIEVE_LIMIT
         }) as any
       })
     },
@@ -284,7 +289,7 @@ export const layer = MemoryEntity.toLayer(Effect.gen(function*() {
         execute: sqlitePort.listAll(agentId, {
           tier: payload.tier,
           scope: payload.scope,
-          limit: payload.limit ?? 50
+          limit: payload.limit ?? DEFAULT_MEMORY_FORGET_LIMIT
         }) as any
       })
     }

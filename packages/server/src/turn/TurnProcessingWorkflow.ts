@@ -6,6 +6,11 @@ import * as Response from "effect/unstable/ai/Response"
 import * as Activity from "effect/unstable/workflow/Activity"
 import * as Workflow from "effect/unstable/workflow/Workflow"
 import {
+  DEFAULT_MAX_TOOL_ITERATIONS,
+  MAX_TOOL_ITERATIONS_CAP,
+  TURN_LOOP_TIMEOUT_SECONDS
+} from "@template/domain/system-defaults"
+import {
   ContextWindowExceeded,
   SessionNotFound,
   TokenBudgetExceeded
@@ -42,10 +47,6 @@ import {
   SessionTurnPortTag
 } from "../PortTags.js"
 
-const DEFAULT_MAX_TOOL_ITERATIONS = 10
-// TODO: Move to AgentConfig so per-agent iteration caps are formally configurable
-const MAX_TOOL_ITERATIONS_CAP = 200
-const TURN_LOOP_TIMEOUT = "15 seconds"
 
 export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_accepted",
@@ -274,7 +275,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
         userPrompt,
         maxIterations: maxToolIterations
       }).pipe(
-        Effect.timeoutOption(TURN_LOOP_TIMEOUT)
+        Effect.timeoutOption(`${TURN_LOOP_TIMEOUT_SECONDS} seconds`)
       )
 
       if (Option.isNone(loopResultOption)) {
