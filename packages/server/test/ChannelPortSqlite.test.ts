@@ -9,6 +9,19 @@ import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 
+const makeChannel = (overrides: Partial<ChannelRecord> = {}): ChannelRecord => ({
+  channelId: "channel:test" as ChannelId,
+  channelType: "CLI",
+  agentId: "agent:test" as AgentId,
+  activeSessionId: "session:s1" as SessionId,
+  activeConversationId: "conv:c1" as ConversationId,
+  capabilities: ["SendText"],
+  modelOverride: null,
+  generationConfigOverride: null,
+  createdAt: instant("2026-02-24T12:00:00.000Z"),
+  ...overrides
+})
+
 describe("ChannelPortSqlite", () => {
   it.effect("get returns null for unknown channel", () => {
     const dbPath = testDatabasePath("channel-null")
@@ -26,17 +39,8 @@ describe("ChannelPortSqlite", () => {
     const dbPath = testDatabasePath("channel-roundtrip")
     return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
-      const now = instant("2026-02-24T12:00:00.000Z")
 
-      const channel: ChannelRecord = {
-        channelId: "channel:cli-1" as ChannelId,
-        channelType: "CLI",
-        agentId: "agent:test" as AgentId,
-        activeSessionId: "session:s1" as SessionId,
-        activeConversationId: "conv:c1" as ConversationId,
-        capabilities: ["SendText"],
-        createdAt: now
-      }
+      const channel = makeChannel({ channelId: "channel:cli-1" as ChannelId })
 
       yield* port.create(channel)
       const result = yield* port.get(channel.channelId)
@@ -48,6 +52,8 @@ describe("ChannelPortSqlite", () => {
       expect(result!.activeSessionId).toBe("session:s1")
       expect(result!.activeConversationId).toBe("conv:c1")
       expect(result!.capabilities).toEqual(["SendText"])
+      expect(result!.modelOverride).toBeNull()
+      expect(result!.generationConfigOverride).toBeNull()
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -58,17 +64,12 @@ describe("ChannelPortSqlite", () => {
     const dbPath = testDatabasePath("channel-multi-cap")
     return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
-      const now = instant("2026-02-24T12:00:00.000Z")
 
-      const channel: ChannelRecord = {
+      const channel = makeChannel({
         channelId: "channel:webchat-1" as ChannelId,
         channelType: "WebChat",
-        agentId: "agent:test" as AgentId,
-        activeSessionId: "session:s1" as SessionId,
-        activeConversationId: "conv:c1" as ConversationId,
-        capabilities: ["SendText", "Typing", "StreamingDelivery"],
-        createdAt: now
-      }
+        capabilities: ["SendText", "Typing", "StreamingDelivery"]
+      })
 
       yield* port.create(channel)
       const result = yield* port.get(channel.channelId)
@@ -85,17 +86,8 @@ describe("ChannelPortSqlite", () => {
     const dbPath = testDatabasePath("channel-upsert")
     return Effect.gen(function*() {
       const port = yield* ChannelPortSqlite
-      const now = instant("2026-02-24T12:00:00.000Z")
 
-      const channel: ChannelRecord = {
-        channelId: "channel:cli-2" as ChannelId,
-        channelType: "CLI",
-        agentId: "agent:test" as AgentId,
-        activeSessionId: "session:s1" as SessionId,
-        activeConversationId: "conv:c1" as ConversationId,
-        capabilities: ["SendText"],
-        createdAt: now
-      }
+      const channel = makeChannel({ channelId: "channel:cli-2" as ChannelId })
 
       yield* port.create(channel)
 
@@ -111,6 +103,84 @@ describe("ChannelPortSqlite", () => {
       expect(result).not.toBeNull()
       expect(result!.activeSessionId).toBe("session:s2")
       expect(result!.activeConversationId).toBe("conv:c2")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("updateModelPreference round-trips JSON correctly", () => {
+    const dbPath = testDatabasePath("channel-model-pref")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+
+      const channel = makeChannel({ channelId: "channel:model-pref" as ChannelId })
+      yield* port.create(channel)
+
+      yield* port.updateModelPreference("channel:model-pref" as ChannelId, {
+        modelOverride: { provider: "openai", modelId: "gpt-4o" },
+        generationConfigOverride: { temperature: 0.5, maxOutputTokens: 2048 }
+      })
+
+      const result = yield* port.get("channel:model-pref" as ChannelId)
+      expect(result).not.toBeNull()
+      expect(result!.modelOverride).toEqual({ provider: "openai", modelId: "gpt-4o" })
+      expect(result!.generationConfigOverride).toEqual({ temperature: 0.5, maxOutputTokens: 2048 })
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("updateModelPreference PATCH: update only model, generationConfig unchanged", () => {
+    const dbPath = testDatabasePath("channel-patch")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+
+      const channel = makeChannel({ channelId: "channel:patch" as ChannelId })
+      yield* port.create(channel)
+
+      // Set both
+      yield* port.updateModelPreference("channel:patch" as ChannelId, {
+        modelOverride: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+        generationConfigOverride: { temperature: 0.8 }
+      })
+
+      // PATCH: only update model
+      yield* port.updateModelPreference("channel:patch" as ChannelId, {
+        modelOverride: { provider: "openai", modelId: "gpt-4o" }
+      })
+
+      const result = yield* port.get("channel:patch" as ChannelId)
+      expect(result!.modelOverride).toEqual({ provider: "openai", modelId: "gpt-4o" })
+      // generationConfigOverride should be unchanged
+      expect(result!.generationConfigOverride).toEqual({ temperature: 0.8 })
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("updateModelPreference clears override with null", () => {
+    const dbPath = testDatabasePath("channel-clear")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+
+      const channel = makeChannel({ channelId: "channel:clear" as ChannelId })
+      yield* port.create(channel)
+
+      // Set model
+      yield* port.updateModelPreference("channel:clear" as ChannelId, {
+        modelOverride: { provider: "openai", modelId: "gpt-4o" }
+      })
+
+      // Clear it
+      yield* port.updateModelPreference("channel:clear" as ChannelId, {
+        modelOverride: null
+      })
+
+      const result = yield* port.get("channel:clear" as ChannelId)
+      expect(result!.modelOverride).toBeNull()
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))

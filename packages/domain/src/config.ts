@@ -44,6 +44,12 @@ export const ModelRefSchema = Schema.Struct({
 })
 export type ModelRef = typeof ModelRefSchema.Type
 
+export const ModelOverrideSchema = Schema.Struct({
+  provider: AiProviderName,
+  modelId: Schema.String
+})
+export type ModelOverride = typeof ModelOverrideSchema.Type
+
 export const GenerationConfigSchema = Schema.Struct({
   temperature: Schema.Number,
   maxOutputTokens: Schema.Number,
@@ -51,6 +57,13 @@ export const GenerationConfigSchema = Schema.Struct({
   seed: Schema.optional(Schema.Number)
 })
 export type GenerationConfig = typeof GenerationConfigSchema.Type
+
+export const GenerationConfigOverrideSchema = Schema.Struct({
+  temperature: Schema.optionalKey(Schema.Number),
+  maxOutputTokens: Schema.optionalKey(Schema.Number),
+  topP: Schema.optionalKey(Schema.Number)
+})
+export type GenerationConfigOverride = typeof GenerationConfigOverrideSchema.Type
 
 export const MemoryLimitsSchema = Schema.Struct({
   defaultRetrieveLimit: Schema.Number.pipe(

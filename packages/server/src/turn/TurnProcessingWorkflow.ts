@@ -1,3 +1,5 @@
+import * as Anthropic from "@effect/ai-anthropic"
+import * as OpenAi from "@effect/ai-openai"
 import { Effect, Layer, Option, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
@@ -66,7 +68,16 @@ export const ProcessTurnPayload = Schema.Struct({
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlockSchema),
   createdAt: Schema.DateTimeUtc,
-  inputTokens: Schema.Number
+  inputTokens: Schema.Number,
+  modelOverride: Schema.optionalKey(Schema.Struct({
+    provider: Schema.String,
+    modelId: Schema.String
+  })),
+  generationConfigOverride: Schema.optionalKey(Schema.Struct({
+    temperature: Schema.optionalKey(Schema.Number),
+    maxOutputTokens: Schema.optionalKey(Schema.Number),
+    topP: Schema.optionalKey(Schema.Number)
+  }))
 })
 export type ProcessTurnPayload = typeof ProcessTurnPayload.Type
 
@@ -134,6 +145,31 @@ const PolicyDecisionSchema = Schema.Struct({
 })
 
 const PersistTurnError = Schema.Union([SessionNotFound, ContextWindowExceeded])
+
+const toProviderConfigOverride = (
+  provider: string,
+  config: {
+    readonly temperature?: number
+    readonly maxOutputTokens?: number
+    readonly topP?: number
+  }
+): Record<string, unknown> => {
+  const overrides: Record<string, unknown> = {}
+  if (config.temperature !== undefined) overrides.temperature = config.temperature
+  if (config.topP !== undefined) overrides.top_p = config.topP
+
+  switch (provider) {
+    case "anthropic":
+      if (config.maxOutputTokens !== undefined) overrides.max_tokens = config.maxOutputTokens
+      break
+    case "openai":
+    case "openrouter":
+    case "google":
+      if (config.maxOutputTokens !== undefined) overrides.max_output_tokens = config.maxOutputTokens
+      break
+  }
+  return overrides
+}
 
 export const TurnProcessingWorkflow = Workflow.make({
   name: "TurnProcessingWorkflow",
@@ -238,10 +274,22 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const modelResult = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
-      const lmLayer = yield* modelRegistry.get(
-        profile.model.provider,
-        profile.model.modelId
-      )
+
+      // Resolve model: per-request override > agent profile default
+      const modelProvider = payload.modelOverride?.provider ?? profile.model.provider
+      const modelId = payload.modelOverride?.modelId ?? profile.model.modelId
+      const lmLayer = yield* modelRegistry.get(modelProvider, modelId)
+
+      // Build effective generation config: profile baseline + overrides
+      const effectiveGenerationConfig = {
+        temperature: payload.generationConfigOverride?.temperature ?? profile.generation.temperature,
+        maxOutputTokens: payload.generationConfigOverride?.maxOutputTokens ?? profile.generation.maxOutputTokens,
+        ...(payload.generationConfigOverride?.topP !== undefined
+          ? { topP: payload.generationConfigOverride.topP }
+          : profile.generation.topP !== undefined
+          ? { topP: profile.generation.topP }
+          : {})
+      }
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
@@ -265,6 +313,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
         chat,
         toolRegistry,
         lmLayer,
+        resolvedProvider: modelProvider,
+        effectiveGenerationConfig,
         context: {
           agentId: payload.agentId as AgentId,
           sessionId: payload.sessionId as SessionId,
@@ -371,6 +421,12 @@ const processWithToolLoop = (params: {
   readonly chat: Chat.Persisted
   readonly toolRegistry: ToolRegistryService
   readonly lmLayer: Layer.Layer<any>
+  readonly resolvedProvider: string
+  readonly effectiveGenerationConfig: {
+    readonly temperature?: number
+    readonly maxOutputTokens?: number
+    readonly topP?: number
+  }
   readonly context: {
     readonly agentId: AgentId
     readonly sessionId: SessionId
@@ -396,10 +452,23 @@ const processWithToolLoop = (params: {
         iteration
       })
 
-      const response = yield* params.chat.generateText({
+      const generateTextEffect = params.chat.generateText({
         prompt: iteration === 0 ? params.userPrompt : Prompt.empty,
         toolkit: toolkitBundle.toolkit
-      }).pipe(
+      })
+
+      // Apply generation config via provider-specific withConfigOverride
+      const providerOverrides = toProviderConfigOverride(
+        params.resolvedProvider,
+        params.effectiveGenerationConfig
+      )
+      const configuredEffect = Object.keys(providerOverrides).length > 0
+        ? (params.resolvedProvider === "anthropic"
+            ? Anthropic.AnthropicLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect)
+            : OpenAi.OpenAiLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect))
+        : generateTextEffect
+
+      const response = yield* configuredEffect.pipe(
         Effect.provide(Layer.merge(toolkitBundle.handlerLayer, params.lmLayer)),
         Effect.withSpan("TurnProcessing.generateText")
       )

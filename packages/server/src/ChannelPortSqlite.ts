@@ -1,3 +1,4 @@
+import { GenerationConfigOverrideSchema, ModelOverrideSchema } from "@template/domain/config"
 import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
@@ -12,15 +13,23 @@ const ChannelRowSchema = Schema.Struct({
   active_session_id: Schema.String,
   active_conversation_id: Schema.String,
   capabilities_json: Schema.String,
+  model_override_json: Schema.Union([Schema.String, Schema.Null]),
+  generation_config_override_json: Schema.Union([Schema.String, Schema.Null]),
   created_at: Schema.String
 })
 type ChannelRow = typeof ChannelRowSchema.Type
 
 const ChannelIdRequest = Schema.Struct({ channelId: Schema.String })
 const CapabilitiesFromJsonString = Schema.fromJsonString(Schema.Array(ChannelCapability))
+const ModelOverrideFromJsonString = Schema.fromJsonString(ModelOverrideSchema)
+const GenerationConfigOverrideFromJsonString = Schema.fromJsonString(GenerationConfigOverrideSchema)
 const InstantFromSqlString = Schema.DateTimeUtcFromString
 const decodeCapabilitiesJson = Schema.decodeUnknownSync(CapabilitiesFromJsonString)
 const encodeCapabilitiesJson = Schema.encodeSync(CapabilitiesFromJsonString)
+const decodeModelOverrideJson = Schema.decodeUnknownSync(ModelOverrideFromJsonString)
+const encodeModelOverrideJson = Schema.encodeSync(ModelOverrideFromJsonString)
+const decodeGenerationConfigOverrideJson = Schema.decodeUnknownSync(GenerationConfigOverrideFromJsonString)
+const encodeGenerationConfigOverrideJson = Schema.encodeSync(GenerationConfigOverrideFromJsonString)
 const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
 const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
@@ -42,6 +51,8 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
               active_session_id,
               active_conversation_id,
               capabilities_json,
+              model_override_json,
+              generation_config_override_json,
               created_at
             FROM channels
             WHERE channel_id = ${channelId}
@@ -70,6 +81,8 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             active_session_id,
             active_conversation_id,
             capabilities_json,
+            model_override_json,
+            generation_config_override_json,
             created_at
           ) VALUES (
             ${channel.channelId},
@@ -78,6 +91,8 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             ${channel.activeSessionId},
             ${channel.activeConversationId},
             ${encodeCapabilitiesJson(channel.capabilities)},
+            ${channel.modelOverride ? encodeModelOverrideJson(channel.modelOverride) : null},
+            ${channel.generationConfigOverride ? encodeGenerationConfigOverrideJson(channel.generationConfigOverride) : null},
             ${encodeSqlInstant(channel.createdAt)}
           )
           ON CONFLICT(channel_id) DO UPDATE SET
@@ -92,9 +107,38 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
           Effect.orDie
         )
 
+      const updateModelPreference: ChannelPort["updateModelPreference"] = (channelId, update) =>
+        Effect.gen(function*() {
+          if ("modelOverride" in update && "generationConfigOverride" in update) {
+            yield* sql`
+              UPDATE channels SET
+                model_override_json = ${update.modelOverride ? encodeModelOverrideJson(update.modelOverride) : null},
+                generation_config_override_json = ${update.generationConfigOverride ? encodeGenerationConfigOverrideJson(update.generationConfigOverride) : null}
+              WHERE channel_id = ${channelId}
+            `.unprepared
+          } else if ("modelOverride" in update) {
+            yield* sql`
+              UPDATE channels SET
+                model_override_json = ${update.modelOverride ? encodeModelOverrideJson(update.modelOverride) : null}
+              WHERE channel_id = ${channelId}
+            `.unprepared
+          } else if ("generationConfigOverride" in update) {
+            yield* sql`
+              UPDATE channels SET
+                generation_config_override_json = ${update.generationConfigOverride ? encodeGenerationConfigOverrideJson(update.generationConfigOverride) : null}
+              WHERE channel_id = ${channelId}
+            `.unprepared
+          }
+        }).pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
       return {
         get,
-        create
+        create,
+        updateModelPreference
       } as const
     })
   }
@@ -109,5 +153,9 @@ const decodeChannelRow = (row: ChannelRow): ChannelRecord => ({
   activeSessionId: row.active_session_id as SessionId,
   activeConversationId: row.active_conversation_id as ConversationId,
   capabilities: decodeCapabilitiesJson(row.capabilities_json),
+  modelOverride: row.model_override_json ? decodeModelOverrideJson(row.model_override_json) : null,
+  generationConfigOverride: row.generation_config_override_json
+    ? decodeGenerationConfigOverrideJson(row.generation_config_override_json)
+    : null,
   createdAt: decodeSqlInstant(row.created_at)
 })

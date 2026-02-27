@@ -4,13 +4,14 @@ import { Effect, Stream } from "effect"
 import { Entity } from "effect/unstable/cluster"
 import { ChannelCore } from "../ChannelCore.js"
 import { ChannelPortTag } from "../PortTags.js"
-import { GetHistoryRpc, GetStatusRpc, InitializeRpc, ReceiveMessageRpc } from "./AdapterProtocol.js"
+import { GetHistoryRpc, GetStatusRpc, InitializeRpc, ReceiveMessageRpc, SetModelPreferenceRpc } from "./AdapterProtocol.js"
 
 export const WebChatAdapterEntity = Entity.make("WebChatAdapter", [
   InitializeRpc,
   ReceiveMessageRpc,
   GetHistoryRpc,
-  GetStatusRpc
+  GetStatusRpc,
+  SetModelPreferenceRpc
 ])
 
 export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
@@ -36,7 +37,9 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
           channelId,
           content: request.payload.content,
           contentBlocks: [{ contentBlockType: "TextBlock" as const, text: request.payload.content }],
-          userId: request.payload.userId
+          userId: request.payload.userId,
+          modelOverride: request.payload.modelOverride,
+          generationConfigOverride: request.payload.generationConfigOverride
         }).pipe(
           Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
         )
@@ -64,10 +67,22 @@ export const layer = WebChatAdapterEntity.toLayer(Effect.gen(function*() {
           capabilities: [...channel.capabilities],
           activeSessionId: channel.activeSessionId,
           activeConversationId: channel.activeConversationId,
+          modelOverride: channel.modelOverride,
+          generationConfigOverride: channel.generationConfigOverride,
           createdAt: channel.createdAt
         }
       }).pipe(
         Effect.withSpan("WebChatAdapterEntity.getStatus"),
+        Effect.annotateLogs({ module: "WebChatAdapterEntity", entityId: request.address.entityId })
+      ),
+
+    setModelPreference: (request) =>
+      channelCore.setModelPreference({
+        channelId: String(request.address.entityId) as ChannelId,
+        ...("modelOverride" in request.payload ? { modelOverride: request.payload.modelOverride } : {}),
+        ...("generationConfigOverride" in request.payload ? { generationConfigOverride: request.payload.generationConfigOverride } : {})
+      }).pipe(
+        Effect.withSpan("WebChatAdapterEntity.setModelPreference"),
         Effect.annotateLogs({ module: "WebChatAdapterEntity", entityId: request.address.entityId })
       )
   }

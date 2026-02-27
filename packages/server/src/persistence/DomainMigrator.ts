@@ -524,6 +524,19 @@ const loader = SqliteMigrator.fromRecord({
         ('tooldef:retrieve_memories:v1', 'retrieve_memories', 'BuiltIn', NULL, 1, ${now}),
         ('tooldef:forget_memories:v1', 'forget_memories', 'BuiltIn', NULL, 1, ${now})
     `.unprepared
+  }),
+  "0011_channel_model_override": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      ALTER TABLE channels
+      ADD COLUMN model_override_json TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE channels
+      ADD COLUMN generation_config_override_json TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
   })
 })
 
