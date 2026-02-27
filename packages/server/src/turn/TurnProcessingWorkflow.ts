@@ -246,10 +246,10 @@ export const layer = TurnProcessingWorkflow.toLayer(
       if (payload.checkpointId !== undefined) {
         // Replay path: validate approved checkpoint
         const checkpoint = yield* checkpointPort.get(payload.checkpointId as CheckpointId)
-        if (checkpoint === null || checkpoint.status !== "Approved") {
+        if (checkpoint === null || checkpoint.status !== "Approved" || checkpoint.action !== "ReadMemory") {
           return yield* new TurnPolicyDenied({
             turnId: payload.turnId,
-            reason: `checkpoint not approved (status: ${checkpoint?.status ?? "not found"})`
+            reason: `checkpoint not valid for ReadMemory bypass (status: ${checkpoint?.status ?? "not found"}, action: ${checkpoint?.action ?? "unknown"})`
           })
         }
         const expectedHash = yield* makePayloadHash("ReadMemory", "", "")
