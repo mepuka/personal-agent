@@ -1,13 +1,14 @@
 import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
+import type { CheckpointAlreadyDecided, CheckpointExpired, CheckpointNotFound } from "@template/domain/errors"
 import type { TurnStreamEvent } from "@template/domain/events"
-import type { AgentId, ChannelId, ConversationId, SessionId } from "@template/domain/ids"
-import type { AgentState, ContentBlock, TurnRecord } from "@template/domain/ports"
+import type { AgentId, ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
+import type { AgentState, CheckpointRecord, ContentBlock, TurnRecord } from "@template/domain/ports"
 import type { ChannelCapability, ChannelType } from "@template/domain/status"
-import { Cause, DateTime, Effect, Layer, ServiceMap, Stream } from "effect"
+import { Cause, DateTime, Effect, Layer, Schema, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
 import { AgentConfig } from "./ai/AgentConfig.js"
-import { AgentStatePortTag, ChannelPortTag, SessionTurnPortTag } from "./PortTags.js"
+import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "./PortTags.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload, TurnProcessingError } from "./turn/TurnProcessingWorkflow.js"
 import { TurnModelFailure } from "./turn/TurnProcessingWorkflow.js"
@@ -23,6 +24,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
       const channelPort = yield* ChannelPortTag
       const agentStatePort = yield* AgentStatePortTag
       const sessionTurnPort = yield* SessionTurnPortTag
+      const checkpointPort = yield* CheckpointPortTag
       const runtime = yield* TurnProcessingRuntime
       const sharding = yield* Sharding.Sharding
       const agentConfig = yield* AgentConfig
@@ -139,6 +141,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             conversationId: channel.activeConversationId,
             agentId: channel.agentId,
             userId: params.userId,
+            channelId: params.channelId,
             content: params.content,
             contentBlocks: params.contentBlocks,
             createdAt: now,
@@ -227,12 +230,91 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           yield* channelPort.updateModelPreference(params.channelId, update as any)
         })
 
+      const listPendingCheckpoints = (agentId?: AgentId) =>
+        checkpointPort.listPending(agentId)
+
+      const getCheckpoint = (checkpointId: CheckpointId) =>
+        checkpointPort.get(checkpointId)
+
+      const decideCheckpoint = (params: {
+        readonly checkpointId: CheckpointId
+        readonly decision: "Approved" | "Rejected" | "Deferred"
+        readonly decidedBy: string
+      }) =>
+        Effect.gen(function*() {
+          const now = yield* DateTime.now
+          yield* checkpointPort.transition(
+            params.checkpointId,
+            params.decision,
+            params.decidedBy,
+            now
+          )
+
+          if (params.decision !== "Approved") {
+            return { ok: true as const, stream: null }
+          }
+
+          // Approved: load checkpoint and replay
+          const checkpoint = yield* checkpointPort.get(params.checkpointId)
+          if (checkpoint === null) {
+            return { ok: true as const, stream: null }
+          }
+
+          // Build replay turn payload with new turnId, setting checkpointId for bypass
+          const channel = yield* channelPort.get(checkpoint.channelId)
+          if (channel === null) {
+            return { ok: true as const, stream: null }
+          }
+
+          // Restore original user content from checkpoint payload
+          const ReplayPayloadSchema = Schema.Struct({
+            content: Schema.optionalKey(Schema.String),
+            contentBlocks: Schema.optionalKey(Schema.Array(Schema.Unknown))
+          })
+          const decodeReplayPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+          const decodeReplayPayload = Schema.decodeUnknownOption(ReplayPayloadSchema)
+          let replayContent = ""
+          let replayContentBlocks: ReadonlyArray<ContentBlock> = []
+          if (checkpoint.payloadJson) {
+            const parsed = decodeReplayPayloadJson(checkpoint.payloadJson)
+            if (parsed._tag === "Some") {
+              const decoded = decodeReplayPayload(parsed.value)
+              if (decoded._tag === "Some") {
+                replayContent = decoded.value.content ?? ""
+                replayContentBlocks = (decoded.value.contentBlocks ?? []) as ReadonlyArray<ContentBlock>
+              }
+            }
+          }
+
+          const replayTurnId = `turn:replay:${crypto.randomUUID()}`
+          const replayPayload: ProcessTurnPayload = {
+            turnId: replayTurnId,
+            sessionId: checkpoint.sessionId,
+            conversationId: channel.activeConversationId,
+            agentId: checkpoint.agentId,
+            userId: params.decidedBy,
+            channelId: checkpoint.channelId,
+            content: replayContent,
+            contentBlocks: replayContentBlocks,
+            createdAt: now,
+            inputTokens: estimateInputTokens(replayContent, replayContentBlocks),
+            checkpointId: params.checkpointId
+          }
+
+          // Return the SSE stream from processTurn
+          const stream = processTurn(replayPayload)
+          return { ok: true as const, stream }
+        })
+
       return {
         initializeChannel,
         buildTurnPayload,
         processTurn,
         getHistory,
-        setModelPreference
+        setModelPreference,
+        listPendingCheckpoints,
+        getCheckpoint,
+        decideCheckpoint
       } as const
     })
   }
@@ -278,6 +360,23 @@ export type ChannelCoreService = {
       readonly topP?: number
     } | null | undefined
   }) => Effect.Effect<void, ChannelNotFound>
+
+  readonly listPendingCheckpoints: (
+    agentId?: AgentId
+  ) => Effect.Effect<ReadonlyArray<CheckpointRecord>>
+
+  readonly getCheckpoint: (
+    checkpointId: CheckpointId
+  ) => Effect.Effect<CheckpointRecord | null>
+
+  readonly decideCheckpoint: (params: {
+    readonly checkpointId: CheckpointId
+    readonly decision: "Approved" | "Rejected" | "Deferred"
+    readonly decidedBy: string
+  }) => Effect.Effect<
+    { readonly ok: true; readonly stream: Stream.Stream<TurnStreamEvent, TurnProcessingError> | null },
+    CheckpointNotFound | CheckpointAlreadyDecided | CheckpointExpired
+  >
 }
 
 const estimateInputTokens = (

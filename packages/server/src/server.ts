@@ -2,6 +2,7 @@ import { BunFileSystem, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import type {
   AgentStatePort,
   ChannelPort,
+  CheckpointPort,
   GovernancePort,
   IntegrationPort,
   MemoryPort,
@@ -18,6 +19,7 @@ import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { ChannelCore } from "./ChannelCore.js"
+import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
 import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
@@ -26,6 +28,7 @@ import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { healthLayer as HealthRoutesLayer, layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { layer as CheckpointRoutesLayer } from "./gateway/CheckpointRoutes.js"
 import { layer as GovernanceRoutesLayer } from "./gateway/GovernanceRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
@@ -37,6 +40,7 @@ import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
 import {
   AgentStatePortTag,
   ChannelPortTag,
+  CheckpointPortTag,
   GovernancePortTag,
   IntegrationPortTag,
   MemoryPortTag,
@@ -103,6 +107,17 @@ const governancePortTagLayer = Layer.effect(
     return (yield* GovernancePortSqlite) as GovernancePort
   })
 ).pipe(Layer.provide(governancePortSqliteLayer))
+
+const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
+const checkpointPortTagLayer = Layer.effect(
+  CheckpointPortTag,
+  Effect.gen(function*() {
+    return (yield* CheckpointPortSqlite) as CheckpointPort
+  })
+).pipe(Layer.provide(checkpointPortSqliteLayer))
 
 const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
@@ -199,7 +214,8 @@ const chatPersistenceLayer = ChatPersistence.layer.pipe(
 const toolRegistryLayer = ToolRegistry.layer.pipe(
   Layer.provide(governancePortTagLayer),
   Layer.provide(memoryPortTagLayer),
-  Layer.provide(agentConfigLayer)
+  Layer.provide(agentConfigLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
@@ -212,7 +228,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(chatPersistenceLayer),
   Layer.provide(agentConfigLayer),
   Layer.provide(modelRegistryLayer),
-  Layer.provide(memoryPortSqliteLayer)
+  Layer.provide(memoryPortSqliteLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -232,7 +249,8 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(sessionTurnPortTagLayer),
   Layer.provide(turnProcessingRuntimeLayer),
   Layer.provide(sessionEntityLayer),
-  Layer.provide(agentConfigLayer)
+  Layer.provide(agentConfigLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const cliAdapterEntityLayer = Layer.unwrap(
@@ -285,6 +303,7 @@ const portTagsLayer = Layer.mergeAll(
   sessionTurnPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
+  checkpointPortTagLayer,
   channelPortTagLayer,
   integrationPortTagLayer
 )
@@ -308,6 +327,7 @@ const entityLayer = cliAdapterEntityLayer.pipe(
 )
 
 const PortsLive = entityLayer.pipe(
+  Layer.provideMerge(channelCoreLayer),
   Layer.provideMerge(workflowLayer),
   Layer.provideMerge(toolRegistryLayer),
   Layer.provideMerge(modelRegistryLayer),
@@ -354,7 +374,8 @@ const HttpApiAndRoutesLive = Layer.mergeAll(
   HealthRoutesLayer,
   cliRoutesLayer,
   webChatRoutesLayer,
-  governanceRoutesLayer
+  governanceRoutesLayer,
+  CheckpointRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
@@ -379,7 +400,8 @@ Layer.launch(HttpLive).pipe(
     Logger.layer([Logger.consoleJson]),
     agentStatePortTagLayer,
     governancePortTagLayer,
-    sessionTurnPortTagLayer
+    sessionTurnPortTagLayer,
+    channelCoreLayer
   )),
   BunRuntime.runMain
 )

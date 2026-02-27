@@ -2,8 +2,9 @@ export interface ChatMessage {
   readonly role: "user" | "assistant"
   readonly content: string
   readonly turnId: string
-  readonly status: "streaming" | "complete" | "failed"
+  readonly status: "streaming" | "complete" | "failed" | "checkpoint_required"
   readonly errorMessage?: string | undefined
+  readonly checkpointId?: string | undefined
 }
 
 export interface ToolEvent {

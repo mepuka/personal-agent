@@ -53,3 +53,6 @@ export type IntegrationId = typeof IntegrationId.Type
 
 export const ExternalServiceId = Schema.String.pipe(Schema.brand("ExternalServiceId"))
 export type ExternalServiceId = typeof ExternalServiceId.Type
+
+export const CheckpointId = Schema.String.pipe(Schema.brand("CheckpointId"))
+export type CheckpointId = typeof CheckpointId.Type

@@ -8,7 +8,7 @@ import type {
   PolicyDecision,
   ToolInvocationRecord
 } from "@template/domain/ports"
-import type { PermissionMode, PolicySelector } from "@template/domain/status"
+import type { GovernanceAction, PermissionMode, PolicySelector } from "@template/domain/status"
 import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
@@ -31,7 +31,7 @@ type ToolDefinitionRow = {
 
 type PolicyRow = {
   readonly policy_id: string
-  readonly action: "InvokeTool"
+  readonly action: GovernanceAction
   readonly permission_mode: PermissionMode | null
   readonly selector: PolicySelector
   readonly decision: PolicyDecision["decision"]
@@ -132,27 +132,89 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
           Effect.map((rows) => rows as ReadonlyArray<PolicyRow>)
         )
 
+      const listModePoliciesByAction = (permissionMode: PermissionMode, action: GovernanceAction) =>
+        sql`
+          SELECT
+            p.policy_id,
+            p.action,
+            p.permission_mode,
+            p.selector,
+            p.decision,
+            p.reason_template,
+            p.precedence,
+            p.active,
+            COALESCE((
+              SELECT json_group_array(ppt.tool_definition_id)
+              FROM permission_policy_tools ppt
+              WHERE ppt.policy_id = p.policy_id
+            ), '[]') AS tool_definition_ids_json
+          FROM permission_policies p
+          WHERE
+            p.action = ${action}
+            AND p.permission_mode = ${permissionMode}
+            AND p.active = 1
+          ORDER BY p.precedence ASC, p.policy_id ASC
+        `.unprepared.pipe(
+          Effect.map((rows) => rows as ReadonlyArray<PolicyRow>)
+        )
+
       const evaluatePolicy: GovernancePort["evaluatePolicy"] = (input) =>
         Effect.gen(function*() {
-          if (input.action !== "InvokeTool") {
-            return {
-              decision: "Allow",
-              policyId: null,
-              toolDefinitionId: null,
-              reason: "mvp_default_allow"
-            } satisfies PolicyDecision
-          }
+          // InvokeTool: existing full path with tool definition + selector matching
+          if (input.action === "InvokeTool") {
+            const toolName = input.toolName?.trim()
+            if (toolName === undefined || toolName.length === 0) {
+              return {
+                decision: "Deny",
+                policyId: POLICY_INVALID_REQUEST,
+                toolDefinitionId: null,
+                reason: "invalid_tool_name"
+              } satisfies PolicyDecision
+            }
 
-          const toolName = input.toolName?.trim()
-          if (toolName === undefined || toolName.length === 0) {
+            const permissionMode = yield* getAgentPermissionMode(input.agentId)
+            if (permissionMode === null) {
+              return {
+                decision: "Deny",
+                policyId: POLICY_MISSING_AGENT,
+                toolDefinitionId: null,
+                reason: "missing_agent_state"
+              } satisfies PolicyDecision
+            }
+
+            const toolDefinition = yield* getToolDefinitionByName(toolName as ToolName)
+            if (toolDefinition === null) {
+              return {
+                decision: "Deny",
+                policyId: POLICY_UNKNOWN_TOOL,
+                toolDefinitionId: null,
+                reason: "unknown_tool_definition"
+              } satisfies PolicyDecision
+            }
+
+            const policies = yield* listModePolicies(permissionMode)
+            for (const policy of policies) {
+              const explicitToolIds = parseToolDefinitionIds(policy.tool_definition_ids_json)
+              if (!selectorMatches(policy.selector, toolDefinition, explicitToolIds)) {
+                continue
+              }
+              return {
+                decision: policy.decision,
+                policyId: policy.policy_id as PolicyId,
+                toolDefinitionId: toolDefinition.tool_definition_id as ToolDefinitionId,
+                reason: policy.reason_template
+              } satisfies PolicyDecision
+            }
+
             return {
               decision: "Deny",
-              policyId: POLICY_INVALID_REQUEST,
-              toolDefinitionId: null,
-              reason: "invalid_tool_name"
+              policyId: POLICY_SYSTEM_ERROR,
+              toolDefinitionId: toolDefinition.tool_definition_id as ToolDefinitionId,
+              reason: "no_matching_policy"
             } satisfies PolicyDecision
           }
 
+          // Non-tool actions: action-specific policy matching (AllTools selector)
           const permissionMode = yield* getAgentPermissionMode(input.agentId)
           if (permissionMode === null) {
             return {
@@ -163,34 +225,22 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             } satisfies PolicyDecision
           }
 
-          const toolDefinition = yield* getToolDefinitionByName(toolName as ToolName)
-          if (toolDefinition === null) {
-            return {
-              decision: "Deny",
-              policyId: POLICY_UNKNOWN_TOOL,
-              toolDefinitionId: null,
-              reason: "unknown_tool_definition"
-            } satisfies PolicyDecision
-          }
-
-          const policies = yield* listModePolicies(permissionMode)
+          const policies = yield* listModePoliciesByAction(permissionMode, input.action)
           for (const policy of policies) {
-            const explicitToolIds = parseToolDefinitionIds(policy.tool_definition_ids_json)
-            if (!selectorMatches(policy.selector, toolDefinition, explicitToolIds)) {
-              continue
-            }
+            // Non-tool policies use AllTools selector as a catch-all
             return {
               decision: policy.decision,
               policyId: policy.policy_id as PolicyId,
-              toolDefinitionId: toolDefinition.tool_definition_id as ToolDefinitionId,
+              toolDefinitionId: null,
               reason: policy.reason_template
             } satisfies PolicyDecision
           }
 
+          // Default-deny: no matching policy found
           return {
             decision: "Deny",
-            policyId: POLICY_SYSTEM_ERROR,
-            toolDefinitionId: toolDefinition.tool_definition_id as ToolDefinitionId,
+            policyId: null,
+            toolDefinitionId: null,
             reason: "no_matching_policy"
           } satisfies PolicyDecision
         }).pipe(
@@ -503,8 +553,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
               ), '[]') AS tool_definition_ids_json
             FROM permission_policies p
             WHERE
-              p.action = 'InvokeTool'
-              AND p.active = 1
+              p.active = 1
               AND (p.permission_mode = ${permissionMode} OR p.permission_mode IS NULL)
             ORDER BY p.precedence ASC, p.policy_id ASC
           `.unprepared

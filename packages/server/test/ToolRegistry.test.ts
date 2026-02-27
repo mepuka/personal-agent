@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
+import type { AgentState, CheckpointPort, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync } from "node:fs"
@@ -13,7 +13,8 @@ import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
+import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
 
 const SESSION_ID = "session:tool-registry" as SessionId
 const CONVERSATION_ID = "conversation:tool-registry" as ConversationId
@@ -288,7 +289,8 @@ const invokeTool = (
       sessionId: SESSION_ID,
       conversationId: CONVERSATION_ID,
       turnId: TURN_ID,
-      now: NOW
+      now: NOW,
+      channelId: "channel:test"
     })
     const toolkit = yield* bundle.toolkit.asEffect().pipe(
       Effect.provide(bundle.handlerLayer)
@@ -353,6 +355,16 @@ const makeToolRegistryLayer = (
     })
   ).pipe(Layer.provide(memoryPortSqliteLayer))
 
+  const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const checkpointPortTagLayer = Layer.effect(
+    CheckpointPortTag,
+    Effect.gen(function*() {
+      return (yield* CheckpointPortSqlite) as CheckpointPort
+    })
+  ).pipe(Layer.provide(checkpointPortSqliteLayer))
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
@@ -360,10 +372,13 @@ const makeToolRegistryLayer = (
     governanceTagLayer,
     memoryPortSqliteLayer,
     memoryPortTagLayer,
+    checkpointPortSqliteLayer,
+    checkpointPortTagLayer,
     ToolRegistry.layer.pipe(
       Layer.provide(governanceTagLayer),
       Layer.provide(memoryPortTagLayer),
-      Layer.provide(mockAgentConfigLayer)
+      Layer.provide(mockAgentConfigLayer),
+      Layer.provide(checkpointPortTagLayer)
     )
   )
 }

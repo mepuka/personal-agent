@@ -1,5 +1,6 @@
 import { ToolQuotaExceeded } from "@template/domain/errors"
 import type { AgentId, ToolName } from "@template/domain/ids"
+import type { GovernanceAction } from "@template/domain/status"
 import { DEFAULT_PAGINATION_LIMIT } from "@template/domain/system-defaults"
 import type {
   AuditEntryRecord,
@@ -23,14 +24,31 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
     const toolInvocations = yield* Ref.make(Array<ToolInvocationRecord>())
     const policies = yield* Ref.make(Array<PermissionPolicyRecord>())
     const toolQuotaState = yield* Ref.make(HashMap.empty<string, ToolQuotaState>())
+    const policyOverrides = yield* Ref.make(HashMap.empty<string, PolicyDecision>())
 
-    const evaluatePolicy: GovernancePort["evaluatePolicy"] = (_input) =>
-      Effect.succeed<PolicyDecision>({
-        decision: "Allow",
-        policyId: null,
-        toolDefinitionId: null,
-        reason: "mvp_default_allow"
-      })
+    const evaluatePolicy: GovernancePort["evaluatePolicy"] = (input) =>
+      Ref.get(policyOverrides).pipe(
+        Effect.map((overrides) => {
+          // Check for specific action override
+          const key = policyOverrideKey(input.action, input.toolName)
+          const specific = HashMap.get(overrides, key)
+          if (Option.isSome(specific)) {
+            return specific.value
+          }
+          // Check for action-only override (no tool)
+          const actionOnly = HashMap.get(overrides, input.action)
+          if (Option.isSome(actionOnly)) {
+            return actionOnly.value
+          }
+          // Default deny
+          return {
+            decision: "Deny",
+            policyId: null,
+            toolDefinitionId: null,
+            reason: "no_matching_policy"
+          } satisfies PolicyDecision
+        })
+      )
 
     const checkToolQuota: GovernancePort["checkToolQuota"] = (agentId, toolName, now) =>
       Ref.get(toolQuotaState).pipe(
@@ -102,11 +120,27 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
         })
       )
 
+    const findToolInvocationByIdempotencyKey: GovernancePort["findToolInvocationByIdempotencyKey"] = (
+      idempotencyKey
+    ) =>
+      Ref.get(toolInvocations).pipe(
+        Effect.map((items) =>
+          items.find((item) => item.idempotencyKey === idempotencyKey) ?? null
+        )
+      )
+
     const listPoliciesForAgent: GovernancePort["listPoliciesForAgent"] = (_agentId) => Ref.get(policies)
 
     const listAuditEntries: GovernancePort["listAuditEntries"] = () => Ref.get(auditEntries)
 
     const enforceSandbox: GovernancePort["enforceSandbox"] = (_agentId, effect) => effect
+
+    const setPolicyOverride = (action: GovernanceAction, decision: PolicyDecision, toolName?: ToolName) =>
+      Ref.update(policyOverrides, (map) =>
+        HashMap.set(map, toolName ? policyOverrideKey(action, toolName) : action, decision)
+      )
+
+    const clearPolicyOverrides = Ref.set(policyOverrides, HashMap.empty<string, PolicyDecision>())
 
     return {
       evaluatePolicy,
@@ -114,10 +148,14 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
       writeAudit,
       recordToolInvocation,
       recordToolInvocationWithAudit,
+      findToolInvocationByIdempotencyKey,
       listToolInvocationsBySession,
       listPoliciesForAgent,
       listAuditEntries,
-      enforceSandbox
+      enforceSandbox,
+      // Test helpers (not on GovernancePort interface)
+      setPolicyOverride,
+      clearPolicyOverrides
     } as const
   })
 }) {
@@ -127,3 +165,6 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
 const quotaKey = (agentId: AgentId, toolName: ToolName): string => `${agentId}:${toolName}`
 
 const endOfUtcDay = (from: Instant): Instant => DateTime.add(DateTime.removeTime(from), { days: 1 })
+
+const policyOverrideKey = (action: string, toolName?: ToolName): string =>
+  toolName ? `${action}:${toolName}` : action

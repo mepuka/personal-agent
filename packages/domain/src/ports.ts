@@ -12,6 +12,7 @@ import type {
   AuditEntryId,
   AuditLogId,
   ChannelId,
+  CheckpointId,
   ExternalServiceId,
   IntegrationId,
   MemoryItemId,
@@ -27,9 +28,11 @@ import type {
   AuthorizationDecision,
   ChannelCapability,
   ChannelType,
+  CheckpointStatus,
   ComplianceStatus,
   ConcurrencyPolicy,
   ExecutionOutcome,
+  GovernanceAction,
   IntegrationStatus,
   MemoryScope,
   MemorySortOrder,
@@ -175,7 +178,7 @@ export interface MemoryItemRecord {
 export interface PolicyInput {
   readonly agentId: AgentId
   readonly sessionId: SessionId | null
-  readonly action: "InvokeTool" | "WriteMemory" | "ReadMemory" | "ExecuteSchedule"
+  readonly action: GovernanceAction
   readonly toolName?: ToolName
 }
 
@@ -208,7 +211,7 @@ export interface ToolDefinitionRecord {
 
 export interface PermissionPolicyRecord {
   readonly policyId: PolicyId
-  readonly action: "InvokeTool"
+  readonly action: GovernanceAction
   readonly permissionMode: PermissionMode | null
   readonly selector: PolicySelector
   readonly decision: AuthorizationDecision
@@ -453,6 +456,41 @@ export interface ChannelPort {
       readonly generationConfigOverride?: ChannelRecord["generationConfigOverride"]
     }
   ) => Effect.Effect<void>
+}
+
+export interface CheckpointRecord {
+  readonly checkpointId: CheckpointId
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+  readonly channelId: ChannelId
+  readonly turnId: string
+  readonly action: GovernanceAction
+  readonly policyId: PolicyId | null
+  readonly reason: string
+  readonly payloadJson: string
+  readonly payloadHash: string
+  readonly status: CheckpointStatus
+  readonly requestedAt: Instant
+  readonly decidedAt: Instant | null
+  readonly decidedBy: string | null
+  readonly expiresAt: Instant | null
+}
+
+export interface CheckpointPort {
+  readonly create: (record: CheckpointRecord) => Effect.Effect<void>
+  readonly get: (checkpointId: CheckpointId) => Effect.Effect<CheckpointRecord | null>
+  readonly transition: (
+    checkpointId: CheckpointId,
+    toStatus: CheckpointStatus,
+    decidedBy: string,
+    decidedAt: Instant
+  ) => Effect.Effect<
+    void,
+    import("./errors.js").CheckpointNotFound
+    | import("./errors.js").CheckpointAlreadyDecided
+    | import("./errors.js").CheckpointExpired
+  >
+  readonly listPending: (agentId?: AgentId) => Effect.Effect<ReadonlyArray<CheckpointRecord>>
 }
 
 export interface IntegrationPort {

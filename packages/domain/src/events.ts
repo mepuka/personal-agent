@@ -86,12 +86,25 @@ export class TurnFailedEvent extends Schema.Class<TurnFailedEvent>("TurnFailedEv
   message: Schema.String
 }) {}
 
+export class TurnCheckpointRequiredEvent extends Schema.Class<TurnCheckpointRequiredEvent>(
+  "TurnCheckpointRequiredEvent"
+)({
+  type: Schema.Literal("turn.checkpoint_required"),
+  sequence: Schema.Number,
+  turnId: Schema.String,
+  sessionId: Schema.String,
+  checkpointId: Schema.String,
+  action: Schema.String,
+  reason: Schema.String
+}) {}
+
 export const TurnStreamEvent = Schema.Union([
   TurnStartedEvent,
   AssistantDeltaEvent,
   ToolCallEvent,
   ToolResultEvent,
   IterationCompletedEvent,
+  TurnCheckpointRequiredEvent,
   TurnCompletedEvent,
   TurnFailedEvent
 ])
