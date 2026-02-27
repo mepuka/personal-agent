@@ -54,6 +54,7 @@ export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_accepted",
   "turn_processing_policy_denied",
   "turn_processing_requires_approval",
+  "turn_processing_checkpoint_required",
   "turn_processing_token_budget_exceeded",
   "turn_processing_model_error"
 ])
@@ -65,10 +66,12 @@ export const ProcessTurnPayload = Schema.Struct({
   conversationId: Schema.String,
   agentId: Schema.String,
   userId: Schema.String,
+  channelId: Schema.String,
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlockSchema),
   createdAt: Schema.DateTimeUtc,
   inputTokens: Schema.Number,
+  checkpointId: Schema.optionalKey(Schema.String),
   modelOverride: Schema.optionalKey(Schema.Struct({
     provider: Schema.String,
     modelId: Schema.String
@@ -99,7 +102,10 @@ export const ProcessTurnResult = Schema.Struct({
   toolCallsTotal: Schema.Number,
   iterationStats: Schema.Array(TurnIterationStats),
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
-  modelUsageJson: Schema.Union([Schema.String, Schema.Null])
+  modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
+  checkpointId: Schema.optionalKey(Schema.String),
+  checkpointAction: Schema.optionalKey(Schema.String),
+  checkpointReason: Schema.optionalKey(Schema.String)
 })
 export type ProcessTurnResult = typeof ProcessTurnResult.Type
 

@@ -27,10 +27,12 @@ const ProcessTurnPayloadFields = {
   conversationId: Schema.String,
   agentId: Schema.String,
   userId: Schema.String,
+  channelId: Schema.String,
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
   createdAt: Schema.DateTimeUtcFromString,
   inputTokens: Schema.Number,
+  checkpointId: Schema.optionalKey(Schema.String),
   modelOverride: Schema.optionalKey(Schema.Struct({
     provider: Schema.String,
     modelId: Schema.String
