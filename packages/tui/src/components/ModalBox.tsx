@@ -1,4 +1,5 @@
 import * as React from "react"
+import { theme } from "../theme.js"
 
 export function ModalBox({
   title,
@@ -20,7 +21,8 @@ export function ModalBox({
       height={height}
       border={true}
       borderStyle="single"
-      backgroundColor="black"
+      borderColor={theme.borderFocus}
+      backgroundColor={theme.surface}
       flexDirection="column"
       padding={1}
       title={` ${title} `}

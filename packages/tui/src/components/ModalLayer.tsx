@@ -1,5 +1,6 @@
 import * as React from "react"
 import type { ModalId } from "../types.js"
+import { theme } from "../theme.js"
 import { ModalBox } from "./ModalBox.js"
 
 export function ModalLayer({
@@ -24,6 +25,7 @@ export function ModalLayer({
           top={0}
           width="100%"
           height="100%"
+          backgroundColor={theme.bg}
         >
           {renderModal(activeModal)}
         </box>
@@ -38,31 +40,31 @@ function renderModal(modalId: ModalId): React.ReactNode {
     case "command-palette":
       return (
         <ModalBox title="Command Palette" width="70%" height="40%">
-          <text content="Command palette coming soon..." fg="gray" />
+          <text content="Command palette coming soon..." fg={theme.textMuted} />
         </ModalBox>
       )
     case "session-picker":
       return (
         <ModalBox title="Sessions" width="60%" height="60%">
-          <text content="Session picker coming soon..." fg="gray" />
+          <text content="Session picker coming soon..." fg={theme.textMuted} />
         </ModalBox>
       )
     case "settings":
       return (
         <ModalBox title="Settings" width="50%" height="50%">
-          <text content="Settings coming soon..." fg="gray" />
+          <text content="Settings coming soon..." fg={theme.textMuted} />
         </ModalBox>
       )
     case "memory-search":
       return (
         <ModalBox title="Memory Search" width="60%" height="60%">
-          <text content="Memory search coming soon..." fg="gray" />
+          <text content="Memory search coming soon..." fg={theme.textMuted} />
         </ModalBox>
       )
     case "tool-inspector":
       return (
         <ModalBox title="Tool Inspector" width="80%" height="80%">
-          <text content="Tool inspector coming soon..." fg="gray" />
+          <text content="Tool inspector coming soon..." fg={theme.textMuted} />
         </ModalBox>
       )
   }
