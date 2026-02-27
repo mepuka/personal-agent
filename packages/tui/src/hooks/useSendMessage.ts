@@ -120,6 +120,21 @@ export function dispatchEvent(
     case "iteration.completed": {
       break
     }
+    case "turn.checkpoint_required": {
+      registry.update(messagesAtom, (msgs) => {
+        if (msgs.length === 0) return msgs
+        const last = msgs[msgs.length - 1]!
+        return [
+          ...msgs.slice(0, -1),
+          {
+            ...last,
+            status: "checkpoint_required" as const,
+            checkpointId: event.checkpointId
+          }
+        ]
+      })
+      break
+    }
     case "turn.completed": {
       registry.update(messagesAtom, (msgs) => {
         if (msgs.length === 0) return msgs
