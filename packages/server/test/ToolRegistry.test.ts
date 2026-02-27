@@ -158,11 +158,126 @@ describe("ToolRegistry", () => {
     )
     await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
   })
+
+  it("store_memory happy path stores and returns memoryId", async () => {
+    const dbPath = testDatabasePath("tool-registry-store-memory")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:store-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const output = yield* invokeTool(agentId, "store_memory", {
+        content: "test fact",
+        tags: ["tag1"]
+      })
+      expect(output).toContain("memoryId")
+      expect(output).toContain("true")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("retrieve_memories returns stored memories", async () => {
+    const dbPath = testDatabasePath("tool-registry-retrieve-memories")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:retrieve-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      yield* invokeTool(agentId, "store_memory", {
+        content: "remembered fact for retrieval"
+      })
+
+      const output = yield* invokeTool(agentId, "retrieve_memories", {
+        query: "remembered fact",
+        limit: 5
+      })
+      expect(output).toContain("remembered fact")
+      expect(output).toContain("memoryId")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("forget_memories removes stored memories", async () => {
+    const dbPath = testDatabasePath("tool-registry-forget-memories")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:forget-mem" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const storeOutput = yield* invokeTool(agentId, "store_memory", {
+        content: "memory to forget"
+      })
+      // Extract memoryId from the JSON output string
+      const memoryIdMatch = storeOutput.match(/"memoryId"\s*:\s*"([^"]+)"/)
+      expect(memoryIdMatch).not.toBeNull()
+      const memoryId = memoryIdMatch![1]
+
+      const forgetOutput = yield* invokeTool(agentId, "forget_memories", {
+        memoryIds: [memoryId]
+      })
+      expect(forgetOutput).toContain("\"forgotten\"")
+      expect(forgetOutput).toContain("1")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("forget_memories with empty IDs returns InvalidMemoryIds error", async () => {
+    const dbPath = testDatabasePath("tool-registry-forget-empty")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:forget-empty" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Standard",
+        budgetResetAt: NOW
+      }))
+
+      const failure = (yield* invokeTool(agentId, "forget_memories", {
+        memoryIds: ["", "  "]
+      }).pipe(
+        Effect.flip
+      )) as { readonly errorCode: string }
+      expect(failure.errorCode).toBe("InvalidMemoryIds")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
 })
 
 const invokeTool = (
   agentId: AgentId,
-  toolName: "echo_text" | "math_calculate" | "time_now",
+  toolName: "echo_text" | "math_calculate" | "time_now" | "store_memory" | "retrieve_memories" | "forget_memories",
   params: Record<string, unknown>
 ) =>
   Effect.gen(function*() {

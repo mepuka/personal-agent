@@ -43,6 +43,8 @@ import {
 } from "../PortTags.js"
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 10
+// TODO: Move to AgentConfig so per-agent iteration caps are formally configurable
+const MAX_TOOL_ITERATIONS_CAP = 200
 const TURN_LOOP_TIMEOUT = "15 seconds"
 
 export const TurnAuditReasonCode = Schema.Literals([
@@ -222,7 +224,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     }).asEffect()
 
     const maxToolIterations = yield* agentStatePort.get(payload.agentId as AgentId).pipe(
-      Effect.map((state) => Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1))
+      Effect.map((state) => Math.min(Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1), MAX_TOOL_ITERATIONS_CAP))
     )
 
     // Retrieve semantic memories for context injection (snapshot read, not an Activity)
@@ -555,18 +557,21 @@ const zeroUsage = (): Response.Usage =>
     }
   })
 
+const addOptional = (a: number | undefined, b: number | undefined): number =>
+  (a ?? 0) + (b ?? 0)
+
 const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage =>
   new Response.Usage({
     inputTokens: {
-      uncached: (left.inputTokens.uncached ?? 0) + (right.inputTokens.uncached ?? 0),
-      total: (left.inputTokens.total ?? 0) + (right.inputTokens.total ?? 0),
-      cacheRead: (left.inputTokens.cacheRead ?? 0) + (right.inputTokens.cacheRead ?? 0),
-      cacheWrite: (left.inputTokens.cacheWrite ?? 0) + (right.inputTokens.cacheWrite ?? 0)
+      uncached: addOptional(left.inputTokens.uncached, right.inputTokens.uncached),
+      total: addOptional(left.inputTokens.total, right.inputTokens.total),
+      cacheRead: addOptional(left.inputTokens.cacheRead, right.inputTokens.cacheRead),
+      cacheWrite: addOptional(left.inputTokens.cacheWrite, right.inputTokens.cacheWrite)
     },
     outputTokens: {
-      total: (left.outputTokens.total ?? 0) + (right.outputTokens.total ?? 0),
-      text: (left.outputTokens.text ?? 0) + (right.outputTokens.text ?? 0),
-      reasoning: (left.outputTokens.reasoning ?? 0) + (right.outputTokens.reasoning ?? 0)
+      total: addOptional(left.outputTokens.total, right.outputTokens.total),
+      text: addOptional(left.outputTokens.text, right.outputTokens.text),
+      reasoning: addOptional(left.outputTokens.reasoning, right.outputTokens.reasoning)
     }
   })
 

@@ -344,6 +344,96 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("tool loop recurses on tool-calls finish reason", () => {
+    const dbPath = testDatabasePath("turn-tool-loop")
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, {
+      finishReasons: ["tool-calls", "stop"]
+    })
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:loop" as AgentId,
+        tokenBudget: 500,
+        maxToolIterations: 10,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:loop" as SessionId,
+        conversationId: "conversation:loop" as ConversationId,
+        tokenCapacity: 1000,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:loop" as TurnId,
+        sessionId: "session:loop" as SessionId,
+        conversationId: "conversation:loop" as ConversationId,
+        agentId: "agent:loop" as AgentId,
+        createdAt: now,
+        inputTokens: 25,
+        content: "use tools"
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(result.iterationsUsed).toBe(2)
+      expect(result.iterationStats).toHaveLength(2)
+      expect(result.iterationStats[0].finishReason).toBe("tool-calls")
+      expect(result.iterationStats[1].finishReason).toBe("stop")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("tool loop caps at maxToolIterations", () => {
+    const dbPath = testDatabasePath("turn-loop-cap")
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, {
+      finishReasons: ["tool-calls", "tool-calls", "tool-calls", "tool-calls", "tool-calls"]
+    })
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:loop-cap" as AgentId,
+        tokenBudget: 500,
+        maxToolIterations: 2,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:loop-cap" as SessionId,
+        conversationId: "conversation:loop-cap" as ConversationId,
+        tokenCapacity: 1000,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:loop-cap" as TurnId,
+        sessionId: "session:loop-cap" as SessionId,
+        conversationId: "conversation:loop-cap" as ConversationId,
+        agentId: "agent:loop-cap" as AgentId,
+        createdAt: now,
+        inputTokens: 25,
+        content: "keep calling tools"
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(result.iterationsUsed).toBe(2)
+      expect(result.assistantContent).toContain("Stopped after reaching max tool iterations")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("exposes canonical stream events", () => {
     const dbPath = testDatabasePath("turn-stream")
     const layer = makeTurnProcessingLayer(dbPath)
@@ -389,7 +479,8 @@ describe("TurnProcessingWorkflow e2e", () => {
 const makeTurnProcessingLayer = (
   dbPath: string,
   forcedDecision: AuthorizationDecision = "Allow",
-  capturedPrompts?: Array<string>
+  capturedPrompts?: Array<string>,
+  mockOptions?: { readonly finishReasons?: ReadonlyArray<Response.FinishReason> }
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -470,7 +561,7 @@ const makeTurnProcessingLayer = (
     Effect.succeed({
       get: (_provider: string, _modelId: string) =>
         Effect.succeed(
-          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel(capturedPrompts))
+          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel(capturedPrompts, mockOptions))
         )
     })
   )
@@ -570,54 +661,75 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
   inputTokens: overrides.inputTokens ?? 10
 })
 
-const makeMockLanguageModel = (capturedPrompts?: Array<string>): LanguageModel.Service => ({
-  generateText: (options: any) => {
-    if (capturedPrompts) {
-      capturedPrompts.push(JSON.stringify(options))
-    }
-    return Effect.succeed(
-      new LanguageModel.GenerateTextResponse([
+const makeMockLanguageModel = (
+  capturedPrompts?: Array<string>,
+  mockOptions?: { readonly finishReasons?: ReadonlyArray<Response.FinishReason> }
+): LanguageModel.Service => {
+  let callCount = 0
+
+  return {
+    generateText: (options: any) => {
+      if (capturedPrompts) {
+        capturedPrompts.push(JSON.stringify(options))
+      }
+      const finishReasons = mockOptions?.finishReasons
+      const currentCall = callCount++
+      const finishReason = finishReasons
+        ? (finishReasons[currentCall] ?? finishReasons[finishReasons.length - 1] ?? "stop")
+        : "stop"
+
+      const mockUsage = new Response.Usage({
+        inputTokens: {
+          uncached: 10,
+          total: 10,
+          cacheRead: undefined,
+          cacheWrite: undefined
+        },
+        outputTokens: {
+          total: 6,
+          text: 6,
+          reasoning: undefined
+        }
+      })
+
+      const parts: Array<Response.Part<any>> = [
         Response.makePart("tool-call", {
-          id: "call_echo_1",
+          id: `call_echo_${currentCall}`,
           name: "echo.text",
           params: { text: "hello" },
           providerExecuted: false
         }),
         Response.makePart("tool-result", {
-          id: "call_echo_1",
+          id: `call_echo_${currentCall}`,
           name: "echo.text",
           isFailure: false,
           result: { text: "hello" },
           encodedResult: { text: "hello" },
           providerExecuted: false,
           preliminary: false
-        }),
-        Response.makePart("text", {
-          text: "assistant mock response"
-        }),
-        Response.makePart("finish", {
-          reason: "stop",
-          usage: new Response.Usage({
-            inputTokens: {
-              uncached: 10,
-              total: 10,
-              cacheRead: undefined,
-              cacheWrite: undefined
-            },
-            outputTokens: {
-              total: 6,
-              text: 6,
-              reasoning: undefined
-            }
-          }),
-          response: undefined
         })
-      ])
-    ) as any
-  },
-  streamText: (_options: any) => Stream.empty as any,
-  generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
-})
+      ]
+
+      if (finishReason !== "tool-calls") {
+        parts.push(Response.makePart("text", {
+          text: "assistant mock response"
+        }))
+      }
+
+      parts.push(Response.makePart("finish", {
+        reason: finishReason,
+        usage: mockUsage,
+        response: undefined
+      }))
+
+      return Effect.succeed(
+        new LanguageModel.GenerateTextResponse(parts)
+      ) as any
+    },
+    streamText: (_options: any) => Stream.empty as any,
+    generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
+  }
+}
 
 const testDatabasePath = (name: string): string =>
   join(tmpdir(), `personal-agent-${name}-${crypto.randomUUID()}.sqlite`)

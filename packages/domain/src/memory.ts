@@ -1,5 +1,12 @@
 import { Schema } from "effect"
+import { MemoryItemId } from "./ids.js"
 import { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "./status.js"
+
+export const toMemoryItemIds = (ids: ReadonlyArray<string>): ReadonlyArray<MemoryItemId> =>
+  [...new Set(ids
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0))]
+    .map((id) => MemoryItemId.makeUnsafe(id))
 
 export const StoreItemInput = Schema.Struct({
   tier: MemoryTier,

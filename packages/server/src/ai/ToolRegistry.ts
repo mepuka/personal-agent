@@ -1,25 +1,34 @@
+import { ToolName } from "@template/domain/ids"
 import type {
   AgentId,
   AuditEntryId,
   AuditLogId,
   ConversationId,
-  MemoryItemId,
   PolicyId,
   SessionId,
   ToolDefinitionId,
   ToolInvocationId,
-  ToolName,
   TurnId
 } from "@template/domain/ids"
+import { toMemoryItemIds } from "@template/domain/memory"
 import type { Instant } from "@template/domain/ports"
 import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
-import { Cause, DateTime, Effect, Exit, Layer, Schema, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Match, Schema, ServiceMap } from "effect"
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
 const DEFAULT_AUDIT_LOG_ID = "auditlog:governance:default:v1" as AuditLogId
+
+const TOOL_NAMES = {
+  time_now: ToolName.makeUnsafe("time_now"),
+  math_calculate: ToolName.makeUnsafe("math_calculate"),
+  echo_text: ToolName.makeUnsafe("echo_text"),
+  store_memory: ToolName.makeUnsafe("store_memory"),
+  retrieve_memories: ToolName.makeUnsafe("retrieve_memories"),
+  forget_memories: ToolName.makeUnsafe("forget_memories")
+} as const
 
 const ToolFailure = Schema.Struct({
   errorCode: Schema.String,
@@ -108,6 +117,15 @@ const SafeToolkit = Toolkit.make(
   ForgetMemoriesTool
 )
 
+/**
+ * The handler layer produced by SafeToolkit.toLayer, with `any` context
+ * stripped to `never`. Toolkit.toLayer leaks `any` context in Effect v4 beta.
+ */
+type SafeToolkitHandlerLayer =
+  ReturnType<typeof SafeToolkit.toLayer> extends Layer.Layer<infer A, infer E, any>
+    ? Layer.Layer<A, E>
+    : never
+
 export interface ToolExecutionContext {
   readonly agentId: AgentId
   readonly sessionId: SessionId
@@ -120,7 +138,7 @@ export interface ToolExecutionContext {
 export interface ToolRegistryService {
   readonly makeToolkit: (context: ToolExecutionContext) => Effect.Effect<{
     readonly toolkit: typeof SafeToolkit
-    readonly handlerLayer: Layer.Layer<any>
+    readonly handlerLayer: SafeToolkitHandlerLayer
   }>
 }
 
@@ -183,13 +201,20 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
 
       const replayStoredInvocation = <A>(
         outputJson: string
-      ): Effect.Effect<A, ToolFailure> => {
-        const parsed = safeJsonParse(outputJson)
-        if (isToolFailure(parsed)) {
-          return Effect.fail(parsed)
-        }
-        return Effect.succeed(parsed as A)
-      }
+      ): Effect.Effect<A, ToolFailure> =>
+        Effect.suspend(() => {
+          const parsed = safeJsonParse(outputJson)
+          if (isToolFailure(parsed)) {
+            return Effect.fail(parsed)
+          }
+          if (parsed === null || parsed === undefined) {
+            return Effect.fail<ToolFailure>({
+              errorCode: "ReplayDecodeFailed",
+              message: "stored invocation output was null or undefined"
+            })
+          }
+          return Effect.succeed(parsed as A)
+        })
 
       const failWithRecordedInvocation = (params: {
         readonly context: ToolExecutionContext
@@ -245,20 +270,26 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             params.context.iteration ?? 0
           }`) as AuditEntryId
 
-          if (policy.decision !== "Allow") {
-            yield* governance.writeAudit({
-              auditEntryId,
-              agentId: params.context.agentId,
-              sessionId: params.context.sessionId,
-              decision: policy.decision,
-              reason: `${params.denyReason}:${policy.reason}`,
-              createdAt: params.context.now
-            })
-            return yield* Effect.fail<ToolFailure>({
-              errorCode: "MemoryAccessDenied",
-              message: policy.reason
-            })
-          }
+          yield* Match.value(policy.decision).pipe(
+            Match.when("Allow", () => Effect.void),
+            Match.orElse(() =>
+              governance.writeAudit({
+                auditEntryId,
+                agentId: params.context.agentId,
+                sessionId: params.context.sessionId,
+                decision: policy.decision,
+                reason: `${params.denyReason}:${policy.reason}`,
+                createdAt: params.context.now
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail<ToolFailure>({
+                    errorCode: "MemoryAccessDenied",
+                    message: policy.reason
+                  })
+                )
+              )
+            )
+          )
 
           const writeAllowAudit = governance.writeAudit({
             auditEntryId,
@@ -323,47 +354,40 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             )
           )
 
-          if (policy.decision === "Deny") {
-            return yield* failWithRecordedInvocation({
-              context,
-              toolName,
-              idempotencyKey,
-              inputJson,
-              decision: "Deny",
-              policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
-              toolDefinitionId: policy.toolDefinitionId,
-              reason: `tool_policy_denied:${toolName}`,
-              failure: {
-                errorCode: "PolicyDenied",
-                message: policy.reason
-              }
-            })
-          }
-
-          if (policy.decision === "RequireApproval") {
-            return yield* failWithRecordedInvocation({
-              context,
-              toolName,
-              idempotencyKey,
-              inputJson,
-              decision: "RequireApproval",
-              policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
-              toolDefinitionId: policy.toolDefinitionId,
-              reason: `tool_requires_approval:${toolName}`,
-              failure: {
-                errorCode: "RequiresApproval",
-                message: policy.reason
-              }
-            })
-          }
-
-          const quotaExit = yield* governance.checkToolQuota(context.agentId, toolName, context.now).pipe(
-            Effect.exit
+          yield* Match.value(policy.decision).pipe(
+            Match.when("Deny", () =>
+              failWithRecordedInvocation({
+                context,
+                toolName,
+                idempotencyKey,
+                inputJson,
+                decision: "Deny",
+                policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
+                toolDefinitionId: policy.toolDefinitionId,
+                reason: `tool_policy_denied:${toolName}`,
+                failure: { errorCode: "PolicyDenied", message: policy.reason }
+              })
+            ),
+            Match.when("RequireApproval", () =>
+              failWithRecordedInvocation({
+                context,
+                toolName,
+                idempotencyKey,
+                inputJson,
+                decision: "RequireApproval",
+                policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
+                toolDefinitionId: policy.toolDefinitionId,
+                reason: `tool_requires_approval:${toolName}`,
+                failure: { errorCode: "RequiresApproval", message: policy.reason }
+              })
+            ),
+            Match.when("Allow", () => Effect.void),
+            Match.exhaustive
           )
-          if (Exit.isFailure(quotaExit)) {
-            const failReason = quotaExit.cause.reasons.find(Cause.isFailReason)
-            if (failReason !== undefined && isToolQuotaExceededError(failReason.error)) {
-              return yield* failWithRecordedInvocation({
+
+          yield* governance.checkToolQuota(context.agentId, toolName, context.now).pipe(
+            Effect.catchTag("ToolQuotaExceeded", (error) =>
+              failWithRecordedInvocation({
                 context,
                 toolName,
                 idempotencyKey,
@@ -374,26 +398,27 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 reason: `tool_quota_exceeded:${toolName}`,
                 failure: {
                   errorCode: "ToolQuotaExceeded",
-                  message: `remaining_invocations=${failReason.error.remainingInvocations}`
+                  message: `remaining_invocations=${error.remainingInvocations}`
                 }
               })
-            }
-
-            return yield* failWithRecordedInvocation({
-              context,
-              toolName,
-              idempotencyKey,
-              inputJson,
-              decision: "Deny",
-              policyId: POLICY_SYSTEM_ERROR,
-              toolDefinitionId: policy.toolDefinitionId,
-              reason: "governance_system_error:check_quota",
-              failure: {
-                errorCode: "GovernanceQuotaError",
-                message: "quota check failed"
-              }
-            })
-          }
+            ),
+            Effect.catchDefect(() =>
+              failWithRecordedInvocation({
+                context,
+                toolName,
+                idempotencyKey,
+                inputJson,
+                decision: "Deny",
+                policyId: POLICY_SYSTEM_ERROR,
+                toolDefinitionId: policy.toolDefinitionId,
+                reason: "governance_system_error:check_quota",
+                failure: {
+                  errorCode: "GovernanceQuotaError",
+                  message: "quota check failed"
+                }
+              })
+            )
+          )
 
           return yield* execute.pipe(
             Effect.tap((result) =>
@@ -437,7 +462,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               "time_now": () =>
                 runGovernedTool(
                   context,
-                  "time_now" as ToolName,
+                  TOOL_NAMES.time_now,
                   {},
                   Effect.succeed({
                     nowIso: DateTime.formatIso(context.now)
@@ -447,7 +472,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 const result = safeCalculate(expression)
                 return runGovernedTool(
                   context,
-                  "math_calculate" as ToolName,
+                  TOOL_NAMES.math_calculate,
                   { expression },
                   result === null
                     ? Effect.fail<ToolFailure>({
@@ -460,18 +485,18 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               "echo_text": ({ text }) =>
                 runGovernedTool(
                   context,
-                  "echo_text" as ToolName,
+                  TOOL_NAMES.echo_text,
                   { text },
                   Effect.succeed({ text })
                 ),
               "store_memory": ({ content, tags, scope }) =>
                 runGovernedTool(
                   context,
-                  "store_memory" as ToolName,
+                  TOOL_NAMES.store_memory,
                   { content, tags, scope },
                   runMemoryPolicy({
                     context,
-                    toolName: "store_memory" as ToolName,
+                    toolName: TOOL_NAMES.store_memory,
                     action: "WriteMemory",
                     operation: "store",
                     allowReason: "memory_store_allowed",
@@ -510,11 +535,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               "retrieve_memories": ({ query, limit }) =>
                 runGovernedTool(
                   context,
-                  "retrieve_memories" as ToolName,
+                  TOOL_NAMES.retrieve_memories,
                   { query, limit },
                   runMemoryPolicy({
                     context,
-                    toolName: "retrieve_memories" as ToolName,
+                    toolName: TOOL_NAMES.retrieve_memories,
                     action: "ReadMemory",
                     operation: "retrieve",
                     allowReason: "memory_retrieve_allowed",
@@ -539,11 +564,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               "forget_memories": ({ memoryIds }) =>
                 runGovernedTool(
                   context,
-                  "forget_memories" as ToolName,
+                  TOOL_NAMES.forget_memories,
                   { memoryIds },
                   runMemoryPolicy({
                     context,
-                    toolName: "forget_memories" as ToolName,
+                    toolName: TOOL_NAMES.forget_memories,
                     action: "WriteMemory",
                     operation: "forget",
                     allowReason: "memory_forget_allowed",
@@ -628,12 +653,8 @@ const makeIdempotencyKey = (
     )
   ).pipe(
     Effect.map((buffer) => {
-      const bytes = new Uint8Array(buffer)
-      let digest = ""
-      for (const byte of bytes) {
-        digest += byte.toString(16).padStart(2, "0")
-      }
-      return `tool-idem:${digest}`
+      const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
+      return `tool-idem:${hex}`
     })
   )
 
@@ -643,12 +664,6 @@ const clampMemoryLimit = (limit: number | undefined): number => {
   }
   return Math.min(Math.max(Math.floor(limit), 1), 50)
 }
-
-const toMemoryItemIds = (ids: ReadonlyArray<string>): ReadonlyArray<MemoryItemId> =>
-  [...new Set(ids
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0))]
-    .map((id) => id as unknown as MemoryItemId)
 
 const safeCalculate = (expression: string): number | null => {
   if (!/^[0-9+\-*/().\s]+$/.test(expression)) {
@@ -665,20 +680,5 @@ const safeCalculate = (expression: string): number | null => {
   }
 }
 
-const isToolQuotaExceededError = (
-  error: unknown
-): error is { readonly _tag: "ToolQuotaExceeded"; readonly remainingInvocations: number } =>
-  typeof error === "object"
-  && error !== null
-  && "_tag" in error
-  && error._tag === "ToolQuotaExceeded"
-  && "remainingInvocations" in error
-  && typeof error.remainingInvocations === "number"
 
-const isToolFailure = (value: unknown): value is ToolFailure =>
-  typeof value === "object"
-  && value !== null
-  && "errorCode" in value
-  && typeof (value as { readonly errorCode?: unknown }).errorCode === "string"
-  && "message" in value
-  && typeof (value as { readonly message?: unknown }).message === "string"
+const isToolFailure = Schema.is(ToolFailure)

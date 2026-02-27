@@ -1,5 +1,6 @@
 import { MemoryAccessDenied } from "@template/domain/errors"
-import type { AgentId, AuditEntryId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
+import type { AgentId, AuditEntryId, SessionId, TurnId } from "@template/domain/ids"
+import { toMemoryItemIds } from "@template/domain/memory"
 import type { MemoryForgetFilters, MemorySearchQuery } from "@template/domain/ports"
 import { MemoryScope, MemorySortOrder, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DateTime, Effect, Schema } from "effect"
@@ -300,8 +301,3 @@ const makeAuditEntryId = (
     ? (`audit:memory:${operation}:${action}:${agentId}:${crypto.randomUUID()}`) as AuditEntryId
     : (`audit:memory:${operation}:${action}:${agentId}:${requestId}`) as AuditEntryId
 
-const toMemoryItemIds = (ids: ReadonlyArray<string>): ReadonlyArray<MemoryItemId> =>
-  [...new Set(ids
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0))]
-    .map((id) => id as unknown as MemoryItemId)
