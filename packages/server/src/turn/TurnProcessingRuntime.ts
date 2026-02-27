@@ -101,6 +101,17 @@ const toSuccessEvents = (
     }
   )
 
+  const checkpointEvent: TurnStreamEvent | null = result.checkpointId !== undefined
+    ? {
+      type: "turn.checkpoint_required" as const,
+      ...base,
+      sequence: 0,
+      checkpointId: result.checkpointId,
+      action: result.checkpointAction ?? "unknown",
+      reason: result.checkpointReason ?? "checkpoint required"
+    }
+    : null
+
   const completedEvent: TurnStreamEvent = {
     type: "turn.completed",
     ...base,
@@ -113,9 +124,14 @@ const toSuccessEvents = (
     modelUsageJson: result.modelUsageJson
   }
 
-  return [...iterationEvents, ...contentEvents, completedEvent].map(
-    (event, i) => ({ ...event, sequence: i + 2 })
-  )
+  const allEvents = [
+    ...iterationEvents,
+    ...contentEvents,
+    ...(checkpointEvent !== null ? [checkpointEvent] : []),
+    completedEvent
+  ]
+
+  return allEvents.map((event, i) => ({ ...event, sequence: i + 2 }))
 }
 
 const makeExecutionId = (idempotencyKey: string) =>
