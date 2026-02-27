@@ -20,8 +20,11 @@ import {
 import type {
   AgentId,
   AuditEntryId,
+  ChannelId,
+  CheckpointId,
   ConversationId,
   MessageId,
+  PolicyId,
   SessionId,
   TurnId
 } from "../../../domain/src/ids.js"
@@ -40,10 +43,11 @@ import {
   encodeUsageToJson
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
-import { ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
+import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
 import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
 import {
   AgentStatePortTag,
+  CheckpointPortTag,
   GovernancePortTag,
   MemoryPortTag,
   SessionTurnPortTag
@@ -177,6 +181,23 @@ const toProviderConfigOverride = (
   return overrides
 }
 
+const makePayloadHash = (
+  action: string,
+  toolName: string,
+  canonicalInputJson: string
+): Effect.Effect<string> =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${action}:${toolName}:${canonicalInputJson}`)
+    )
+  ).pipe(
+    Effect.map((buffer) => {
+      const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
+      return hex
+    })
+  )
+
 export const TurnProcessingWorkflow = Workflow.make({
   name: "TurnProcessingWorkflow",
   payload: ProcessTurnPayload,
@@ -196,6 +217,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const agentConfig = yield* AgentConfig
     const modelRegistry = yield* ModelRegistry
     const sqlitePort = yield* MemoryPortSqlite
+    const checkpointPort = yield* CheckpointPortTag
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -221,16 +243,65 @@ export const layer = TurnProcessingWorkflow.toLayer(
     }
 
     if (policy.decision === "RequireApproval") {
-      yield* writeAuditEntry(
-        governancePort,
-        payload,
-        "RequireApproval",
-        "turn_processing_requires_approval"
-      )
-      return yield* new TurnPolicyDenied({
-        turnId: payload.turnId,
-        reason: policy.reason
-      })
+      if (payload.checkpointId !== undefined) {
+        // Replay path: validate approved checkpoint
+        const checkpoint = yield* checkpointPort.get(payload.checkpointId as CheckpointId)
+        if (checkpoint === null || checkpoint.status !== "Approved") {
+          return yield* new TurnPolicyDenied({
+            turnId: payload.turnId,
+            reason: `checkpoint not approved (status: ${checkpoint?.status ?? "not found"})`
+          })
+        }
+        const expectedHash = yield* makePayloadHash("ReadMemory", "", "")
+        if (expectedHash !== checkpoint.payloadHash) {
+          return yield* new TurnPolicyDenied({
+            turnId: payload.turnId,
+            reason: "checkpoint_payload_mismatch"
+          })
+        }
+        // Checkpoint valid — bypass the gate and continue processing
+      } else {
+        // First run: create a Pending checkpoint and return non-accepted result
+        const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
+        yield* checkpointPort.create({
+          checkpointId: newCheckpointId,
+          agentId: payload.agentId as AgentId,
+          sessionId: payload.sessionId as SessionId,
+          channelId: payload.channelId as ChannelId,
+          turnId: payload.turnId,
+          action: "ReadMemory",
+          policyId: policy.policyId as PolicyId | null,
+          reason: policy.reason,
+          payloadJson: "",
+          payloadHash: yield* makePayloadHash("ReadMemory", "", ""),
+          status: "Pending",
+          requestedAt: payload.createdAt,
+          decidedAt: null,
+          decidedBy: null,
+          expiresAt: null
+        })
+        yield* writeAuditEntry(
+          governancePort,
+          payload,
+          "RequireApproval",
+          "turn_processing_checkpoint_required"
+        )
+        return {
+          turnId: payload.turnId,
+          accepted: false,
+          auditReasonCode: "turn_processing_checkpoint_required",
+          assistantContent: "",
+          assistantContentBlocks: [],
+          iterationsUsed: 0,
+          toolCallsTotal: 0,
+          iterationStats: [],
+          modelFinishReason: null,
+          modelUsageJson: null,
+          checkpointId: newCheckpointId,
+          checkpointAction: "ReadMemory",
+          checkpointReason: policy.reason
+        } satisfies ProcessTurnResult
+      }
     }
 
     yield* Activity.make({
@@ -276,6 +347,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
       payload.agentId as AgentId,
       { query: payload.content, tier: "SemanticMemory", limit: 20 }
     )
+
+    const checkpointSignalsRef = yield* Ref.make<ReadonlyArray<CheckpointSignal>>([])
 
     const modelResult = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
@@ -332,7 +405,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
           ...(payload.checkpointId !== undefined ? { checkpointId: payload.checkpointId } : {})
         },
         userPrompt,
-        maxIterations: maxToolIterations
+        maxIterations: maxToolIterations,
+        checkpointSignalsRef
       }).pipe(
         Effect.timeoutOption(`${TURN_LOOP_TIMEOUT_SECONDS} seconds`)
       )
@@ -404,6 +478,43 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     }).asEffect()
 
+    // 7b: Tool-loop signal drain — check if any tool required approval during the loop
+    const checkpointSignals = yield* Ref.get(checkpointSignalsRef)
+    if (checkpointSignals.length > 0) {
+      const firstSignal = checkpointSignals[0]
+      yield* writeAuditEntry(
+        governancePort,
+        payload,
+        "RequireApproval",
+        "turn_processing_checkpoint_required"
+      )
+      return {
+        turnId: payload.turnId,
+        accepted: false,
+        auditReasonCode: "turn_processing_checkpoint_required",
+        assistantContent: assistantResult.assistantContent,
+        assistantContentBlocks: assistantResult.assistantContentBlocks,
+        iterationsUsed: assistantResult.iterationsUsed,
+        toolCallsTotal: assistantResult.toolCallsTotal,
+        iterationStats: assistantResult.iterationStats,
+        modelFinishReason,
+        modelUsageJson: assistantResult.modelUsageJson,
+        checkpointId: firstSignal.checkpointId,
+        checkpointAction: firstSignal.action,
+        checkpointReason: firstSignal.reason
+      } satisfies ProcessTurnResult
+    }
+
+    // 7a: Transition ReadMemory checkpoint to Consumed on successful completion
+    if (payload.checkpointId !== undefined) {
+      yield* checkpointPort.transition(
+        payload.checkpointId as CheckpointId,
+        "Consumed",
+        payload.userId ?? "system",
+        payload.createdAt
+      ).pipe(Effect.catchCause(() => Effect.void))
+    }
+
     yield* writeAuditEntry(
       governancePort,
       payload,
@@ -448,6 +559,7 @@ const processWithToolLoop = (params: {
   }
   readonly userPrompt: string
   readonly maxIterations: number
+  readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
 }): Effect.Effect<ToolLoopResult, unknown, never> =>
   Effect.suspend(function loop(
     iteration = 0,
@@ -459,10 +571,10 @@ const processWithToolLoop = (params: {
     const currentIteration = iteration + 1
 
     return Effect.gen(function*() {
-      const toolkitBundle = yield* params.toolRegistry.makeToolkit({
-        ...params.context,
-        iteration
-      })
+      const toolkitBundle = yield* params.toolRegistry.makeToolkit(
+        { ...params.context, iteration },
+        params.checkpointSignalsRef
+      )
 
       const generateTextEffect = params.chat.generateText({
         prompt: iteration === 0 ? params.userPrompt : Prompt.empty,

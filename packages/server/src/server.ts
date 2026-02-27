@@ -227,7 +227,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(chatPersistenceLayer),
   Layer.provide(agentConfigLayer),
   Layer.provide(modelRegistryLayer),
-  Layer.provide(memoryPortSqliteLayer)
+  Layer.provide(memoryPortSqliteLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(

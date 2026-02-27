@@ -434,7 +434,8 @@ const makeChatFlowLayer = (
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(memoryPortSqliteLayer)
+    Layer.provide(memoryPortSqliteLayer),
+    Layer.provide(checkpointPortTagLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(
