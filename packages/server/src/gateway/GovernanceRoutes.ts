@@ -168,8 +168,9 @@ export const handleListAgentPolicies = (
   Effect.gen(function*() {
     const parsedUrl = new URL(requestUrl, "http://localhost")
     const action = parsedUrl.searchParams.get("action")
-    if (action !== null && action !== "" && action !== "InvokeTool") {
-      return yield* badRequest("action must be InvokeTool")
+    const validActions = ["InvokeTool", "ReadMemory", "WriteMemory", "ExecuteSchedule", "SpawnSubAgent", "CreateGoal", "TransitionTask"]
+    if (action !== null && action !== "" && !validActions.includes(action)) {
+      return yield* badRequest(`action must be one of: ${validActions.join(", ")}`)
     }
 
     const agentIdRaw = extractParam(requestUrl, 2)
