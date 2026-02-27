@@ -1,6 +1,8 @@
 import { Effect, Layer } from "effect"
+import type { Entity } from "effect/unstable/cluster"
 import { EntityProxy } from "effect/unstable/cluster"
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi"
+import type { Rpc } from "effect/unstable/rpc"
 import { AgentEntity } from "../entities/AgentEntity.js"
 import { MemoryEntity } from "../entities/MemoryEntity.js"
 
@@ -21,10 +23,10 @@ export class ProxyApi extends HttpApi.make("proxy")
 // provides `{ params }`.  Work around by implementing handlers directly.
 // ---------------------------------------------------------------------------
 
-const makeEntityHandlers = <Type extends string, Rpcs extends import("effect/unstable/rpc").Rpc.Any>(
+const makeEntityHandlers = <Type extends string, Rpcs extends Rpc.Any>(
   api: typeof ProxyApi,
   name: "agents" | "memories",
-  entity: import("effect/unstable/cluster").Entity.Entity<Type, Rpcs>
+  entity: Entity.Entity<Type, Rpcs>
 ) =>
   HttpApiBuilder.group(
     api,
@@ -53,7 +55,10 @@ const makeEntityHandlers = <Type extends string, Rpcs extends import("effect/uns
           .handle(
             `${parentRpc._tag}Discard` as any,
             (({ params, payload }: { params: { entityId: string }; payload: any }) =>
-              (client(params.entityId) as any as Record<string, (p: any, o: {}) => Effect.Effect<any>>)[parentRpc._tag](
+              (client(params.entityId) as any as Record<
+                string,
+                (p: any, o: Record<string, unknown>) => Effect.Effect<any>
+              >)[parentRpc._tag](
                 payload,
                 { discard: true }
               ).pipe(

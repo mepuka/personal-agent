@@ -5,6 +5,7 @@ import type {
   AgentStatePort,
   GovernancePort,
   Instant,
+  MemoryPort,
   SessionState,
   SessionTurnPort
 } from "@template/domain/ports"
@@ -413,7 +414,7 @@ const makeTurnProcessingLayer = (
   const memoryPortTagLayer = Layer.effect(
     MemoryPortTag,
     Effect.gen(function*() {
-      return (yield* MemoryPortSqlite) as import("@template/domain/ports").MemoryPort
+      return (yield* MemoryPortSqlite) as MemoryPort
     })
   ).pipe(Layer.provide(memoryPortSqliteLayer))
 
