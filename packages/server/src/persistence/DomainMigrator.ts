@@ -537,6 +537,94 @@ const loader = SqliteMigrator.fromRecord({
       ALTER TABLE channels
       ADD COLUMN generation_config_override_json TEXT
     `.unprepared.pipe(Effect.catch(() => Effect.void))
+  }),
+  "0012_governance_checkpoints_and_actions": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const now = new Date().toISOString()
+
+    // 3a: Create checkpoints table
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('InvokeTool', 'ReadMemory', 'WriteMemory', 'ExecuteSchedule', 'SpawnSubAgent', 'CreateGoal', 'TransitionTask')),
+        policy_id TEXT,
+        reason TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Deferred', 'Expired', 'Consumed')),
+        requested_at TEXT NOT NULL,
+        decided_at TEXT,
+        decided_by TEXT,
+        expires_at TEXT
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_status
+      ON checkpoints (status)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_agent_status
+      ON checkpoints (agent_id, status)
+    `.unprepared
+
+    // 3b: Rebuild permission_policies with expanded action CHECK (fail-fast, no catch)
+    yield* sql`ALTER TABLE permission_policies RENAME TO permission_policies_backup`.unprepared
+
+    yield* sql`
+      CREATE TABLE permission_policies (
+        policy_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN ('InvokeTool', 'ReadMemory', 'WriteMemory', 'ExecuteSchedule', 'SpawnSubAgent', 'CreateGoal', 'TransitionTask')),
+        permission_mode TEXT CHECK (permission_mode IN ('Permissive', 'Standard', 'Restrictive')),
+        selector TEXT NOT NULL CHECK (selector IN ('AllTools', 'SafeStandardTools', 'ExplicitToolList', 'UnknownTool', 'MissingAgent', 'InvalidRequest', 'GovernanceError')),
+        decision TEXT NOT NULL CHECK (decision IN ('Allow', 'Deny', 'RequireApproval')),
+        reason_template TEXT NOT NULL,
+        precedence INTEGER NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`INSERT INTO permission_policies SELECT * FROM permission_policies_backup`.unprepared
+
+    yield* sql`DROP TABLE permission_policies_backup`.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS permission_policies_mode_idx
+      ON permission_policies (action, permission_mode, active, precedence)
+    `.unprepared
+
+    // 3c: Seed new governance action policies (6 actions × 3 modes)
+    yield* sql`
+      INSERT OR IGNORE INTO permission_policies (
+        policy_id, action, permission_mode, selector, decision,
+        reason_template, precedence, active, created_at, updated_at
+      ) VALUES
+        ('policy:read_memory:permissive:v1', 'ReadMemory', 'Permissive', 'AllTools', 'Allow', 'read_memory_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:read_memory:standard:v1', 'ReadMemory', 'Standard', 'AllTools', 'Allow', 'read_memory_standard_allow', 10, 1, ${now}, ${now}),
+        ('policy:read_memory:restrictive:v1', 'ReadMemory', 'Restrictive', 'AllTools', 'RequireApproval', 'read_memory_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:write_memory:permissive:v1', 'WriteMemory', 'Permissive', 'AllTools', 'Allow', 'write_memory_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:write_memory:standard:v1', 'WriteMemory', 'Standard', 'AllTools', 'Allow', 'write_memory_standard_allow', 10, 1, ${now}, ${now}),
+        ('policy:write_memory:restrictive:v1', 'WriteMemory', 'Restrictive', 'AllTools', 'RequireApproval', 'write_memory_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:execute_schedule:permissive:v1', 'ExecuteSchedule', 'Permissive', 'AllTools', 'Allow', 'execute_schedule_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:execute_schedule:standard:v1', 'ExecuteSchedule', 'Standard', 'AllTools', 'Allow', 'execute_schedule_standard_allow', 10, 1, ${now}, ${now}),
+        ('policy:execute_schedule:restrictive:v1', 'ExecuteSchedule', 'Restrictive', 'AllTools', 'RequireApproval', 'execute_schedule_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:spawn_sub_agent:permissive:v1', 'SpawnSubAgent', 'Permissive', 'AllTools', 'Allow', 'spawn_sub_agent_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:spawn_sub_agent:standard:v1', 'SpawnSubAgent', 'Standard', 'AllTools', 'RequireApproval', 'spawn_sub_agent_standard_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:spawn_sub_agent:restrictive:v1', 'SpawnSubAgent', 'Restrictive', 'AllTools', 'RequireApproval', 'spawn_sub_agent_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:create_goal:permissive:v1', 'CreateGoal', 'Permissive', 'AllTools', 'Allow', 'create_goal_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:create_goal:standard:v1', 'CreateGoal', 'Standard', 'AllTools', 'RequireApproval', 'create_goal_standard_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:create_goal:restrictive:v1', 'CreateGoal', 'Restrictive', 'AllTools', 'RequireApproval', 'create_goal_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:transition_task:permissive:v1', 'TransitionTask', 'Permissive', 'AllTools', 'Allow', 'transition_task_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:transition_task:standard:v1', 'TransitionTask', 'Standard', 'AllTools', 'Allow', 'transition_task_standard_allow', 10, 1, ${now}, ${now}),
+        ('policy:transition_task:restrictive:v1', 'TransitionTask', 'Restrictive', 'AllTools', 'RequireApproval', 'transition_task_restrictive_requires_approval', 10, 1, ${now}, ${now})
+    `.unprepared
   })
 })
 
