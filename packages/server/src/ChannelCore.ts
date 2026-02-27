@@ -96,6 +96,8 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             activeSessionId: sessionId,
             activeConversationId: conversationId,
             capabilities: params.capabilities,
+            modelOverride: null,
+            generationConfigOverride: null,
             createdAt: now
           })
         })
@@ -105,6 +107,12 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         readonly content: string
         readonly contentBlocks: ReadonlyArray<ContentBlock>
         readonly userId: string
+        readonly modelOverride?: { readonly provider: string; readonly modelId: string } | undefined
+        readonly generationConfigOverride?: {
+          readonly temperature?: number
+          readonly maxOutputTokens?: number
+          readonly topP?: number
+        } | undefined
       }) =>
         Effect.gen(function*() {
           const channel = yield* channelPort.get(params.channelId)
@@ -115,7 +123,17 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           const turnId = `turn:${crypto.randomUUID()}`
           const now = yield* DateTime.now
 
-          return {
+          // Precedence: per-request > session-level (channel) > profile default (resolved in workflow)
+          const effectiveModelOverride = params.modelOverride ?? (channel.modelOverride ?? undefined)
+
+          // Merge generation config field-by-field: request > session > (profile resolved in workflow)
+          const requestGen = params.generationConfigOverride
+          const sessionGen = channel.generationConfigOverride
+          const effectiveGenerationConfig = (requestGen || sessionGen)
+            ? { ...(sessionGen ?? {}), ...(requestGen ?? {}) }
+            : undefined
+
+          const payload: ProcessTurnPayload = {
             turnId,
             sessionId: channel.activeSessionId,
             conversationId: channel.activeConversationId,
@@ -124,8 +142,12 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             content: params.content,
             contentBlocks: params.contentBlocks,
             createdAt: now,
-            inputTokens: estimateInputTokens(params.content, params.contentBlocks)
-          } satisfies ProcessTurnPayload
+            inputTokens: estimateInputTokens(params.content, params.contentBlocks),
+            ...(effectiveModelOverride ? { modelOverride: effectiveModelOverride } : {}),
+            ...(effectiveGenerationConfig ? { generationConfigOverride: effectiveGenerationConfig } : {})
+          }
+
+          return payload
         })
 
       const canUseSessionClient = typeof (sharding as { makeClient?: unknown }).makeClient === "function"
@@ -185,11 +207,32 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           return yield* sessionTurnPort.listTurns(channel.activeSessionId)
         })
 
+      const setModelPreference = (params: {
+        readonly channelId: ChannelId
+        readonly modelOverride?: { readonly provider: string; readonly modelId: string } | null | undefined
+        readonly generationConfigOverride?: {
+          readonly temperature?: number
+          readonly maxOutputTokens?: number
+          readonly topP?: number
+        } | null | undefined
+      }) =>
+        Effect.gen(function*() {
+          const channel = yield* channelPort.get(params.channelId)
+          if (channel === null) {
+            return yield* new ChannelNotFound({ channelId: params.channelId })
+          }
+          const update: Record<string, unknown> = {}
+          if ("modelOverride" in params) update.modelOverride = params.modelOverride ?? null
+          if ("generationConfigOverride" in params) update.generationConfigOverride = params.generationConfigOverride ?? null
+          yield* channelPort.updateModelPreference(params.channelId, update as any)
+        })
+
       return {
         initializeChannel,
         buildTurnPayload,
         processTurn,
-        getHistory
+        getHistory,
+        setModelPreference
       } as const
     })
   }
@@ -210,6 +253,12 @@ export type ChannelCoreService = {
     readonly content: string
     readonly contentBlocks: ReadonlyArray<ContentBlock>
     readonly userId: string
+    readonly modelOverride?: { readonly provider: string; readonly modelId: string } | undefined
+    readonly generationConfigOverride?: {
+      readonly temperature?: number
+      readonly maxOutputTokens?: number
+      readonly topP?: number
+    } | undefined
   }) => Effect.Effect<ProcessTurnPayload, ChannelNotFound>
 
   readonly processTurn: (
@@ -219,6 +268,16 @@ export type ChannelCoreService = {
   readonly getHistory: (
     channelId: ChannelId
   ) => Effect.Effect<ReadonlyArray<TurnRecord>, ChannelNotFound>
+
+  readonly setModelPreference: (params: {
+    readonly channelId: ChannelId
+    readonly modelOverride?: { readonly provider: string; readonly modelId: string } | null | undefined
+    readonly generationConfigOverride?: {
+      readonly temperature?: number
+      readonly maxOutputTokens?: number
+      readonly topP?: number
+    } | null | undefined
+  }) => Effect.Effect<void, ChannelNotFound>
 }
 
 const estimateInputTokens = (

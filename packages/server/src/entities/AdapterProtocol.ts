@@ -4,6 +4,7 @@
  * Both CLIAdapterEntity and WebChatAdapterEntity consume these RPCs so that
  * any client can talk to any adapter through a single, consistent contract.
  */
+import { AiProviderName } from "@template/domain/config"
 import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
 import { TurnRecord } from "@template/domain/ports"
@@ -17,6 +18,17 @@ import { TurnProcessingError } from "../turn/TurnProcessingWorkflow.js"
 // Shared schemas
 // ---------------------------------------------------------------------------
 
+const ModelOverrideFields = Schema.Struct({
+  provider: AiProviderName,
+  modelId: Schema.String
+})
+
+const GenerationConfigOverrideFields = Schema.Struct({
+  temperature: Schema.optionalKey(Schema.Number),
+  maxOutputTokens: Schema.optionalKey(Schema.Number),
+  topP: Schema.optionalKey(Schema.Number)
+})
+
 /** Status snapshot returned by `GetStatusRpc`. */
 export const ChannelStatusSchema = Schema.Struct({
   channelId: Schema.String,
@@ -24,6 +36,8 @@ export const ChannelStatusSchema = Schema.Struct({
   capabilities: Schema.Array(ChannelCapability),
   activeSessionId: Schema.String,
   activeConversationId: Schema.String,
+  modelOverride: Schema.Union([ModelOverrideFields, Schema.Null]),
+  generationConfigOverride: Schema.Union([GenerationConfigOverrideFields, Schema.Null]),
   createdAt: Schema.DateTimeUtcFromString
 })
 
@@ -54,7 +68,9 @@ export const InitializeRpc = Rpc.make("initialize", {
 export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
   payload: {
     content: Schema.String,
-    userId: Schema.String
+    userId: Schema.String,
+    modelOverride: Schema.optionalKey(ModelOverrideFields),
+    generationConfigOverride: Schema.optionalKey(GenerationConfigOverrideFields)
   },
   success: TurnStreamEvent,
   error: Schema.Union([ChannelNotFound, TurnProcessingError]),
@@ -76,5 +92,14 @@ export const GetHistoryRpc = Rpc.make("getHistory", {
 export const GetStatusRpc = Rpc.make("getStatus", {
   payload: {},
   success: ChannelStatusSchema,
+  error: ChannelNotFound
+})
+
+export const SetModelPreferenceRpc = Rpc.make("setModelPreference", {
+  payload: {
+    modelOverride: Schema.optionalKey(Schema.Union([ModelOverrideFields, Schema.Null])),
+    generationConfigOverride: Schema.optionalKey(Schema.Union([GenerationConfigOverrideFields, Schema.Null]))
+  },
+  success: Schema.Void,
   error: ChannelNotFound
 })

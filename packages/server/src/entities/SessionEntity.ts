@@ -30,7 +30,16 @@ const ProcessTurnPayloadFields = {
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
   createdAt: Schema.DateTimeUtcFromString,
-  inputTokens: Schema.Number
+  inputTokens: Schema.Number,
+  modelOverride: Schema.optionalKey(Schema.Struct({
+    provider: Schema.String,
+    modelId: Schema.String
+  })),
+  generationConfigOverride: Schema.optionalKey(Schema.Struct({
+    temperature: Schema.optionalKey(Schema.Number),
+    maxOutputTokens: Schema.optionalKey(Schema.Number),
+    topP: Schema.optionalKey(Schema.Number)
+  }))
 } as const
 
 // NOTE: stream + Persisted is broken when success schema contains Transform

@@ -11,6 +11,7 @@
  *   4. Client sends: {"type":"message","content":"hello","threadId":"optional"}
  *   5. Server streams: turn events as JSON frames
  */
+import { AiProviderName } from "@template/domain/config"
 import { TurnFailedEvent } from "@template/domain/events"
 import type { TurnStreamEvent } from "@template/domain/events"
 import { Cause, Effect, Option, Schema, Stream } from "effect"
@@ -33,7 +34,16 @@ const InitFrameSchema = Schema.Struct({
 const MessageFrameSchema = Schema.Struct({
   type: Schema.Literal("message"),
   content: Schema.String,
-  threadId: Schema.optional(Schema.String)
+  threadId: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.Struct({
+    provider: AiProviderName,
+    modelId: Schema.String
+  })),
+  generationConfig: Schema.optional(Schema.Struct({
+    temperature: Schema.optionalKey(Schema.Number),
+    maxOutputTokens: Schema.optionalKey(Schema.Number),
+    topP: Schema.optionalKey(Schema.Number)
+  }))
 })
 
 const ClientFrameSchema = Schema.Union([InitFrameSchema, MessageFrameSchema])
@@ -81,6 +91,12 @@ interface MessageFrame {
   readonly type: "message"
   readonly content: string
   readonly threadId: string | undefined
+  readonly model: { readonly provider: "anthropic" | "openai" | "openrouter" | "google"; readonly modelId: string } | undefined
+  readonly generationConfig: {
+    readonly temperature?: number
+    readonly maxOutputTokens?: number
+    readonly topP?: number
+  } | undefined
 }
 
 export type ClientFrame = InitFrame | MessageFrame
@@ -101,7 +117,9 @@ export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
   return {
     type: "message" as const,
     content: frame.content,
-    threadId: frame.threadId
+    threadId: frame.threadId,
+    model: frame.model,
+    generationConfig: frame.generationConfig
   }
 }
 
@@ -181,7 +199,12 @@ const wsChat = HttpRouter.add(
             )
           }
           const client = makeClient(channelId)
-          return client.receiveMessage({ content: frame.content, userId }).pipe(
+          return client.receiveMessage({
+            content: frame.content,
+            userId,
+            ...frame.model ? { modelOverride: frame.model } : {},
+            ...frame.generationConfig ? { generationConfigOverride: frame.generationConfig } : {}
+          }).pipe(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
               const failedEvent = new TurnFailedEvent({

@@ -42,6 +42,7 @@ import type {
   SensitivityLevel,
   ToolSourceKind
 } from "./status.js"
+import type { AiProviderName } from "./config.js"
 import { AgentRole, ModelFinishReason } from "./status.js"
 
 export const Instant = Schema.DateTimeUtc
@@ -433,12 +434,25 @@ export interface ChannelRecord {
   readonly activeSessionId: SessionId
   readonly activeConversationId: ConversationId
   readonly capabilities: ReadonlyArray<ChannelCapability>
+  readonly modelOverride: { readonly provider: AiProviderName; readonly modelId: string } | null
+  readonly generationConfigOverride: {
+    readonly temperature?: number
+    readonly maxOutputTokens?: number
+    readonly topP?: number
+  } | null
   readonly createdAt: Instant
 }
 
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
+  readonly updateModelPreference: (
+    channelId: ChannelId,
+    update: {
+      readonly modelOverride?: ChannelRecord["modelOverride"]
+      readonly generationConfigOverride?: ChannelRecord["generationConfigOverride"]
+    }
+  ) => Effect.Effect<void>
 }
 
 export interface IntegrationPort {

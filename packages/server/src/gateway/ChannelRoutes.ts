@@ -1,3 +1,4 @@
+import { AiProviderName } from "@template/domain/config"
 import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
 import { ChannelType } from "@template/domain/status"
 import { Effect, Layer, Option, Schema, Stream } from "effect"
@@ -31,7 +32,16 @@ const InitializeChannelRequest = Schema.Struct({
 })
 
 const SendMessageRequest = Schema.Struct({
-  content: Schema.String
+  content: Schema.String,
+  model: Schema.optionalKey(Schema.Struct({
+    provider: AiProviderName,
+    modelId: Schema.String
+  })),
+  generationConfig: Schema.optionalKey(Schema.Struct({
+    temperature: Schema.optionalKey(Schema.Number),
+    maxOutputTokens: Schema.optionalKey(Schema.Number),
+    topP: Schema.optionalKey(Schema.Number)
+  }))
 })
 
 const decodeInitializeChannelRequest = Schema.decodeUnknownOption(InitializeChannelRequest)
@@ -167,7 +177,9 @@ const sendMessage = HttpRouter.add(
 
       const stream = client.receiveMessage({
         content: decodedBody.value.content,
-        userId: "user:cli:local"
+        userId: "user:cli:local",
+        ...decodedBody.value.model ? { modelOverride: decodedBody.value.model } : {},
+        ...decodedBody.value.generationConfig ? { generationConfigOverride: decodedBody.value.generationConfig } : {}
       }).pipe(
         Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
         Stream.map(toSseEvent),
@@ -243,6 +255,57 @@ const getStatus = HttpRouter.add(
     )
 )
 
+const SetModelPreferenceRequest = Schema.Struct({
+  model: Schema.optionalKey(Schema.Union([
+    Schema.Struct({ provider: AiProviderName, modelId: Schema.String }),
+    Schema.Null
+  ])),
+  generationConfig: Schema.optionalKey(Schema.Union([
+    Schema.Struct({
+      temperature: Schema.optionalKey(Schema.Number),
+      maxOutputTokens: Schema.optionalKey(Schema.Number),
+      topP: Schema.optionalKey(Schema.Number)
+    }),
+    Schema.Null
+  ]))
+})
+const decodeSetModelPreferenceRequest = Schema.decodeUnknownOption(SetModelPreferenceRequest)
+
+const setModelPreference = HttpRouter.add(
+  "PATCH",
+  "/channels/:channelId/model",
+  (request) =>
+    Effect.gen(function*() {
+      const makeClient = yield* CLIAdapterEntity.client
+      const channelId = extractParam(request.url, 1)
+      const rawBody = yield* request.json
+      const decodedBody = decodeSetModelPreferenceRequest(rawBody)
+      if (Option.isNone(decodedBody)) {
+        return yield* badRequest("Invalid model preference payload")
+      }
+
+      const client = makeClient(channelId)
+      yield* client.setModelPreference({
+        ...(decodedBody.value.model !== undefined ? { modelOverride: decodedBody.value.model } : {}),
+        ...(decodedBody.value.generationConfig !== undefined ? { generationConfigOverride: decodedBody.value.generationConfig } : {})
+      })
+      return yield* HttpServerResponse.json({ ok: true })
+    }).pipe(
+      Effect.withSpan("ChannelRoutes.setModelPreference"),
+      Effect.catchTag("ChannelNotFound", (error) =>
+        HttpServerResponse.json(
+          { error: "ChannelNotFound", channelId: error.channelId },
+          { status: 404 }
+        )),
+      Effect.catchCause(() =>
+        HttpServerResponse.json(
+          { error: "InternalServerError" },
+          { status: 500 }
+        )
+      )
+    )
+)
+
 const health = HttpRouter.add(
   "GET",
   "/health",
@@ -254,4 +317,4 @@ const health = HttpRouter.add(
 // ---------------------------------------------------------------------------
 
 export const healthLayer = health // always-on, never gated
-export const layer = Layer.mergeAll(initializeChannel, sendMessage, getHistory, getStatus) // gatable
+export const layer = Layer.mergeAll(initializeChannel, sendMessage, getHistory, getStatus, setModelPreference) // gatable
