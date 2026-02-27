@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react"
 import { channelIdAtom, connectionStatusAtom, isStreamingAtom, messageCountAtom } from "../atoms/session.js"
+import { theme } from "../theme.js"
 
 export function StatusBar() {
   const channelId = useAtomValue(channelIdAtom)
@@ -8,14 +9,13 @@ export function StatusBar() {
   const count = useAtomValue(messageCountAtom)
 
   const shortId = channelId.length > 20 ? `${channelId.slice(0, 20)}...` : channelId
-  const statusColor = status === "connected" ? "green" : status === "error" ? "red" : "yellow"
   const streamLabel = isStreaming ? " | streaming" : ""
 
   return (
-    <box>
+    <box backgroundColor={theme.surface}>
       <text
         content={` ${shortId} | ${status}${streamLabel} | ${count} msgs | ^K palette  ^S sessions  ^M memory  ^C exit `}
-        fg={statusColor}
+        fg={theme.textMuted}
       />
     </box>
   )
