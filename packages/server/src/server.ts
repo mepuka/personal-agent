@@ -213,7 +213,8 @@ const chatPersistenceLayer = ChatPersistence.layer.pipe(
 const toolRegistryLayer = ToolRegistry.layer.pipe(
   Layer.provide(governancePortTagLayer),
   Layer.provide(memoryPortTagLayer),
-  Layer.provide(agentConfigLayer)
+  Layer.provide(agentConfigLayer),
+  Layer.provide(checkpointPortTagLayer)
 )
 
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(

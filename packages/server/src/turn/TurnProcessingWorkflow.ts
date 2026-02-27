@@ -326,7 +326,10 @@ export const layer = TurnProcessingWorkflow.toLayer(
           sessionId: payload.sessionId as SessionId,
           conversationId: payload.conversationId as ConversationId,
           turnId: payload.turnId as TurnId,
-          now: payload.createdAt
+          now: payload.createdAt,
+          channelId: payload.channelId,
+          userId: payload.userId,
+          ...(payload.checkpointId !== undefined ? { checkpointId: payload.checkpointId } : {})
         },
         userPrompt,
         maxIterations: maxToolIterations
@@ -439,6 +442,9 @@ const processWithToolLoop = (params: {
     readonly conversationId: ConversationId
     readonly turnId: TurnId
     readonly now: Instant
+    readonly channelId: string
+    readonly checkpointId?: string
+    readonly userId?: string
   }
   readonly userPrompt: string
   readonly maxIterations: number

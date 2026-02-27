@@ -4,6 +4,8 @@ import type {
   AgentId,
   AuditEntryId,
   AuditLogId,
+  ChannelId,
+  CheckpointId,
   ConversationId,
   PolicyId,
   SessionId,
@@ -14,11 +16,11 @@ import type {
 import { toMemoryItemIds } from "@template/domain/memory"
 import type { Instant } from "@template/domain/ports"
 import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
-import { DateTime, Effect, Layer, Match, Schema, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Match, Ref, Schema, ServiceMap } from "effect"
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
-import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
 const DEFAULT_AUDIT_LOG_ID = "auditlog:governance:default:v1" as AuditLogId
@@ -37,6 +39,13 @@ const ToolFailure = Schema.Struct({
   message: Schema.String
 })
 type ToolFailure = typeof ToolFailure.Type
+
+export interface CheckpointSignal {
+  readonly checkpointId: string
+  readonly action: string
+  readonly toolName: string
+  readonly reason: string
+}
 
 const TimeNowTool = Tool.make("time_now", {
   description: "Return the current UTC timestamp as ISO 8601.",
@@ -135,10 +144,14 @@ export interface ToolExecutionContext {
   readonly turnId: TurnId
   readonly now: Instant
   readonly iteration?: number
+  readonly channelId: string
+  readonly checkpointId?: string
+  readonly userId?: string
+  readonly content?: string
 }
 
 export interface ToolRegistryService {
-  readonly makeToolkit: (context: ToolExecutionContext) => Effect.Effect<{
+  readonly makeToolkit: (context: ToolExecutionContext, checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>) => Effect.Effect<{
     readonly toolkit: typeof SafeToolkit
     readonly handlerLayer: SafeToolkitHandlerLayer
   }>
@@ -150,6 +163,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
     make: Effect.gen(function*() {
       const governance = yield* GovernancePortTag
       const memoryPort = yield* MemoryPortTag
+      const checkpointPort = yield* CheckpointPortTag
       const agentConfig = yield* AgentConfig
 
       const persistInvocation = (params: {
@@ -317,7 +331,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         context: ToolExecutionContext,
         toolName: ToolName,
         input: Record<string, unknown>,
-        execute: Effect.Effect<A, ToolFailure>
+        execute: Effect.Effect<A, ToolFailure>,
+        checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>
       ): Effect.Effect<A, ToolFailure> =>
         Effect.gen(function*() {
           const inputJson = canonicalJsonStringify(input)
@@ -328,6 +343,60 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             inputJson
           )
 
+          // --- Approved bypass path ---
+          if (context.checkpointId !== undefined) {
+            const checkpoint = yield* checkpointPort.get(context.checkpointId as CheckpointId).pipe(
+              Effect.catchCause(() =>
+                Effect.succeed(null)
+              )
+            )
+
+            if (checkpoint === null || checkpoint.status !== "Approved") {
+              return yield* Effect.fail<ToolFailure>({
+                errorCode: "CheckpointNotApproved",
+                message: `checkpoint ${context.checkpointId} is not approved (status: ${checkpoint?.status ?? "not found"})`
+              })
+            }
+
+            const payloadHash = yield* makePayloadHash("InvokeTool", toolName, inputJson)
+
+            if (payloadHash !== checkpoint.payloadHash) {
+              return yield* Effect.fail<ToolFailure>({
+                errorCode: "CheckpointPayloadMismatch",
+                message: `payload hash mismatch for checkpoint ${context.checkpointId}`
+              })
+            }
+
+            // Bypass policy/idempotency — execute directly
+            const result = yield* execute.pipe(
+              Effect.tap((r) =>
+                persistInvocation({
+                  context,
+                  toolName,
+                  idempotencyKey,
+                  inputJson,
+                  outputJson: safeJsonStringify(r),
+                  decision: "Allow",
+                  complianceStatus: "Compliant",
+                  policyId: checkpoint.policyId ?? POLICY_SYSTEM_ERROR,
+                  toolDefinitionId: null,
+                  reason: `checkpoint_approved:${toolName}`
+                })
+              ),
+              Effect.tap(() =>
+                checkpointPort.transition(
+                  context.checkpointId as CheckpointId,
+                  "Consumed",
+                  context.userId ?? "system",
+                  context.now
+                ).pipe(Effect.catchCause(() => Effect.void))
+              )
+            )
+
+            return result
+          }
+
+          // --- Standard idempotency check ---
           const existing = yield* governance.findToolInvocationByIdempotencyKey(idempotencyKey)
           if (existing !== null) {
             return yield* replayStoredInvocation(existing.outputJson)
@@ -372,16 +441,51 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               })
             ),
             Match.when("RequireApproval", () =>
-              failWithRecordedInvocation({
-                context,
-                toolName,
-                idempotencyKey,
-                inputJson,
-                decision: "RequireApproval",
-                policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
-                toolDefinitionId: policy.toolDefinitionId,
-                reason: `tool_requires_approval:${toolName}`,
-                failure: { errorCode: "RequiresApproval", message: policy.reason }
+              Effect.gen(function*() {
+                const payloadHash = yield* makePayloadHash("InvokeTool", toolName, inputJson)
+                const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
+
+                yield* checkpointPort.create({
+                  checkpointId: newCheckpointId,
+                  agentId: context.agentId,
+                  sessionId: context.sessionId,
+                  channelId: context.channelId as ChannelId,
+                  turnId: context.turnId,
+                  action: "InvokeTool",
+                  policyId: policy.policyId,
+                  reason: policy.reason,
+                  payloadJson: inputJson,
+                  payloadHash,
+                  status: "Pending",
+                  requestedAt: context.now,
+                  decidedAt: null,
+                  decidedBy: null,
+                  expiresAt: null
+                })
+
+                if (checkpointSignalsRef !== undefined) {
+                  yield* Ref.update(checkpointSignalsRef, (signals) => [
+                    ...signals,
+                    {
+                      checkpointId: newCheckpointId,
+                      action: "InvokeTool",
+                      toolName: toolName as string,
+                      reason: policy.reason
+                    }
+                  ])
+                }
+
+                return yield* failWithRecordedInvocation({
+                  context,
+                  toolName,
+                  idempotencyKey,
+                  inputJson,
+                  decision: "RequireApproval",
+                  policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
+                  toolDefinitionId: policy.toolDefinitionId,
+                  reason: `tool_requires_approval:${toolName}`,
+                  failure: { errorCode: "RequiresApproval", message: policy.reason }
+                })
               })
             ),
             Match.when("Allow", () => Effect.void),
@@ -457,7 +561,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           )
         }) as Effect.Effect<A, ToolFailure>
 
-      const makeToolkit: ToolRegistryService["makeToolkit"] = (context) =>
+      const makeToolkit: ToolRegistryService["makeToolkit"] = (context, checkpointSignalsRef) =>
         Effect.gen(function*() {
           const profile = yield* agentConfig.getAgent(context.agentId as string).pipe(Effect.orDie)
           const memoryLimits = profile.runtime.memory
@@ -473,7 +577,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   {},
                   Effect.succeed({
                     nowIso: DateTime.formatIso(context.now)
-                  })
+                  }),
+                  checkpointSignalsRef
                 ),
               "math_calculate": ({ expression }) => {
                 const result = safeCalculate(expression)
@@ -486,7 +591,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       errorCode: "InvalidExpression",
                       message: "Expression must contain only numbers and arithmetic operators."
                     })
-                    : Effect.succeed({ result })
+                    : Effect.succeed({ result }),
+                  checkpointSignalsRef
                 )
               },
               "echo_text": ({ text }) =>
@@ -494,7 +600,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   context,
                   TOOL_NAMES.echo_text,
                   { text },
-                  Effect.succeed({ text })
+                  Effect.succeed({ text }),
+                  checkpointSignalsRef
                 ),
               "store_memory": ({ content, tags, scope }) =>
                 runGovernedTool(
@@ -537,7 +644,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                         stored: true
                       } as const
                     })
-                  })
+                  }),
+                  checkpointSignalsRef
                 ),
               "retrieve_memories": ({ query, limit }) =>
                 runGovernedTool(
@@ -566,7 +674,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                         }))
                       }))
                     )
-                  })
+                  }),
+                  checkpointSignalsRef
                 ),
               "forget_memories": ({ memoryIds }) =>
                 runGovernedTool(
@@ -596,7 +705,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       })
                       return { forgotten } as const
                     })
-                  })
+                  }),
+                  checkpointSignalsRef
                 )
             })
           ) as SafeToolkitHandlerLayer
@@ -663,6 +773,23 @@ const makeIdempotencyKey = (
     Effect.map((buffer) => {
       const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
       return `tool-idem:${hex}`
+    })
+  )
+
+const makePayloadHash = (
+  action: string,
+  toolName: ToolName,
+  canonicalInputJson: string
+): Effect.Effect<string> =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${action}:${toolName}:${canonicalInputJson}`)
+    )
+  ).pipe(
+    Effect.map((buffer) => {
+      const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
+      return hex
     })
   )
 

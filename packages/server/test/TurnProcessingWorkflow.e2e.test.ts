@@ -3,6 +3,7 @@ import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domai
 import type {
   AgentState,
   AgentStatePort,
+  CheckpointPort,
   GovernancePort,
   Instant,
   MemoryPort,
@@ -26,7 +27,8 @@ import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { AgentStatePortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
+import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
@@ -501,6 +503,16 @@ const makeTurnProcessingLayer = (
   const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
+  const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+
+  const checkpointPortTagLayer = Layer.effect(
+    CheckpointPortTag,
+    Effect.gen(function*() {
+      return (yield* CheckpointPortSqlite) as CheckpointPort
+    })
+  ).pipe(Layer.provide(checkpointPortSqliteLayer))
 
   const memoryPortTagLayer = Layer.effect(
     MemoryPortTag,
@@ -571,7 +583,10 @@ const makeTurnProcessingLayer = (
   )
 
   const toolRegistryLayer = ToolRegistry.layer.pipe(
-    Layer.provide(governanceTagLayer)
+    Layer.provide(governanceTagLayer),
+    Layer.provide(memoryPortTagLayer),
+    Layer.provide(agentConfigLayer),
+    Layer.provide(checkpointPortTagLayer)
   )
 
   const clusterLayer = SingleRunner.layer().pipe(
@@ -655,6 +670,7 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
   conversationId: overrides.conversationId ?? "conversation:default",
   agentId: overrides.agentId ?? "agent:default",
   userId: overrides.userId ?? "user:test",
+  channelId: overrides.channelId ?? "channel:test",
   content: overrides.content ?? "hello",
   contentBlocks: overrides.contentBlocks ?? [{ contentBlockType: "TextBlock", text: "hello" }],
   createdAt: overrides.createdAt ?? instant("2026-02-24T12:00:00.000Z"),

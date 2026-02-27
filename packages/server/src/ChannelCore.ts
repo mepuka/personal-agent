@@ -139,6 +139,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             conversationId: channel.activeConversationId,
             agentId: channel.agentId,
             userId: params.userId,
+            channelId: params.channelId,
             content: params.content,
             contentBlocks: params.contentBlocks,
             createdAt: now,
