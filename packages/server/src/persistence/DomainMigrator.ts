@@ -232,6 +232,246 @@ const loader = SqliteMigrator.fromRecord({
       CREATE UNIQUE INDEX IF NOT EXISTS integrations_agent_service_idx
       ON integrations (agent_id, service_id)
     `.unprepared
+  }),
+  "0006_governance_tool_invocations": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS tool_invocations (
+        tool_invocation_id TEXT PRIMARY KEY,
+        audit_entry_id TEXT NOT NULL UNIQUE,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        output_json TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ('Allow', 'Deny', 'RequireApproval')),
+        compliance_status TEXT NOT NULL CHECK (compliance_status IN ('Compliant', 'NonCompliant')),
+        policy_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        invoked_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS tool_invocations_session_idx
+      ON tool_invocations (session_id, invoked_at, tool_invocation_id)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS tool_invocations_agent_idx
+      ON tool_invocations (agent_id, invoked_at, tool_invocation_id)
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS tool_quota_counters (
+        agent_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        window_start TEXT NOT NULL,
+        used_count INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, tool_name, window_start)
+      )
+    `.unprepared
+  }),
+  "0007_governance_policy_backbone": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const now = new Date().toISOString()
+    const defaultAuditLogId = "auditlog:governance:default:v1"
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS tool_definitions (
+        tool_definition_id TEXT PRIMARY KEY,
+        tool_name TEXT NOT NULL UNIQUE,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('BuiltIn', 'Integration')),
+        integration_id TEXT,
+        is_safe_standard INTEGER NOT NULL CHECK (is_safe_standard IN (0, 1)),
+        created_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS permission_policies (
+        policy_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK (action IN ('InvokeTool')),
+        permission_mode TEXT CHECK (permission_mode IN ('Permissive', 'Standard', 'Restrictive')),
+        selector TEXT NOT NULL CHECK (selector IN ('AllTools', 'SafeStandardTools', 'ExplicitToolList', 'UnknownTool', 'MissingAgent', 'InvalidRequest', 'GovernanceError')),
+        decision TEXT NOT NULL CHECK (decision IN ('Allow', 'Deny', 'RequireApproval')),
+        reason_template TEXT NOT NULL,
+        precedence INTEGER NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS permission_policy_tools (
+        policy_id TEXT NOT NULL,
+        tool_definition_id TEXT NOT NULL,
+        PRIMARY KEY (policy_id, tool_definition_id)
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        audit_log_id TEXT PRIMARY KEY,
+        log_name TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      ALTER TABLE tool_invocations
+      ADD COLUMN tool_definition_id TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE tool_invocations
+      ADD COLUMN audit_log_id TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE audit_entries
+      ADD COLUMN audit_log_id TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE audit_entries
+      ADD COLUMN tool_invocation_id TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS tool_invocations_tool_definition_idx
+      ON tool_invocations (tool_definition_id, invoked_at, tool_invocation_id)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS audit_entries_tool_invocation_idx
+      ON audit_entries (tool_invocation_id)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS permission_policies_mode_idx
+      ON permission_policies (action, permission_mode, active, precedence)
+    `.unprepared
+
+    yield* sql`
+      INSERT OR IGNORE INTO tool_definitions (
+        tool_definition_id,
+        tool_name,
+        source_kind,
+        integration_id,
+        is_safe_standard,
+        created_at
+      ) VALUES
+        ('tooldef:time_now:v1', 'time_now', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:math_calculate:v1', 'math_calculate', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:echo_text:v1', 'echo_text', 'BuiltIn', NULL, 1, ${now})
+    `.unprepared
+
+    yield* sql`
+      INSERT OR IGNORE INTO audit_logs (
+        audit_log_id,
+        log_name,
+        created_at
+      ) VALUES (
+        ${defaultAuditLogId},
+        ${"Governance Default Audit Log"},
+        ${now}
+      )
+    `.unprepared
+
+    yield* sql`
+      INSERT OR IGNORE INTO permission_policies (
+        policy_id,
+        action,
+        permission_mode,
+        selector,
+        decision,
+        reason_template,
+        precedence,
+        active,
+        created_at,
+        updated_at
+      ) VALUES
+        ('policy:invoke_tool:permissive:v1', 'InvokeTool', 'Permissive', 'AllTools', 'Allow', 'invoke_tool_permissive_allow', 10, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:allow_safe:v1', 'InvokeTool', 'Standard', 'SafeStandardTools', 'Allow', 'invoke_tool_standard_allow_safe', 10, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:deny_other:v1', 'InvokeTool', 'Standard', 'AllTools', 'Deny', 'invoke_tool_standard_deny_non_safe', 20, 1, ${now}, ${now}),
+        ('policy:invoke_tool:restrictive:v1', 'InvokeTool', 'Restrictive', 'AllTools', 'RequireApproval', 'invoke_tool_restrictive_requires_approval', 10, 1, ${now}, ${now}),
+        ('policy:invoke_tool:missing_agent:v1', 'InvokeTool', NULL, 'MissingAgent', 'Deny', 'missing_agent_state', 10, 1, ${now}, ${now}),
+        ('policy:invoke_tool:invalid_request:v1', 'InvokeTool', NULL, 'InvalidRequest', 'Deny', 'invalid_tool_name', 11, 1, ${now}, ${now}),
+        ('policy:invoke_tool:unknown_tool:v1', 'InvokeTool', NULL, 'UnknownTool', 'Deny', 'unknown_tool_definition', 12, 1, ${now}, ${now}),
+        ('policy:invoke_tool:system_error:v1', 'InvokeTool', NULL, 'GovernanceError', 'Deny', 'governance_system_error', 13, 1, ${now}, ${now})
+    `.unprepared
+
+    yield* sql`
+      UPDATE tool_invocations
+      SET tool_definition_id = (
+        SELECT td.tool_definition_id
+        FROM tool_definitions td
+        WHERE td.tool_name = tool_invocations.tool_name
+        LIMIT 1
+      )
+      WHERE tool_definition_id IS NULL
+    `.unprepared
+
+    yield* sql`
+      INSERT OR IGNORE INTO tool_definitions (
+        tool_definition_id,
+        tool_name,
+        source_kind,
+        integration_id,
+        is_safe_standard,
+        created_at
+      )
+      SELECT
+        'tooldef:unknown:' || replace(lower(ti.tool_name), ' ', '_') || ':v1',
+        ti.tool_name,
+        'BuiltIn',
+        NULL,
+        0,
+        ${now}
+      FROM tool_invocations ti
+      LEFT JOIN tool_definitions td ON td.tool_name = ti.tool_name
+      WHERE td.tool_name IS NULL
+    `.unprepared
+
+    yield* sql`
+      UPDATE tool_invocations
+      SET tool_definition_id = (
+        SELECT td.tool_definition_id
+        FROM tool_definitions td
+        WHERE td.tool_name = tool_invocations.tool_name
+        LIMIT 1
+      )
+      WHERE tool_definition_id IS NULL
+    `.unprepared
+
+    yield* sql`
+      UPDATE tool_invocations
+      SET audit_log_id = ${defaultAuditLogId}
+      WHERE audit_log_id IS NULL
+    `.unprepared
+
+    yield* sql`
+      UPDATE audit_entries
+      SET audit_log_id = ${defaultAuditLogId}
+      WHERE audit_log_id IS NULL
+    `.unprepared
+
+    yield* sql`
+      UPDATE audit_entries
+      SET tool_invocation_id = (
+        SELECT ti.tool_invocation_id
+        FROM tool_invocations ti
+        WHERE ti.audit_entry_id = audit_entries.audit_entry_id
+        LIMIT 1
+      )
+      WHERE tool_invocation_id IS NULL
+    `.unprepared
   })
 })
 

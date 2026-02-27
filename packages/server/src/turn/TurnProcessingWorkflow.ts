@@ -1,4 +1,4 @@
-import { Cause, Effect, Layer, Ref, Schema } from "effect"
+import { Effect, Layer, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Activity from "effect/unstable/workflow/Activity"
@@ -80,6 +80,7 @@ export type TurnProcessingError = typeof TurnProcessingError.Type
 const PolicyDecisionSchema = Schema.Struct({
   decision: Schema.Literals(["Allow", "Deny", "RequireApproval"]),
   policyId: Schema.Union([Schema.String, Schema.Null]),
+  toolDefinitionId: Schema.Union([Schema.String, Schema.Null]),
   reason: Schema.String
 })
 
@@ -179,12 +180,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const semanticMemories = yield* sqlitePort.retrieve(
       payload.agentId as AgentId,
       { query: payload.content, tier: "SemanticMemory", limit: 20 }
-    ).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Semantic memory retrieval failed, continuing without memories", Cause.die(error)).pipe(
-          Effect.as([] as ReadonlyArray<{ content: string }>)
-        )
-      )
     )
 
     const modelResponse = yield* Effect.gen(function*() {
@@ -198,6 +193,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
       const toolkitBundle = yield* toolRegistry.makeToolkit({
         agentId: payload.agentId as AgentId,
         sessionId: payload.sessionId as SessionId,
+        conversationId: payload.conversationId as ConversationId,
         turnId: payload.turnId as TurnId,
         now: payload.createdAt
       })

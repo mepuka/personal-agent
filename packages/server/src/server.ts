@@ -26,6 +26,7 @@ import { layer as MemoryEntityLayer } from "./entities/MemoryEntity.js"
 import { layer as SessionEntityLayer } from "./entities/SessionEntity.js"
 import { layer as WebChatAdapterEntityLayer } from "./entities/WebChatAdapterEntity.js"
 import { healthLayer as HealthRoutesLayer, layer as ChannelRoutesLayer } from "./gateway/ChannelRoutes.js"
+import { layer as GovernanceRoutesLayer } from "./gateway/GovernanceRoutes.js"
 import { ProxyApi, ProxyHandlersLive } from "./gateway/ProxyGateway.js"
 import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
@@ -339,11 +340,18 @@ const cliRoutesLayer = Layer.unwrap(
   }).pipe(Effect.provide(agentConfigLayer))
 )
 
+const governanceRoutesLayer = GovernanceRoutesLayer.pipe(
+  Layer.provide(agentStatePortTagLayer),
+  Layer.provide(governancePortTagLayer),
+  Layer.provide(sessionTurnPortTagLayer)
+)
+
 const HttpApiAndRoutesLive = Layer.mergeAll(
   ProxyApiLive,
   HealthRoutesLayer,
   cliRoutesLayer,
-  webChatRoutesLayer
+  webChatRoutesLayer,
+  governanceRoutesLayer
 ).pipe(
   Layer.provide(PortsLive),
   Layer.provide(clusterLayer)
@@ -364,6 +372,11 @@ const HttpLive = HttpRouter.serve(
 )
 
 Layer.launch(HttpLive).pipe(
-  Effect.provide(Logger.layer([Logger.consoleJson])),
+  Effect.provide(Layer.mergeAll(
+    Logger.layer([Logger.consoleJson]),
+    agentStatePortTagLayer,
+    governancePortTagLayer,
+    sessionTurnPortTagLayer
+  )),
   BunRuntime.runMain
 )

@@ -36,6 +36,15 @@ export type AuditEntryId = typeof AuditEntryId.Type
 export const ToolName = Schema.String.pipe(Schema.brand("ToolName"))
 export type ToolName = typeof ToolName.Type
 
+export const ToolInvocationId = Schema.String.pipe(Schema.brand("ToolInvocationId"))
+export type ToolInvocationId = typeof ToolInvocationId.Type
+
+export const ToolDefinitionId = Schema.String.pipe(Schema.brand("ToolDefinitionId"))
+export type ToolDefinitionId = typeof ToolDefinitionId.Type
+
+export const AuditLogId = Schema.String.pipe(Schema.brand("AuditLogId"))
+export type AuditLogId = typeof AuditLogId.Type
+
 export const ChannelId = Schema.String.pipe(Schema.brand("ChannelId"))
 export type ChannelId = typeof ChannelId.Type
 

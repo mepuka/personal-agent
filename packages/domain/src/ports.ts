@@ -10,6 +10,7 @@ import type {
 import { AgentId, ConversationId, MessageId, SessionId, TurnId } from "./ids.js"
 import type {
   AuditEntryId,
+  AuditLogId,
   ChannelId,
   ExternalServiceId,
   IntegrationId,
@@ -17,6 +18,8 @@ import type {
   PolicyId,
   ScheduledExecutionId,
   ScheduleId,
+  ToolDefinitionId,
+  ToolInvocationId,
   ToolName
 } from "./ids.js"
 import type { ExternalServiceRecord, IntegrationRecord } from "./integration.js"
@@ -24,6 +27,7 @@ import type {
   AuthorizationDecision,
   ChannelCapability,
   ChannelType,
+  ComplianceStatus,
   ConcurrencyPolicy,
   ExecutionOutcome,
   IntegrationStatus,
@@ -32,9 +36,11 @@ import type {
   MemorySource,
   MemoryTier,
   PermissionMode,
+  PolicySelector,
   QuotaPeriod,
   ScheduleStatus,
-  SensitivityLevel
+  SensitivityLevel,
+  ToolSourceKind
 } from "./status.js"
 import { AgentRole, ModelFinishReason } from "./status.js"
 
@@ -168,16 +174,94 @@ export interface PolicyInput {
 export interface PolicyDecision {
   readonly decision: AuthorizationDecision
   readonly policyId: PolicyId | null
+  readonly toolDefinitionId: ToolDefinitionId | null
   readonly reason: string
 }
 
 export interface AuditEntryRecord {
   readonly auditEntryId: AuditEntryId
+  readonly auditLogId?: AuditLogId | null
+  readonly toolInvocationId?: ToolInvocationId | null
   readonly agentId: AgentId
   readonly sessionId: SessionId | null
   readonly decision: AuthorizationDecision
   readonly reason: string
   readonly createdAt: Instant
+}
+
+export interface ToolDefinitionRecord {
+  readonly toolDefinitionId: ToolDefinitionId
+  readonly toolName: ToolName
+  readonly sourceKind: ToolSourceKind
+  readonly integrationId: IntegrationId | null
+  readonly isSafeStandard: boolean
+  readonly createdAt: Instant
+}
+
+export interface PermissionPolicyRecord {
+  readonly policyId: PolicyId
+  readonly action: "InvokeTool"
+  readonly permissionMode: PermissionMode | null
+  readonly selector: PolicySelector
+  readonly decision: AuthorizationDecision
+  readonly reasonTemplate: string
+  readonly precedence: number
+  readonly active: boolean
+  readonly toolDefinitionIds: ReadonlyArray<ToolDefinitionId>
+}
+
+export interface AuditLogRecord {
+  readonly auditLogId: AuditLogId
+  readonly logName: string
+  readonly createdAt: Instant
+}
+
+export interface ToolInvocationRecord {
+  readonly toolInvocationId: ToolInvocationId
+  readonly auditEntryId: AuditEntryId
+  readonly toolDefinitionId: ToolDefinitionId | null
+  readonly auditLogId: AuditLogId
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+  readonly conversationId: ConversationId
+  readonly turnId: TurnId
+  readonly toolName: ToolName
+  readonly inputJson: string
+  readonly outputJson: string
+  readonly decision: AuthorizationDecision
+  readonly complianceStatus: ComplianceStatus
+  readonly policyId: PolicyId
+  readonly reason: string
+  readonly invokedAt: Instant
+  readonly completedAt: Instant
+  readonly policy?: {
+    readonly selector: PolicySelector
+    readonly decision: AuthorizationDecision
+    readonly reasonTemplate: string
+    readonly permissionMode: PermissionMode | null
+    readonly precedence: number
+  } | null
+  readonly tool?: {
+    readonly toolDefinitionId: ToolDefinitionId
+    readonly toolName: ToolName
+    readonly sourceKind: ToolSourceKind
+    readonly isSafeStandard: boolean
+    readonly integrationId: IntegrationId | null
+  } | null
+}
+
+export interface ToolInvocationQuery {
+  readonly limit?: number
+  readonly offset?: number
+  readonly decision?: AuthorizationDecision
+  readonly complianceStatus?: ComplianceStatus
+  readonly policyId?: PolicyId
+  readonly toolName?: ToolName
+}
+
+export interface ToolInvocationSearchResult {
+  readonly items: ReadonlyArray<ToolInvocationRecord>
+  readonly totalCount: number
 }
 
 export interface RecurrencePattern {
@@ -266,6 +350,9 @@ export interface SessionTurnPort {
     sessionId: SessionId,
     deltaTokens: number
   ) => Effect.Effect<void, ContextWindowExceeded | SessionNotFound>
+  readonly getSession: (
+    sessionId: SessionId
+  ) => Effect.Effect<SessionState | null>
   readonly listTurns: (
     sessionId: SessionId
   ) => Effect.Effect<ReadonlyArray<TurnRecord>>
@@ -301,6 +388,21 @@ export interface GovernancePort {
     now: Instant
   ) => Effect.Effect<void, ToolQuotaExceeded>
   readonly writeAudit: (entry: AuditEntryRecord) => Effect.Effect<void>
+  readonly recordToolInvocation: (
+    record: ToolInvocationRecord
+  ) => Effect.Effect<void>
+  readonly recordToolInvocationWithAudit: (input: {
+    readonly invocation: ToolInvocationRecord
+    readonly audit: AuditEntryRecord
+  }) => Effect.Effect<void>
+  readonly listToolInvocationsBySession: (
+    sessionId: SessionId,
+    query: ToolInvocationQuery
+  ) => Effect.Effect<ToolInvocationSearchResult>
+  readonly listPoliciesForAgent: (
+    agentId: AgentId
+  ) => Effect.Effect<ReadonlyArray<PermissionPolicyRecord>>
+  readonly listAuditEntries: () => Effect.Effect<ReadonlyArray<AuditEntryRecord>>
   readonly enforceSandbox: <A, E, R>(
     agentId: AgentId,
     effect: Effect.Effect<A, E, R>

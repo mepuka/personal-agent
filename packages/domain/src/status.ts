@@ -22,6 +22,29 @@ export const AuthorizationDecision = Schema.Literals([
 ])
 export type AuthorizationDecision = typeof AuthorizationDecision.Type
 
+export const ComplianceStatus = Schema.Literals([
+  "Compliant",
+  "NonCompliant"
+])
+export type ComplianceStatus = typeof ComplianceStatus.Type
+
+export const PolicySelector = Schema.Literals([
+  "AllTools",
+  "SafeStandardTools",
+  "ExplicitToolList",
+  "UnknownTool",
+  "MissingAgent",
+  "InvalidRequest",
+  "GovernanceError"
+])
+export type PolicySelector = typeof PolicySelector.Type
+
+export const ToolSourceKind = Schema.Literals([
+  "BuiltIn",
+  "Integration"
+])
+export type ToolSourceKind = typeof ToolSourceKind.Type
+
 export const ContentBlockType = Schema.Literals([
   "TextBlock",
   "ToolUseBlock",

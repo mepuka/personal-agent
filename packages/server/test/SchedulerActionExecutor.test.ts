@@ -55,11 +55,17 @@ describe("SchedulerActionExecutor", () => {
         return Effect.succeed<PolicyDecision>({
           decision: "Allow",
           policyId: null,
+          toolDefinitionId: null,
           reason: "test_capture"
         })
       },
       checkToolQuota: () => Effect.void,
       writeAudit: () => Effect.void,
+      recordToolInvocation: () => Effect.void,
+      recordToolInvocationWithAudit: () => Effect.void,
+      listToolInvocationsBySession: () => Effect.succeed({ items: [], totalCount: 0 }),
+      listPoliciesForAgent: () => Effect.succeed([]),
+      listAuditEntries: () => Effect.succeed([]),
       enforceSandbox: (_agentId, effect) => effect
     } as GovernancePort)
 
@@ -90,11 +96,17 @@ const makeTestLayer = (policyOverrides: Partial<PolicyDecision>) => {
       Effect.succeed<PolicyDecision>({
         decision: "Allow",
         policyId: null,
+        toolDefinitionId: null,
         reason: "test_default_allow",
         ...policyOverrides
       }),
     checkToolQuota: () => Effect.void,
     writeAudit: () => Effect.void,
+    recordToolInvocation: () => Effect.void,
+    recordToolInvocationWithAudit: () => Effect.void,
+    listToolInvocationsBySession: () => Effect.succeed({ items: [], totalCount: 0 }),
+    listPoliciesForAgent: () => Effect.succeed([]),
+    listAuditEntries: () => Effect.succeed([]),
     enforceSandbox: (_agentId, effect) => effect
   } as GovernancePort)
 

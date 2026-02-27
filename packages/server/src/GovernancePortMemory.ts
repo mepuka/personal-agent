@@ -1,6 +1,13 @@
 import { ToolQuotaExceeded } from "@template/domain/errors"
 import type { AgentId, ToolName } from "@template/domain/ids"
-import type { AuditEntryRecord, GovernancePort, Instant, PolicyDecision } from "@template/domain/ports"
+import type {
+  AuditEntryRecord,
+  GovernancePort,
+  Instant,
+  PermissionPolicyRecord,
+  PolicyDecision,
+  ToolInvocationRecord
+} from "@template/domain/ports"
 import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
 
 interface ToolQuotaState {
@@ -12,12 +19,15 @@ interface ToolQuotaState {
 export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemory>()("server/GovernancePortMemory", {
   make: Effect.gen(function*() {
     const auditEntries = yield* Ref.make(Array<AuditEntryRecord>())
+    const toolInvocations = yield* Ref.make(Array<ToolInvocationRecord>())
+    const policies = yield* Ref.make(Array<PermissionPolicyRecord>())
     const toolQuotaState = yield* Ref.make(HashMap.empty<string, ToolQuotaState>())
 
     const evaluatePolicy: GovernancePort["evaluatePolicy"] = (_input) =>
       Effect.succeed<PolicyDecision>({
         decision: "Allow",
         policyId: null,
+        toolDefinitionId: null,
         reason: "mvp_default_allow"
       })
 
@@ -57,12 +67,55 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
     const writeAudit: GovernancePort["writeAudit"] = (entry) =>
       Ref.update(auditEntries, (entries) => [...entries, entry])
 
+    const recordToolInvocation: GovernancePort["recordToolInvocation"] = (record) =>
+      Ref.update(toolInvocations, (entries) => [...entries, record])
+
+    const recordToolInvocationWithAudit: GovernancePort["recordToolInvocationWithAudit"] = (input) =>
+      recordToolInvocation(input.invocation).pipe(
+        Effect.andThen(writeAudit(input.audit))
+      )
+
+    const listToolInvocationsBySession: GovernancePort["listToolInvocationsBySession"] = (sessionId, query) =>
+      Ref.get(toolInvocations).pipe(
+        Effect.map((items) => {
+          const filtered = items
+            .filter((item) => item.sessionId === sessionId)
+            .filter((item) => query.decision === undefined || item.decision === query.decision)
+            .filter((item) => query.complianceStatus === undefined || item.complianceStatus === query.complianceStatus)
+            .filter((item) => query.policyId === undefined || item.policyId === query.policyId)
+            .filter((item) => query.toolName === undefined || item.toolName === query.toolName)
+            .sort((a, b) => {
+              const at = DateTime.toEpochMillis(a.invokedAt)
+              const bt = DateTime.toEpochMillis(b.invokedAt)
+              return at === bt
+                ? a.toolInvocationId.localeCompare(b.toolInvocationId)
+                : at - bt
+            })
+
+          const offset = query.offset ?? 0
+          const limit = query.limit ?? 100
+          return {
+            items: filtered.slice(offset, offset + limit),
+            totalCount: filtered.length
+          } as const
+        })
+      )
+
+    const listPoliciesForAgent: GovernancePort["listPoliciesForAgent"] = (_agentId) => Ref.get(policies)
+
+    const listAuditEntries: GovernancePort["listAuditEntries"] = () => Ref.get(auditEntries)
+
     const enforceSandbox: GovernancePort["enforceSandbox"] = (_agentId, effect) => effect
 
     return {
       evaluatePolicy,
       checkToolQuota,
       writeAudit,
+      recordToolInvocation,
+      recordToolInvocationWithAudit,
+      listToolInvocationsBySession,
+      listPoliciesForAgent,
+      listAuditEntries,
       enforceSandbox
     } as const
   })

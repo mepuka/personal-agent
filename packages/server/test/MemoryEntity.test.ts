@@ -394,6 +394,7 @@ const makeMemoryGovernanceLayers = (
           Effect.succeed({
             decision: forcedDecision,
             policyId: null,
+            toolDefinitionId: null,
             reason: `forced_${forcedDecision.toLowerCase()}`
           })
       } as GovernancePort

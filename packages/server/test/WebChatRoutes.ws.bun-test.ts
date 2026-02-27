@@ -11,7 +11,7 @@ import { BunHttpServer } from "@effect/platform-bun"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentStatePort, ChannelPort, SessionTurnPort } from "@template/domain/ports"
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Schema, Stream } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
 import * as HttpServer from "effect/unstable/http/HttpServer"
@@ -102,6 +102,13 @@ const readMessage = (ws: WebSocket, timeoutMs = 5000): Promise<string> =>
       resolve(typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data))
     }, { once: true })
   })
+
+const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)
+const encodeJsonUnknown = Schema.encodeSync(Schema.UnknownFromJsonString)
+
+const parseJson = (input: string): unknown => decodeJsonUnknown(input)
+
+const stringifyJson = (input: unknown): string => encodeJsonUnknown(input)
 
 // ---------------------------------------------------------------------------
 // Test database helpers
@@ -234,19 +241,19 @@ describe("WebChatRoutes WebSocket", () => {
 
           try {
             const connected = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(connected).type).toBe("connected")
+            expect((parseJson(connected) as { readonly type: string }).type).toBe("connected")
 
-            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            ws.send(stringifyJson({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
             const initialized = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(initialized).type).toBe("initialized")
+            expect((parseJson(initialized) as { readonly type: string }).type).toBe("initialized")
 
-            ws.send(JSON.stringify({ type: "message", content: "hello" }))
+            ws.send(stringifyJson({ type: "message", content: "hello" }))
 
             const events: Array<any> = []
             let done = false
             while (!done) {
               const msg = yield* Effect.promise(() => readMessage(ws))
-              const event = JSON.parse(msg)
+              const event = parseJson(msg) as { readonly type: string }
               events.push(event)
               if (event.type === "turn.completed" || event.type === "turn.failed") done = true
             }
@@ -273,11 +280,11 @@ describe("WebChatRoutes WebSocket", () => {
 
           try {
             const connected = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(connected).type).toBe("connected")
+            expect((parseJson(connected) as { readonly type: string }).type).toBe("connected")
 
             ws.send("this is not valid json {{{")
             const errorMsg = yield* Effect.promise(() => readMessage(ws))
-            const errorData = JSON.parse(errorMsg)
+            const errorData = parseJson(errorMsg) as { readonly type: string; readonly code: string }
             expect(errorData.type).toBe("error")
             expect(errorData.code).toBe("INVALID_FRAME")
           } finally {
@@ -298,11 +305,11 @@ describe("WebChatRoutes WebSocket", () => {
 
           try {
             const connected = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(connected).type).toBe("connected")
+            expect((parseJson(connected) as { readonly type: string }).type).toBe("connected")
 
-            ws.send(JSON.stringify({ type: "message", content: "premature" }))
+            ws.send(stringifyJson({ type: "message", content: "premature" }))
             const errorMsg = yield* Effect.promise(() => readMessage(ws))
-            const errorData = JSON.parse(errorMsg)
+            const errorData = parseJson(errorMsg) as { readonly type: string; readonly code: string }
             expect(errorData.type).toBe("error")
             expect(errorData.code).toBe("NOT_INITIALIZED")
           } finally {
@@ -323,15 +330,15 @@ describe("WebChatRoutes WebSocket", () => {
 
           try {
             const connected = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(connected).type).toBe("connected")
+            expect((parseJson(connected) as { readonly type: string }).type).toBe("connected")
 
-            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            ws.send(stringifyJson({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
             const initialized = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(initialized).type).toBe("initialized")
+            expect((parseJson(initialized) as { readonly type: string }).type).toBe("initialized")
 
-            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            ws.send(stringifyJson({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
             const errorMsg = yield* Effect.promise(() => readMessage(ws))
-            const errorData = JSON.parse(errorMsg)
+            const errorData = parseJson(errorMsg) as { readonly type: string; readonly code: string }
             expect(errorData.type).toBe("error")
             expect(errorData.code).toBe("ALREADY_INITIALIZED")
           } finally {
@@ -358,11 +365,11 @@ describe("WebChatRoutes WebSocket", () => {
             yield* Effect.promise(() => waitForOpen(ws))
 
             const connected = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(connected).type).toBe("connected")
+            expect((parseJson(connected) as { readonly type: string }).type).toBe("connected")
 
-            ws.send(JSON.stringify({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
+            ws.send(stringifyJson({ type: "init", agentId: "agent:bootstrap", userId: "user:web:test" }))
             const initialized = yield* Effect.promise(() => readMessage(ws))
-            expect(JSON.parse(initialized).type).toBe("initialized")
+            expect((parseJson(initialized) as { readonly type: string }).type).toBe("initialized")
 
             ws.close()
             yield* Effect.sleep("200 millis")

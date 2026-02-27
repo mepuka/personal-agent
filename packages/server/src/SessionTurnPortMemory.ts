@@ -67,10 +67,19 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
           })
         )
 
+      const getSession = (sessionId: SessionId) =>
+        Ref.get(sessions).pipe(
+          Effect.map((map) => {
+            const current = HashMap.get(map, sessionId)
+            return Option.isSome(current) ? current.value : null
+          })
+        )
+
       return {
         startSession,
         appendTurn,
         updateContextWindow,
+        getSession,
         listTurns
       } as const
     })
