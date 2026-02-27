@@ -14,7 +14,7 @@ export function StatusBar() {
   return (
     <box>
       <text
-        content={` ${shortId} | ${status}${streamLabel} | ${count} msgs | Ctrl+C to exit `}
+        content={` ${shortId} | ${status}${streamLabel} | ${count} msgs | ^K palette  ^S sessions  ^M memory  ^C exit `}
         fg={statusColor}
       />
     </box>
