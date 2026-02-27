@@ -3,7 +3,7 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react"
 import { Effect, ServiceMap } from "effect"
 import * as React from "react"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
-import { useKeyboard } from "@opentui/react"
+import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { channelIdAtom, connectionStatusAtom, messagesAtom, modalAtom } from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
@@ -11,11 +11,11 @@ import { ModalLayer } from "./components/ModalLayer.js"
 import { StatusBar } from "./components/StatusBar.js"
 import { ToolPane } from "./components/ToolPane.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
+import { theme } from "./theme.js"
 import type { ChatMessage } from "./types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
-/** Focus targets for Tab cycling */
 type FocusTarget = "input" | "tools"
 
 export function App({ client }: { readonly client: ChatClientShape }) {
@@ -23,14 +23,16 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   const sendMessage = useSendMessage(client)
   const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
   const activeModal = useAtomValue(modalAtom)
+  const { width } = useTerminalDimensions()
+  const inputRef = React.useRef(null)
 
-  // Global keyboard handler
+  const showToolPane = width >= 80
+
   useKeyboard((key: { name: string; ctrl: boolean }) => {
     if (key.ctrl && key.name === "c") {
       process.exit(0)
     }
 
-    // Modal keybindings
     if (key.name === "escape" && activeModal !== null) {
       registry.set(modalAtom, null)
       return
@@ -43,7 +45,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       registry.set(modalAtom, "session-picker")
       return
     }
-    // Ctrl+, may not be detectable in terminals — use Ctrl+P as fallback for settings
     if (key.ctrl && key.name === ",") {
       registry.set(modalAtom, "settings")
       return
@@ -53,7 +54,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       return
     }
 
-    // Tab focus cycling — only when no modal is open
     if (key.name === "tab" && activeModal === null) {
       setFocusTarget((prev) => (prev === "input" ? "tools" : "input"))
     }
@@ -63,7 +63,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     registry.set(modalAtom, null)
   }, [registry])
 
-  // Initialize channel on mount
   React.useEffect(() => {
     const chId = `channel:${crypto.randomUUID()}`
     registry.set(channelIdAtom, chId)
@@ -96,12 +95,18 @@ export function App({ client }: { readonly client: ChatClientShape }) {
 
   return (
     <ModalLayer activeModal={activeModal} onClose={closeModal}>
-      <box flexDirection="column" flexGrow={1}>
+      <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
         <box flexDirection="row" flexGrow={1}>
           <ChatPane />
-          <ToolPane focused={focusTarget === "tools" && activeModal === null} />
+          {showToolPane && (
+            <ToolPane focused={focusTarget === "tools" && activeModal === null} />
+          )}
         </box>
-        <InputBar onSubmit={sendMessage} focused={focusTarget === "input" && activeModal === null} />
+        <InputBar
+          onSubmit={sendMessage}
+          focused={focusTarget === "input" && activeModal === null}
+          inputRef={inputRef}
+        />
         <StatusBar />
       </box>
     </ModalLayer>
