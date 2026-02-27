@@ -591,7 +591,16 @@ const loader = SqliteMigrator.fromRecord({
       )
     `.unprepared
 
-    yield* sql`INSERT INTO permission_policies SELECT * FROM permission_policies_backup`.unprepared
+    yield* sql`
+      INSERT INTO permission_policies (
+        policy_id, action, permission_mode, selector, decision,
+        reason_template, precedence, active, created_at, updated_at
+      )
+      SELECT
+        policy_id, action, permission_mode, selector, decision,
+        reason_template, precedence, active, created_at, updated_at
+      FROM permission_policies_backup
+    `.unprepared
 
     yield* sql`DROP TABLE permission_policies_backup`.unprepared
 

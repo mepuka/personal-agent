@@ -4,7 +4,7 @@ import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
 import type { AgentState, CheckpointRecord, ContentBlock, TurnRecord } from "@template/domain/ports"
 import type { ChannelCapability, ChannelType } from "@template/domain/status"
-import { Cause, DateTime, Effect, Layer, ServiceMap, Stream } from "effect"
+import { Cause, DateTime, Effect, Layer, Schema, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
 import { AgentConfig } from "./ai/AgentConfig.js"
@@ -266,6 +266,26 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             return { ok: true as const, stream: null }
           }
 
+          // Restore original user content from checkpoint payload
+          const ReplayPayloadSchema = Schema.Struct({
+            content: Schema.optionalKey(Schema.String),
+            contentBlocks: Schema.optionalKey(Schema.Array(Schema.Unknown))
+          })
+          const decodeReplayPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+          const decodeReplayPayload = Schema.decodeUnknownOption(ReplayPayloadSchema)
+          let replayContent = ""
+          let replayContentBlocks: ReadonlyArray<ContentBlock> = []
+          if (checkpoint.payloadJson) {
+            const parsed = decodeReplayPayloadJson(checkpoint.payloadJson)
+            if (parsed._tag === "Some") {
+              const decoded = decodeReplayPayload(parsed.value)
+              if (decoded._tag === "Some") {
+                replayContent = decoded.value.content ?? ""
+                replayContentBlocks = (decoded.value.contentBlocks ?? []) as ReadonlyArray<ContentBlock>
+              }
+            }
+          }
+
           const replayTurnId = `turn:replay:${crypto.randomUUID()}`
           const replayPayload: ProcessTurnPayload = {
             turnId: replayTurnId,
@@ -274,10 +294,10 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             agentId: checkpoint.agentId,
             userId: params.decidedBy,
             channelId: checkpoint.channelId,
-            content: "", // replay doesn't carry new content
-            contentBlocks: [],
+            content: replayContent,
+            contentBlocks: replayContentBlocks,
             createdAt: now,
-            inputTokens: 0,
+            inputTokens: estimateInputTokens(replayContent, replayContentBlocks),
             checkpointId: params.checkpointId
           }
 

@@ -312,7 +312,7 @@ describe("CheckpointPortSqlite", () => {
       yield* port.create(record)
 
       // get() lazily marks the checkpoint as Expired, so transition
-      // sees a non-Pending status and returns CheckpointAlreadyDecided
+      // detects the Expired status and returns CheckpointExpired (HTTP 410)
       const result = yield* port.transition(
         record.checkpointId,
         "Approved",
@@ -320,7 +320,7 @@ describe("CheckpointPortSqlite", () => {
         instant("2026-02-27T12:05:00.000Z")
       ).pipe(Effect.flip)
 
-      expect(result._tag).toBe("CheckpointAlreadyDecided")
+      expect(result._tag).toBe("CheckpointExpired")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

@@ -262,6 +262,11 @@ export const layer = TurnProcessingWorkflow.toLayer(
         // Checkpoint valid — bypass the gate and continue processing
       } else {
         // First run: create a Pending checkpoint and return non-accepted result
+        // Store original user content so replay can re-run the model with it
+        const checkpointPayload = Schema.encodeSync(Schema.UnknownFromJsonString)({
+          content: payload.content,
+          contentBlocks: payload.contentBlocks
+        })
         const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
         yield* checkpointPort.create({
           checkpointId: newCheckpointId,
@@ -272,7 +277,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
           action: "ReadMemory",
           policyId: policy.policyId as PolicyId | null,
           reason: policy.reason,
-          payloadJson: "",
+          payloadJson: checkpointPayload,
           payloadHash: yield* makePayloadHash("ReadMemory", "", ""),
           status: "Pending",
           requestedAt: payload.createdAt,

@@ -69,6 +69,8 @@ const chat = Command.make("chat", { channel: channelFlag }).pipe(
                   return Console.log("\n")
                 case "turn.failed":
                   return Console.log(`\n[error: ${event.errorCode}: ${event.message}]\n`)
+                default:
+                  return Effect.void
               }
             }),
             Stream.runDrain

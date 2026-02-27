@@ -161,6 +161,10 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             }
           } else {
             // Pending -> Approved|Rejected|Deferred
+            // Check if already expired (lazily marked by get())
+            if (checkpoint.status === "Expired") {
+              return yield* new CheckpointExpired({ checkpointId })
+            }
             if (checkpoint.status !== "Pending") {
               return yield* new CheckpointAlreadyDecided({
                 checkpointId,
@@ -187,7 +191,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             }
           }
 
-          // CAS update
+          // CAS update — verify the row was actually modified
           const fromStatus = toStatus === "Consumed" ? "Approved" : "Pending"
           const decidedAtStr = encodeSqlInstant(decidedAt)
 
@@ -199,6 +203,15 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             WHERE checkpoint_id = ${checkpointId}
               AND status = ${fromStatus}
           `.unprepared.pipe(Effect.orDie)
+
+          // Verify CAS succeeded (another process may have transitioned first)
+          const after = yield* get(checkpointId)
+          if (after === null || after.status !== toStatus) {
+            return yield* new CheckpointAlreadyDecided({
+              checkpointId,
+              currentStatus: after?.status ?? "unknown"
+            })
+          }
         }).pipe(
           Effect.asVoid,
           Effect.tapDefect(Effect.logError)

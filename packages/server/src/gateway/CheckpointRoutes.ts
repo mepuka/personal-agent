@@ -1,4 +1,4 @@
-import type { TurnStreamEvent } from "@template/domain/events"
+import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
 import type { CheckpointId } from "@template/domain/ids"
 import { Effect, Layer, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
@@ -23,6 +23,15 @@ const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   event: event.type,
   id: String(event.sequence),
   data: encodeToJson(event)
+})
+
+const toFailedTurnEvent = (error: unknown): TurnFailedEvent => ({
+  type: "turn.failed",
+  sequence: Number.MAX_SAFE_INTEGER,
+  turnId: "unknown",
+  sessionId: "unknown",
+  errorCode: "ReplayError",
+  message: error instanceof Error ? error.message : "Replay stream failed unexpectedly"
 })
 
 const badRequest = (message: string) =>
@@ -125,6 +134,7 @@ const decideCheckpoint = HttpRouter.add(
 
       // Approved with replay stream — return SSE
       const sseStream = result.stream.pipe(
+        Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
         Stream.map(toSseEvent),
         Stream.pipeThroughChannel(Sse.encode()),
         Stream.encodeText
