@@ -29,6 +29,12 @@ export function MessageBubble({ message }: { readonly message: ChatMessage }) {
           fg={message.status === "failed" ? theme.error : theme.text}
         />
       )}
+      {message.status === "checkpoint_required" ? (
+        <text
+          content={`  ⚠ Checkpoint: ${message.checkpointAction ?? "unknown"} — ${message.checkpointReason ?? ""}`}
+          fg={theme.statusPending}
+        />
+      ) : null}
       {message.errorMessage ? (
         <text content={`  [error: ${message.errorMessage}]`} fg={theme.error} />
       ) : null}

@@ -5,6 +5,8 @@ export interface ChatMessage {
   readonly status: "streaming" | "complete" | "failed" | "checkpoint_required"
   readonly errorMessage?: string | undefined
   readonly checkpointId?: string | undefined
+  readonly checkpointAction?: string | undefined
+  readonly checkpointReason?: string | undefined
 }
 
 export interface ToolEvent {

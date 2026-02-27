@@ -123,6 +123,32 @@ describe("dispatchEvent", () => {
     })
   })
 
+  it("turn.checkpoint_required stores action and reason", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, {
+      type: "turn.started",
+      sequence: 0,
+      turnId: "t1",
+      sessionId: "s1",
+      createdAt: new Date().toISOString()
+    } as any)
+    dispatchEvent(registry, {
+      type: "turn.checkpoint_required",
+      sequence: 1,
+      turnId: "t1",
+      sessionId: "s1",
+      checkpointId: "cp-1",
+      action: "shell_execute",
+      reason: "Running rm -rf /"
+    } as any)
+
+    const last = registry.get(messagesAtom)[0]!
+    expect(last.status).toBe("checkpoint_required")
+    expect(last.checkpointId).toBe("cp-1")
+    expect(last.checkpointAction).toBe("shell_execute")
+    expect(last.checkpointReason).toBe("Running rm -rf /")
+  })
+
   it("tool.result updates matching tool event", () => {
     const registry = makeRegistry()
     dispatchEvent(registry, {

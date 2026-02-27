@@ -129,7 +129,9 @@ export function dispatchEvent(
           {
             ...last,
             status: "checkpoint_required" as const,
-            checkpointId: event.checkpointId
+            checkpointId: event.checkpointId,
+            checkpointAction: event.action,
+            checkpointReason: event.reason
           }
         ]
       })

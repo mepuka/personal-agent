@@ -23,3 +23,15 @@ export const activeToolsAtom = Atom.make((get: Atom.Context) =>
 )
 
 export const messageCountAtom = Atom.make((get: Atom.Context) => get(messagesAtom).length)
+
+export const pendingCheckpointAtom = Atom.make((get: Atom.Context) => {
+  const msgs = get(messagesAtom)
+  if (msgs.length === 0) return null
+  const last = msgs[msgs.length - 1]!
+  if (last.status !== "checkpoint_required" || !last.checkpointId) return null
+  return {
+    checkpointId: last.checkpointId,
+    action: last.checkpointAction ?? "unknown",
+    reason: last.checkpointReason ?? ""
+  }
+})
