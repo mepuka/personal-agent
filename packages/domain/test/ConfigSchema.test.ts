@@ -6,7 +6,9 @@ import {
   ChannelConfigSchema,
   ChannelsConfigSchema,
   IntegrationConfigSchema,
-  ProviderConfigSchema
+  MemoryLimitsSchema,
+  ProviderConfigSchema,
+  RuntimeConfigSchema
 } from "../src/config.js"
 
 describe("Config Schemas", () => {
@@ -208,5 +210,53 @@ describe("Config Schemas", () => {
       transport: "grpc"
     }
     expect(() => Schema.decodeUnknownSync(IntegrationConfigSchema)(input)).toThrow()
+  })
+
+  it("defaults RuntimeConfigSchema from empty object", () => {
+    const result = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
+    expect(result).toEqual({
+      tokenBudget: 200_000,
+      maxToolIterations: 10,
+      memory: {
+        defaultRetrieveLimit: 10,
+        maxRetrieveLimit: 50
+      }
+    })
+  })
+
+  it("allows partial RuntimeConfig overrides", () => {
+    const result = Schema.decodeUnknownSync(RuntimeConfigSchema)({
+      tokenBudget: 100_000,
+      memory: { maxRetrieveLimit: 25 }
+    })
+    expect(result.tokenBudget).toBe(100_000)
+    expect(result.maxToolIterations).toBe(10)
+    expect(result.memory.defaultRetrieveLimit).toBe(10)
+    expect(result.memory.maxRetrieveLimit).toBe(25)
+  })
+
+  it("defaults MemoryLimitsSchema from empty object", () => {
+    const result = Schema.decodeUnknownSync(MemoryLimitsSchema)({})
+    expect(result).toEqual({
+      defaultRetrieveLimit: 10,
+      maxRetrieveLimit: 50
+    })
+  })
+
+  it("defaults runtime in AgentProfileSchema when omitted", () => {
+    const input = {
+      persona: { name: "Test", systemPrompt: "x" },
+      model: { provider: "anthropic", modelId: "test" },
+      generation: { temperature: 0.7, maxOutputTokens: 1024 }
+    }
+    const result = Schema.decodeUnknownSync(AgentProfileSchema)(input)
+    expect(result.runtime).toEqual({
+      tokenBudget: 200_000,
+      maxToolIterations: 10,
+      memory: {
+        defaultRetrieveLimit: 10,
+        maxRetrieveLimit: 50
+      }
+    })
   })
 })

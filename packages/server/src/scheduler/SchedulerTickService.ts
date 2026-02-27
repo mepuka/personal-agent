@@ -1,3 +1,4 @@
+import { SCHEDULER_TICK_SECONDS } from "@template/domain/system-defaults"
 import { DateTime, Duration, Effect, Layer, Schedule, ServiceMap } from "effect"
 import { SchedulerDispatchLoop } from "./SchedulerDispatchLoop.js"
 
@@ -23,7 +24,7 @@ export class SchedulerTickService extends ServiceMap.Service<SchedulerTickServic
         )
       )
 
-      const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(10)))
+      const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(SCHEDULER_TICK_SECONDS)))
       yield* Effect.forkScoped(loop)
 
       return {} as const

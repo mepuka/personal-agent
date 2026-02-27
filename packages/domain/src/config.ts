@@ -12,6 +12,13 @@
  */
 import { Schema } from "effect"
 
+import {
+  DEFAULT_TOKEN_CAPACITY,
+  DEFAULT_MAX_TOOL_ITERATIONS,
+  DEFAULT_MEMORY_RETRIEVE_LIMIT,
+  MAX_MEMORY_RETRIEVE_LIMIT
+} from "./system-defaults.js"
+
 export const AiProviderName = Schema.Literals([
   "anthropic",
   "openai",
@@ -45,10 +52,40 @@ export const GenerationConfigSchema = Schema.Struct({
 })
 export type GenerationConfig = typeof GenerationConfigSchema.Type
 
+export const MemoryLimitsSchema = Schema.Struct({
+  defaultRetrieveLimit: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_MEMORY_RETRIEVE_LIMIT)
+  ),
+  maxRetrieveLimit: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => MAX_MEMORY_RETRIEVE_LIMIT)
+  )
+})
+export type MemoryLimits = typeof MemoryLimitsSchema.Type
+
+const defaultMemoryLimits = Schema.decodeUnknownSync(MemoryLimitsSchema)({})
+
+export const RuntimeConfigSchema = Schema.Struct({
+  tokenBudget: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_TOKEN_CAPACITY)
+  ),
+  maxToolIterations: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_MAX_TOOL_ITERATIONS)
+  ),
+  memory: MemoryLimitsSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultMemoryLimits)
+  )
+})
+export type RuntimeConfig = typeof RuntimeConfigSchema.Type
+
+const defaultRuntimeConfig = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
+
 export const AgentProfileSchema = Schema.Struct({
   persona: PersonaSchema,
   model: ModelRefSchema,
-  generation: GenerationConfigSchema
+  generation: GenerationConfigSchema,
+  runtime: RuntimeConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultRuntimeConfig)
+  )
 })
 export type AgentProfile = typeof AgentProfileSchema.Type
 

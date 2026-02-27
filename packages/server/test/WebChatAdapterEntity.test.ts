@@ -7,6 +7,7 @@ import { Entity, Sharding, ShardingConfig } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
@@ -163,13 +164,25 @@ const makeTestLayer = (dbPath: string) => {
     Layer.provide(sessionTurnTagLayer)
   )
   const mockShardingLayer = Layer.succeed(Sharding.Sharding, {} as any)
+  const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+    providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
+    agents: {
+      default: {
+        persona: { name: "Test", systemPrompt: "test" },
+        model: { provider: "anthropic", modelId: "test-model" },
+        generation: { temperature: 0.7, maxOutputTokens: 1024 }
+      }
+    },
+    server: { port: 3000 }
+  })
 
   const channelCoreLayer = ChannelCore.layer.pipe(
     Layer.provide(agentStateTagLayer),
     Layer.provide(channelPortTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
-    Layer.provide(mockShardingLayer)
+    Layer.provide(mockShardingLayer),
+    Layer.provide(mockAgentConfigLayer)
   )
 
   return Layer.mergeAll(

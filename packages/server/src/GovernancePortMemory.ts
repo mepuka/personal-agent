@@ -1,5 +1,6 @@
 import { ToolQuotaExceeded } from "@template/domain/errors"
 import type { AgentId, ToolName } from "@template/domain/ids"
+import { DEFAULT_PAGINATION_LIMIT } from "@template/domain/system-defaults"
 import type {
   AuditEntryRecord,
   GovernancePort,
@@ -93,7 +94,7 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
             })
 
           const offset = query.offset ?? 0
-          const limit = query.limit ?? 100
+          const limit = query.limit ?? DEFAULT_PAGINATION_LIMIT
           return {
             items: filtered.slice(offset, offset + limit),
             totalCount: filtered.length

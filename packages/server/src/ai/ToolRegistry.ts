@@ -1,3 +1,4 @@
+import type { MemoryLimits } from "@template/domain/config"
 import { ToolName } from "@template/domain/ids"
 import type {
   AgentId,
@@ -16,6 +17,7 @@ import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/s
 import { DateTime, Effect, Layer, Match, Schema, ServiceMap } from "effect"
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
+import { AgentConfig } from "./AgentConfig.js"
 import { GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
@@ -148,6 +150,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
     make: Effect.gen(function*() {
       const governance = yield* GovernancePortTag
       const memoryPort = yield* MemoryPortTag
+      const agentConfig = yield* AgentConfig
 
       const persistInvocation = (params: {
         readonly context: ToolExecutionContext
@@ -455,10 +458,14 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         }) as Effect.Effect<A, ToolFailure>
 
       const makeToolkit: ToolRegistryService["makeToolkit"] = (context) =>
-        Effect.succeed({
-          toolkit: SafeToolkit,
-          handlerLayer: SafeToolkit.toLayer(
-            SafeToolkit.of({
+        Effect.gen(function*() {
+          const profile = yield* agentConfig.getAgent(context.agentId as string).pipe(Effect.orDie)
+          const memoryLimits = profile.runtime.memory
+
+          return {
+            toolkit: SafeToolkit,
+            handlerLayer: SafeToolkit.toLayer(
+              SafeToolkit.of({
               "time_now": () =>
                 runGovernedTool(
                   context,
@@ -547,7 +554,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                     auditBeforeExecute: false,
                     execute: memoryPort.search(context.agentId, {
                       query,
-                      limit: clampMemoryLimit(limit),
+                      limit: clampMemoryLimit(limit, memoryLimits),
                       sort: "CreatedDesc"
                     }).pipe(
                       Effect.map((result) => ({
@@ -592,7 +599,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   })
                 )
             })
-          )
+          ) as SafeToolkitHandlerLayer
+          }
         })
 
       return {
@@ -658,11 +666,14 @@ const makeIdempotencyKey = (
     })
   )
 
-const clampMemoryLimit = (limit: number | undefined): number => {
+const clampMemoryLimit = (
+  limit: number | undefined,
+  memoryLimits: MemoryLimits
+): number => {
   if (limit === undefined || !Number.isFinite(limit)) {
-    return 10
+    return memoryLimits.defaultRetrieveLimit
   }
-  return Math.min(Math.max(Math.floor(limit), 1), 50)
+  return Math.min(Math.max(Math.floor(limit), 1), memoryLimits.maxRetrieveLimit)
 }
 
 const safeCalculate = (expression: string): number | null => {

@@ -1,13 +1,11 @@
 import type { AgentId, PolicyId, SessionId, ToolName } from "@template/domain/ids"
 import type { AgentStatePort, GovernancePort, SessionTurnPort, ToolInvocationQuery } from "@template/domain/ports"
 import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
+import { DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT } from "@template/domain/system-defaults"
 import { Effect, Layer } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
-
-const DEFAULT_LIMIT = 100
-const MAX_LIMIT = 500
 
 const extractParam = (inputUrl: string, index: number): string => {
   const url = new URL(inputUrl, "http://localhost")
@@ -27,10 +25,10 @@ const badRequest = (message: string) =>
 const parseLimit = (url: URL): number | null => {
   const raw = url.searchParams.get("limit")
   if (raw === null || raw === "") {
-    return DEFAULT_LIMIT
+    return DEFAULT_PAGINATION_LIMIT
   }
   const parsed = Number(raw)
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_LIMIT) {
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_PAGINATION_LIMIT) {
     return null
   }
   return parsed
@@ -102,7 +100,7 @@ export const handleListSessionToolInvocations = (
 
     const limit = parseLimit(parsedUrl)
     if (limit === null) {
-      return yield* badRequest(`limit must be an integer between 1 and ${MAX_LIMIT}`)
+      return yield* badRequest(`limit must be an integer between 1 and ${MAX_PAGINATION_LIMIT}`)
     }
 
     const offset = parseOffset(parsedUrl)
