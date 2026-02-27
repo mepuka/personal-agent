@@ -175,3 +175,24 @@ export const SensitivityLevel = Schema.Literals([
   "Restricted"
 ])
 export type SensitivityLevel = typeof SensitivityLevel.Type
+
+export const GovernanceAction = Schema.Literals([
+  "InvokeTool",
+  "ReadMemory",
+  "WriteMemory",
+  "ExecuteSchedule",
+  "SpawnSubAgent",
+  "CreateGoal",
+  "TransitionTask"
+])
+export type GovernanceAction = typeof GovernanceAction.Type
+
+export const CheckpointStatus = Schema.Literals([
+  "Pending",
+  "Approved",
+  "Rejected",
+  "Deferred",
+  "Expired",
+  "Consumed"
+])
+export type CheckpointStatus = typeof CheckpointStatus.Type

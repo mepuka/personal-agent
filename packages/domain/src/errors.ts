@@ -66,3 +66,32 @@ export class MemoryAccessDenied extends Schema.ErrorClass<MemoryAccessDenied>("M
   description: "Memory access denied by governance policy",
   httpApiStatus: 403
 }) {}
+
+export class CheckpointNotFound extends Schema.ErrorClass<CheckpointNotFound>("CheckpointNotFound")({
+  _tag: Schema.tag("CheckpointNotFound"),
+  checkpointId: Schema.String
+}) {}
+
+export class CheckpointAlreadyDecided extends Schema.ErrorClass<CheckpointAlreadyDecided>("CheckpointAlreadyDecided")({
+  _tag: Schema.tag("CheckpointAlreadyDecided"),
+  checkpointId: Schema.String,
+  currentStatus: Schema.String
+}) {}
+
+export class CheckpointExpired extends Schema.ErrorClass<CheckpointExpired>("CheckpointExpired")({
+  _tag: Schema.tag("CheckpointExpired"),
+  checkpointId: Schema.String
+}) {}
+
+export class CheckpointNotApproved extends Schema.ErrorClass<CheckpointNotApproved>("CheckpointNotApproved")({
+  _tag: Schema.tag("CheckpointNotApproved"),
+  checkpointId: Schema.String,
+  currentStatus: Schema.String
+}) {}
+
+export class CheckpointPayloadMismatch extends Schema.ErrorClass<CheckpointPayloadMismatch>("CheckpointPayloadMismatch")({
+  _tag: Schema.tag("CheckpointPayloadMismatch"),
+  checkpointId: Schema.String,
+  expectedHash: Schema.String,
+  actualHash: Schema.String
+}) {}
