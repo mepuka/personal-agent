@@ -6,10 +6,11 @@ import { BunHttpClient } from "@effect/platform-bun"
 import { Effect } from "effect"
 import { AtomRegistry } from "effect/unstable/reactivity"
 // @ts-expect-error -- @opentui/core .d.ts uses extensionless re-exports incompatible with NodeNext resolution
-import { createCliRenderer } from "@opentui/core"
+import { createCliRenderer, SyntaxStyle } from "@opentui/core"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { createRoot } from "@opentui/react"
 import { App } from "./App.js"
+import { SyntaxStyleContext } from "./components/SyntaxStyleContext.js"
 
 // Build the ChatClient service — resolves Config + HttpClient dependencies.
 const client = await Effect.runPromise(
@@ -19,6 +20,8 @@ const client = await Effect.runPromise(
 // Create shared atom registry — single instance for the entire app
 const registry = AtomRegistry.make()
 
+const syntaxStyle = SyntaxStyle.create()
+
 const renderer = await createCliRenderer()
 const root = createRoot(renderer)
 
@@ -26,6 +29,8 @@ const root = createRoot(renderer)
 // inside useSendMessage and all components reads from this registry.
 root.render(
   <RegistryContext.Provider value={registry}>
-    <App client={client} />
+    <SyntaxStyleContext.Provider value={syntaxStyle}>
+      <App client={client} />
+    </SyntaxStyleContext.Provider>
   </RegistryContext.Provider>
 )
