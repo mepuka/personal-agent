@@ -3,35 +3,22 @@ import { useAtomValue } from "@effect/atom-react"
 import { useKeyboard } from "@opentui/react"
 import * as React from "react"
 import { inputHistoryAtom, isStreamingAtom } from "../atoms/session.js"
+import { theme } from "../theme.js"
 
 export function InputBar({
   onSubmit,
-  focused
+  focused,
+  inputRef
 }: {
   readonly onSubmit: (content: string) => void
   readonly focused: boolean
+  readonly inputRef?: React.RefObject<unknown>
 }) {
   const isStreaming = useAtomValue(isStreamingAtom)
   const inputHistory = useAtomValue(inputHistoryAtom)
   const [inputValue, setInputValue] = React.useState("")
-  // -1 means "not browsing history" (fresh input), 0..N indexes from newest to oldest
   const [historyIndex, setHistoryIndex] = React.useState(-1)
-  // Stash the in-progress input when entering history mode
   const [stashedInput, setStashedInput] = React.useState("")
-
-  // Refs to avoid stale closures in useKeyboard callback
-  const inputValueRef = React.useRef(inputValue)
-  inputValueRef.current = inputValue
-  const historyIndexRef = React.useRef(historyIndex)
-  historyIndexRef.current = historyIndex
-  const stashedInputRef = React.useRef(stashedInput)
-  stashedInputRef.current = stashedInput
-  const focusedRef = React.useRef(focused)
-  focusedRef.current = focused
-  const isStreamingRef = React.useRef(isStreaming)
-  isStreamingRef.current = isStreaming
-  const inputHistoryRef = React.useRef(inputHistory)
-  inputHistoryRef.current = inputHistory
 
   const handleSubmit = React.useCallback(
     (value: string) => {
@@ -44,39 +31,33 @@ export function InputBar({
     [onSubmit, isStreaming]
   )
 
-  // Handle Up/Down arrow keys for history navigation
+  // useKeyboard already stabilizes via useEffectEvent — no refs needed
   useKeyboard((key: { name: string }) => {
-    if (!focusedRef.current || isStreamingRef.current) return
-    const history = inputHistoryRef.current
-    if (history.length === 0) return
-    const idx = historyIndexRef.current
+    if (!focused || isStreaming) return
+    if (inputHistory.length === 0) return
 
-    const historyAt = (i: number) => history[history.length - 1 - i] ?? ""
+    const historyAt = (i: number) => inputHistory[inputHistory.length - 1 - i] ?? ""
 
     if (key.name === "up") {
-      if (idx === -1) {
-        // Entering history mode — stash current input
-        setStashedInput(inputValueRef.current)
+      if (historyIndex === -1) {
+        setStashedInput(inputValue)
         setHistoryIndex(0)
         setInputValue(historyAt(0))
-      } else if (idx < history.length - 1) {
-        // Go further back in history
-        const newIndex = idx + 1
+      } else if (historyIndex < inputHistory.length - 1) {
+        const newIndex = historyIndex + 1
         setHistoryIndex(newIndex)
         setInputValue(historyAt(newIndex))
       }
     }
 
     if (key.name === "down") {
-      if (idx > 0) {
-        // Go forward in history
-        const newIndex = idx - 1
+      if (historyIndex > 0) {
+        const newIndex = historyIndex - 1
         setHistoryIndex(newIndex)
         setInputValue(historyAt(newIndex))
-      } else if (idx === 0) {
-        // Return to fresh input
+      } else if (historyIndex === 0) {
         setHistoryIndex(-1)
-        setInputValue(stashedInputRef.current)
+        setInputValue(stashedInput)
       }
     }
   })
@@ -84,15 +65,28 @@ export function InputBar({
   const isFocused = focused && !isStreaming
 
   return (
-    <box border={true} borderStyle="single" padding={0}>
-      <text content={isStreaming ? " streaming... " : " > "} fg={isStreaming ? "yellow" : "green"} />
+    <box
+      border={true}
+      borderStyle="single"
+      borderColor={theme.border}
+      focusedBorderColor={theme.borderFocus}
+      padding={0}
+    >
+      <text
+        content={isStreaming ? " streaming... " : " > "}
+        fg={isStreaming ? theme.streaming : theme.userText}
+      />
       <input
+        ref={inputRef}
         placeholder="Type a message..."
         focused={isFocused}
         value={inputValue}
         onInput={setInputValue}
         onSubmit={handleSubmit}
         flexGrow={1}
+        cursorColor={theme.accent}
+        textColor={theme.text}
+        placeholderColor={theme.textMuted}
       />
     </box>
   )
