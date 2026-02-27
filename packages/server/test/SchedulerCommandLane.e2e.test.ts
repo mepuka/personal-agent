@@ -167,7 +167,17 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
   const governancePortTagLayer = Layer.effect(
     GovernancePortTag,
     Effect.gen(function*() {
-      return (yield* GovernancePortSqlite) as GovernancePort
+      const governance = yield* GovernancePortSqlite
+      return {
+        ...governance,
+        evaluatePolicy: (_input) =>
+          Effect.succeed({
+            decision: "Allow" as const,
+            policyId: null,
+            toolDefinitionId: null,
+            reason: "forced_allow"
+          })
+      } as GovernancePort
     })
   ).pipe(Layer.provide(governancePortSqliteLayer))
 

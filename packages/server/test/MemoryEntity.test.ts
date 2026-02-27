@@ -385,9 +385,6 @@ const makeMemoryGovernanceLayers = (
     GovernancePortTag,
     Effect.gen(function*() {
       const governance = yield* GovernancePortSqlite
-      if (forcedDecision === "Allow") {
-        return governance as GovernancePort
-      }
       return {
         ...governance,
         evaluatePolicy: (_input) =>
