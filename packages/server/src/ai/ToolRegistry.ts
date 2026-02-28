@@ -31,7 +31,10 @@ const TOOL_NAMES = {
   echo_text: ToolName.makeUnsafe("echo_text"),
   store_memory: ToolName.makeUnsafe("store_memory"),
   retrieve_memories: ToolName.makeUnsafe("retrieve_memories"),
-  forget_memories: ToolName.makeUnsafe("forget_memories")
+  forget_memories: ToolName.makeUnsafe("forget_memories"),
+  file_write: ToolName.makeUnsafe("file_write"),
+  shell_execute: ToolName.makeUnsafe("shell_execute"),
+  send_notification: ToolName.makeUnsafe("send_notification")
 } as const
 
 const ToolFailure = Schema.Struct({
@@ -119,13 +122,59 @@ const ForgetMemoriesTool = Tool.make("forget_memories", {
   failure: ToolFailure
 })
 
+const FileWriteTool = Tool.make("file_write", {
+  description: "Write content to a file at the specified path.",
+  parameters: Schema.Struct({
+    path: Schema.String,
+    content: Schema.String
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    bytesWritten: Schema.Number
+  }),
+  failure: ToolFailure
+})
+
+const ShellExecuteTool = Tool.make("shell_execute", {
+  description: "Execute a shell command and return its output.",
+  parameters: Schema.Struct({
+    command: Schema.String,
+    cwd: Schema.optionalKey(Schema.String)
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    exitCode: Schema.Number,
+    stdout: Schema.String,
+    stderr: Schema.String
+  }),
+  failure: ToolFailure
+})
+
+const SendNotificationTool = Tool.make("send_notification", {
+  description: "Send a notification message to a user or channel.",
+  parameters: Schema.Struct({
+    recipient: Schema.String,
+    message: Schema.String
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    notificationId: Schema.String,
+    delivered: Schema.Boolean
+  }),
+  failure: ToolFailure
+})
+
 const SafeToolkit = Toolkit.make(
   TimeNowTool,
   MathCalculateTool,
   EchoTextTool,
   StoreMemoryTool,
   RetrieveMemoriesTool,
-  ForgetMemoriesTool
+  ForgetMemoriesTool,
+  FileWriteTool,
+  ShellExecuteTool,
+  SendNotificationTool
 )
 
 /**
@@ -705,6 +754,43 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       })
                       return { forgotten } as const
                     })
+                  }),
+                  checkpointSignalsRef
+                ),
+              "file_write": ({ path, content }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_write,
+                  { path, content },
+                  Effect.succeed({
+                    ok: true as const,
+                    path,
+                    bytesWritten: content.length
+                  }),
+                  checkpointSignalsRef
+                ),
+              "shell_execute": ({ command, cwd }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.shell_execute,
+                  { command, cwd },
+                  Effect.succeed({
+                    ok: true as const,
+                    exitCode: 0,
+                    stdout: "(simulated output)",
+                    stderr: ""
+                  }),
+                  checkpointSignalsRef
+                ),
+              "send_notification": ({ recipient, message }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.send_notification,
+                  { recipient, message },
+                  Effect.succeed({
+                    ok: true as const,
+                    notificationId: "notif:simulated",
+                    delivered: true
                   }),
                   checkpointSignalsRef
                 )
