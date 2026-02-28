@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest"
-import type { AgentId, AuditEntryId } from "@template/domain/ids"
+import type { AgentId, AuditEntryId, SessionId } from "@template/domain/ids"
+import { ToolName } from "@template/domain/ids"
 import type { Instant } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
+import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -64,6 +66,86 @@ describe("GovernancePortSqlite", () => {
       expect(audits).toHaveLength(1)
       expect(audits[0].auditEntryId).toBe("audit:restart")
     }).pipe(
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+})
+
+describe("evaluatePolicy — test tools in Standard mode", () => {
+  const agentId = "agent:test-governance" as AgentId
+  const sessionId = "session:test" as SessionId
+
+  it.effect("returns RequireApproval for file_write", () => {
+    const dbPath = testDatabasePath("policy-file-write")
+    const layer = makeGovernanceLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sqlClient = yield* SqlClient.SqlClient
+      yield* sqlClient`
+        INSERT INTO agents (agent_id, permission_mode, token_budget, quota_period, tokens_consumed)
+        VALUES (${agentId}, 'Standard', 100000, 'daily', 0)
+      `.unprepared
+
+      const governance = yield* GovernancePortSqlite
+      const result = yield* governance.evaluatePolicy({
+        agentId,
+        sessionId,
+        action: "InvokeTool",
+        toolName: ToolName.makeUnsafe("file_write")
+      })
+      expect(result.decision).toBe("RequireApproval")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("returns RequireApproval for shell_execute", () => {
+    const dbPath = testDatabasePath("policy-shell-execute")
+    const layer = makeGovernanceLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sqlClient = yield* SqlClient.SqlClient
+      yield* sqlClient`
+        INSERT INTO agents (agent_id, permission_mode, token_budget, quota_period, tokens_consumed)
+        VALUES (${agentId}, 'Standard', 100000, 'daily', 0)
+      `.unprepared
+
+      const governance = yield* GovernancePortSqlite
+      const result = yield* governance.evaluatePolicy({
+        agentId,
+        sessionId,
+        action: "InvokeTool",
+        toolName: ToolName.makeUnsafe("shell_execute")
+      })
+      expect(result.decision).toBe("RequireApproval")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("returns RequireApproval for send_notification", () => {
+    const dbPath = testDatabasePath("policy-send-notification")
+    const layer = makeGovernanceLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sqlClient = yield* SqlClient.SqlClient
+      yield* sqlClient`
+        INSERT INTO agents (agent_id, permission_mode, token_budget, quota_period, tokens_consumed)
+        VALUES (${agentId}, 'Standard', 100000, 'daily', 0)
+      `.unprepared
+
+      const governance = yield* GovernancePortSqlite
+      const result = yield* governance.evaluatePolicy({
+        agentId,
+        sessionId,
+        action: "InvokeTool",
+        toolName: ToolName.makeUnsafe("send_notification")
+      })
+      expect(result.decision).toBe("RequireApproval")
+    }).pipe(
+      Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
