@@ -21,6 +21,7 @@ type FocusTarget = "input" | "tools"
 
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
+  const initializedRef = React.useRef(false)
   const sendMessage = useSendMessage(client)
   const decideCheckpoint = useDecideCheckpoint(client)
   const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
@@ -66,6 +67,11 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   }, [registry])
 
   React.useEffect(() => {
+    if (initializedRef.current) {
+      return
+    }
+    initializedRef.current = true
+
     const chId = `channel:${crypto.randomUUID()}`
     registry.set(channelIdAtom, chId)
     registry.set(connectionStatusAtom, "connecting")

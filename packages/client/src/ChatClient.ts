@@ -4,6 +4,10 @@ import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 
+export type DecideCheckpointResult =
+  | { readonly kind: "ack" }
+  | { readonly kind: "stream"; readonly stream: Stream.Stream<TurnStreamEvent, unknown> }
+
 export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatClient", {
   make: Effect.gen(function*() {
     const baseUrl = yield* Config.string("PA_SERVER_URL").pipe(
@@ -64,9 +68,9 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
               Stream.pipeThroughChannel(Sse.decodeDataSchema(TurnStreamEvent)),
               Stream.map((event) => event.data)
             )
-            return { isStream: true as const, stream }
+            return { kind: "stream" as const, stream }
           }
-          return { isStream: false as const }
+          return { kind: "ack" as const }
         })
       )
 

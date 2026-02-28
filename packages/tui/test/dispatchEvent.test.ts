@@ -79,6 +79,42 @@ describe("dispatchEvent", () => {
     expect(registry.get(messagesAtom)[0]!.status).toBe("complete")
   })
 
+  it("checkpoint_required is preserved on terminal completed checkpoint event", () => {
+    const registry = makeRegistry()
+    dispatchEvent(registry, {
+      type: "turn.started",
+      sequence: 0,
+      turnId: "t1",
+      sessionId: "s1",
+      createdAt: new Date().toISOString()
+    } as any)
+    dispatchEvent(registry, {
+      type: "turn.checkpoint_required",
+      sequence: 1,
+      turnId: "t1",
+      sessionId: "s1",
+      checkpointId: "cp-1",
+      action: "InvokeTool",
+      reason: "approval needed"
+    } as any)
+    dispatchEvent(registry, {
+      type: "turn.completed",
+      sequence: 2,
+      turnId: "t1",
+      sessionId: "s1",
+      accepted: false,
+      auditReasonCode: "turn_processing_checkpoint_required",
+      iterationsUsed: 0,
+      toolCallsTotal: 0,
+      modelFinishReason: null,
+      modelUsageJson: null
+    } as any)
+
+    const last = registry.get(messagesAtom)[0]!
+    expect(last.status).toBe("checkpoint_required")
+    expect(last.checkpointId).toBe("cp-1")
+  })
+
   it("turn.failed marks last message with error", () => {
     const registry = makeRegistry()
     dispatchEvent(registry, {

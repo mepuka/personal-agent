@@ -250,7 +250,8 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   Layer.provide(turnProcessingRuntimeLayer),
   Layer.provide(sessionEntityLayer),
   Layer.provide(agentConfigLayer),
-  Layer.provide(checkpointPortTagLayer)
+  Layer.provide(checkpointPortTagLayer),
+  Layer.provide(toolRegistryLayer)
 )
 
 const cliAdapterEntityLayer = Layer.unwrap(

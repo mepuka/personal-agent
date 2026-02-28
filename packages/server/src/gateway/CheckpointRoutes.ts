@@ -25,14 +25,23 @@ const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   data: encodeToJson(event)
 })
 
-const toFailedTurnEvent = (error: unknown): TurnFailedEvent => ({
-  type: "turn.failed",
-  sequence: Number.MAX_SAFE_INTEGER,
-  turnId: "unknown",
-  sessionId: "unknown",
-  errorCode: "ReplayError",
-  message: error instanceof Error ? error.message : "Replay stream failed unexpectedly"
-})
+const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
+  // Schema.ErrorClass subclasses don't set Error.message — extract from fields
+  const errorObj = error as Record<string, unknown> | null
+  const reason = typeof errorObj?.reason === "string" ? errorObj.reason : ""
+  const tag = typeof errorObj?._tag === "string" ? errorObj._tag : ""
+  const fallback = error instanceof Error ? error.message : "Replay stream failed unexpectedly"
+  const message = reason || tag || fallback
+
+  return {
+    type: "turn.failed",
+    sequence: Number.MAX_SAFE_INTEGER,
+    turnId: typeof errorObj?.turnId === "string" ? errorObj.turnId : "unknown",
+    sessionId: "unknown",
+    errorCode: "ReplayError",
+    message
+  }
+}
 
 const badRequest = (message: string) =>
   HttpServerResponse.json(
@@ -128,7 +137,7 @@ const decideCheckpoint = HttpRouter.add(
         decidedBy: decoded.value.decidedBy
       })
 
-      if (result.stream === null) {
+      if (result.kind === "ack") {
         return yield* HttpServerResponse.json({ ok: true })
       }
 

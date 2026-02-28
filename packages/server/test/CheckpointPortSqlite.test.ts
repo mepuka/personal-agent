@@ -49,6 +49,8 @@ const makeCheckpointRecord = (overrides: Partial<CheckpointRecord> = {}): Checkp
   requestedAt: instant("2026-02-27T12:00:00.000Z"),
   decidedAt: null,
   decidedBy: null,
+  consumedAt: null,
+  consumedBy: null,
   expiresAt: null,
   ...overrides
 })
@@ -85,6 +87,8 @@ describe("CheckpointPortSqlite", () => {
       expect(fetched!.status).toBe("Pending")
       expect(fetched!.decidedAt).toBeNull()
       expect(fetched!.decidedBy).toBeNull()
+      expect(fetched!.consumedAt).toBeNull()
+      expect(fetched!.consumedBy).toBeNull()
       expect(fetched!.expiresAt).not.toBeNull()
     }).pipe(
       Effect.provide(layer),
@@ -262,6 +266,9 @@ describe("CheckpointPortSqlite", () => {
       )
       const fetched = yield* port.get(record.checkpointId)
       expect(fetched!.status).toBe("Consumed")
+      expect(fetched!.decidedBy).toBe("human:approver")
+      expect(fetched!.consumedBy).toBe("agent:executor")
+      expect(fetched!.consumedAt).not.toBeNull()
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

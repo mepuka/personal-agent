@@ -141,6 +141,14 @@ export function dispatchEvent(
       registry.update(messagesAtom, (msgs) => {
         if (msgs.length === 0) return msgs
         const last = msgs[msgs.length - 1]!
+        if (
+          last.status === "checkpoint_required"
+          && event.accepted === false
+          && event.auditReasonCode === "turn_processing_checkpoint_required"
+        ) {
+          // Preserve pending checkpoint UI even though the backend emits terminal completed.
+          return msgs
+        }
         return [...msgs.slice(0, -1), { ...last, status: "complete" as const }]
       })
       break

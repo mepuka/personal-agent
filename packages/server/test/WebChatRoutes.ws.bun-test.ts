@@ -19,6 +19,7 @@ import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
@@ -176,6 +177,11 @@ const makeWsTestLayer = (dbPath: string) => {
   ).pipe(Layer.provide(checkpointPortSqliteLayer))
 
   const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const toolRegistryStubLayer = Layer.succeed(ToolRegistry, {
+    makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in WebChatRoutes ws tests"),
+    executeApprovedCheckpointTool: () =>
+      Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in WebChatRoutes ws tests")
+  } as any)
   const mockAgentConfigLayer = AgentConfig.layerFromParsed({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
@@ -202,7 +208,8 @@ const makeWsTestLayer = (dbPath: string) => {
     Layer.provide(checkpointPortTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
     Layer.provide(sessionEntityLayer),
-    Layer.provide(mockAgentConfigLayer)
+    Layer.provide(mockAgentConfigLayer),
+    Layer.provide(toolRegistryStubLayer)
   )
 
   const webChatAdapterEntityLayer = WebChatAdapterEntityLayer.pipe(

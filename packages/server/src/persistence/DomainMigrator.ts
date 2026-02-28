@@ -687,6 +687,19 @@ const loader = SqliteMigrator.fromRecord({
         ('policy:invoke_tool:permissive:allow_shell_execute:v1', 'tooldef:shell_execute:v1'),
         ('policy:invoke_tool:permissive:allow_send_notification:v1', 'tooldef:send_notification:v1')
     `.unprepared
+  }),
+  "0014_checkpoint_consumption_metadata": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      ALTER TABLE checkpoints
+      ADD COLUMN consumed_at TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE checkpoints
+      ADD COLUMN consumed_by TEXT
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
   })
 })
 

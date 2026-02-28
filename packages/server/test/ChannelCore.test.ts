@@ -1,13 +1,14 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
-import type { AgentId, ChannelId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentStatePort, ChannelPort, CheckpointPort, SessionTurnPort, TurnRecord } from "@template/domain/ports"
-import { Effect, Layer, Stream } from "effect"
+import type { AgentId, ChannelId, CheckpointId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
+import type { AgentStatePort, ChannelPort, CheckpointPort, CheckpointRecord, SessionTurnPort, TurnRecord } from "@template/domain/ports"
+import { DateTime, Effect, Layer, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
@@ -189,6 +190,11 @@ const makeTestLayer = (dbPath: string) => {
   const mockRuntimeLayer = makeMockTurnProcessingRuntime().pipe(
     Layer.provide(sessionTurnTagLayer)
   )
+  const toolRegistryStubLayer = Layer.succeed(ToolRegistry, {
+    makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in ChannelCore tests"),
+    executeApprovedCheckpointTool: () =>
+      Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in ChannelCore tests")
+  } as any)
 
   // Provide a mock Sharding that does NOT have makeClient,
   // so ChannelCore falls back to the direct TurnProcessingRuntime.
@@ -201,7 +207,8 @@ const makeTestLayer = (dbPath: string) => {
     Layer.provide(checkpointPortTagLayer),
     Layer.provide(mockRuntimeLayer),
     Layer.provide(mockShardingLayer),
-    Layer.provide(mockAgentConfigLayer)
+    Layer.provide(mockAgentConfigLayer),
+    Layer.provide(toolRegistryStubLayer)
   )
 
   return Layer.mergeAll(
@@ -581,6 +588,85 @@ describe("ChannelCore", () => {
       expect(events[0]?.type).toBe("turn.started")
       expect(events.some((e) => e.type === "assistant.delta")).toBe(true)
       expect(events.some((e) => e.type === "turn.completed")).toBe(true)
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("approved checkpoint replay transitions to Consumed after successful stream", () => {
+    const dbPath = testDatabasePath("core-checkpoint-consumed")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const checkpointPort = yield* CheckpointPortSqlite
+      const channelId = "channel:core-checkpoint" as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const now = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
+
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const payloadJson = JSON.stringify({
+        kind: "ReadMemory",
+        content: "run ls -la",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "run ls -la" }],
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-02-28T00:00:00.000Z"
+        }
+      })
+
+      const checkpointRecord: CheckpointRecord = {
+        checkpointId,
+        agentId: "agent:bootstrap" as AgentId,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson,
+        payloadHash: "read-memory-hash",
+        status: "Pending",
+        requestedAt: now,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      }
+      yield* checkpointPort.create(checkpointRecord)
+
+      const decision = yield* core.decideCheckpoint({
+        checkpointId,
+        decision: "Approved",
+        decidedBy: "user:cli:local"
+      })
+
+      expect(decision.kind).toBe("stream")
+      if (decision.kind !== "stream") {
+        return
+      }
+
+      const events = yield* decision.stream.pipe(Stream.runCollect)
+      expect(events.some((event) => event.type === "turn.completed")).toBe(true)
+
+      const persisted = yield* checkpointPort.get(checkpointId)
+      expect(persisted).not.toBeNull()
+      expect(persisted!.status).toBe("Consumed")
+      expect(persisted!.decidedBy).toBe("user:cli:local")
+      expect(persisted!.consumedBy).toBe("user:cli:local")
+      expect(persisted!.consumedAt).not.toBeNull()
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))

@@ -19,7 +19,7 @@ export function useDecideCheckpoint(client: ChatClientShape) {
       const program = Effect.gen(function*() {
         const result = yield* client.decideCheckpoint(checkpointId, decision)
 
-        if (result.isStream) {
+        if (result.kind === "stream") {
           yield* result.stream.pipe(
             Stream.tap((event) => Effect.sync(() => dispatchEvent(registry, event))),
             Stream.runDrain

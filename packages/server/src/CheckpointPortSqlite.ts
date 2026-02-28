@@ -25,6 +25,8 @@ const CheckpointRowSchema = Schema.Struct({
   requested_at: Schema.String,
   decided_at: Schema.Union([Schema.String, Schema.Null]),
   decided_by: Schema.Union([Schema.String, Schema.Null]),
+  consumed_at: Schema.Union([Schema.String, Schema.Null]),
+  consumed_by: Schema.Union([Schema.String, Schema.Null]),
   expires_at: Schema.Union([Schema.String, Schema.Null])
 })
 type CheckpointRow = typeof CheckpointRowSchema.Type
@@ -49,6 +51,8 @@ const decodeCheckpointRow = (row: CheckpointRow): CheckpointRecord => ({
   requestedAt: decodeSqlInstant(row.requested_at),
   decidedAt: row.decided_at ? decodeSqlInstant(row.decided_at) : null,
   decidedBy: row.decided_by,
+  consumedAt: row.consumed_at ? decodeSqlInstant(row.consumed_at) : null,
+  consumedBy: row.consumed_by,
   expiresAt: row.expires_at ? decodeSqlInstant(row.expires_at) : null
 })
 
@@ -66,7 +70,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             SELECT
               checkpoint_id, agent_id, session_id, channel_id, turn_id,
               action, policy_id, reason, payload_json, payload_hash,
-              status, requested_at, decided_at, decided_by, expires_at
+              status, requested_at, decided_at, decided_by, consumed_at, consumed_by, expires_at
             FROM checkpoints
             WHERE checkpoint_id = ${checkpointId}
             LIMIT 1
@@ -78,7 +82,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
           INSERT INTO checkpoints (
             checkpoint_id, agent_id, session_id, channel_id, turn_id,
             action, policy_id, reason, payload_json, payload_hash,
-            status, requested_at, decided_at, decided_by, expires_at
+            status, requested_at, decided_at, decided_by, consumed_at, consumed_by, expires_at
           ) VALUES (
             ${record.checkpointId},
             ${record.agentId},
@@ -94,6 +98,8 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             ${encodeSqlInstant(record.requestedAt)},
             ${record.decidedAt ? encodeSqlInstant(record.decidedAt) : null},
             ${record.decidedBy},
+            ${record.consumedAt ? encodeSqlInstant(record.consumedAt) : null},
+            ${record.consumedBy},
             ${record.expiresAt ? encodeSqlInstant(record.expiresAt) : null}
           )
         `.unprepared.pipe(
@@ -193,16 +199,28 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
 
           // CAS update — verify the row was actually modified
           const fromStatus = toStatus === "Consumed" ? "Approved" : "Pending"
-          const decidedAtStr = encodeSqlInstant(decidedAt)
+          const atStr = encodeSqlInstant(decidedAt)
 
-          yield* sql`
-            UPDATE checkpoints
-            SET status = ${toStatus},
-                decided_at = ${decidedAtStr},
-                decided_by = ${decidedBy}
-            WHERE checkpoint_id = ${checkpointId}
-              AND status = ${fromStatus}
-          `.unprepared.pipe(Effect.orDie)
+          if (toStatus === "Consumed") {
+            // Consumption metadata is distinct from decision metadata.
+            yield* sql`
+              UPDATE checkpoints
+              SET status = ${toStatus},
+                  consumed_at = ${atStr},
+                  consumed_by = ${decidedBy}
+              WHERE checkpoint_id = ${checkpointId}
+                AND status = ${fromStatus}
+            `.unprepared.pipe(Effect.orDie)
+          } else {
+            yield* sql`
+              UPDATE checkpoints
+              SET status = ${toStatus},
+                  decided_at = ${atStr},
+                  decided_by = ${decidedBy}
+              WHERE checkpoint_id = ${checkpointId}
+                AND status = ${fromStatus}
+            `.unprepared.pipe(Effect.orDie)
+          }
 
           // Verify CAS succeeded (another process may have transitioned first)
           const after = yield* get(checkpointId)
@@ -226,7 +244,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
                 SELECT
                   checkpoint_id, agent_id, session_id, channel_id, turn_id,
                   action, policy_id, reason, payload_json, payload_hash,
-                  status, requested_at, decided_at, decided_by, expires_at
+                  status, requested_at, decided_at, decided_by, consumed_at, consumed_by, expires_at
                 FROM checkpoints
                 WHERE status = 'Pending'
                   AND agent_id = ${agentId}
@@ -237,7 +255,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
                 SELECT
                   checkpoint_id, agent_id, session_id, channel_id, turn_id,
                   action, policy_id, reason, payload_json, payload_hash,
-                  status, requested_at, decided_at, decided_by, expires_at
+                  status, requested_at, decided_at, decided_by, consumed_at, consumed_by, expires_at
                 FROM checkpoints
                 WHERE status = 'Pending'
                   AND (expires_at IS NULL OR expires_at > ${nowStr})

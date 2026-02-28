@@ -473,8 +473,42 @@ export interface CheckpointRecord {
   readonly requestedAt: Instant
   readonly decidedAt: Instant | null
   readonly decidedBy: string | null
+  readonly consumedAt: Instant | null
+  readonly consumedBy: string | null
   readonly expiresAt: Instant | null
 }
+
+export const CheckpointReplayTurnContext = Schema.Struct({
+  agentId: Schema.String,
+  sessionId: Schema.String,
+  conversationId: Schema.String,
+  channelId: Schema.String,
+  turnId: Schema.String,
+  createdAt: Schema.DateTimeUtcFromString
+})
+export type CheckpointReplayTurnContext = typeof CheckpointReplayTurnContext.Type
+
+export const InvokeToolReplayPayload = Schema.Struct({
+  kind: Schema.Literal("InvokeTool"),
+  toolName: Schema.String,
+  inputJson: Schema.String,
+  turnContext: CheckpointReplayTurnContext
+})
+export type InvokeToolReplayPayload = typeof InvokeToolReplayPayload.Type
+
+export const ReadMemoryReplayPayload = Schema.Struct({
+  kind: Schema.Literal("ReadMemory"),
+  content: Schema.String,
+  contentBlocks: Schema.Array(ContentBlock),
+  turnContext: CheckpointReplayTurnContext
+})
+export type ReadMemoryReplayPayload = typeof ReadMemoryReplayPayload.Type
+
+export const CheckpointReplayPayload = Schema.Union([
+  InvokeToolReplayPayload,
+  ReadMemoryReplayPayload
+])
+export type CheckpointReplayPayload = typeof CheckpointReplayPayload.Type
 
 export interface CheckpointPort {
   readonly create: (record: CheckpointRecord) => Effect.Effect<void>
