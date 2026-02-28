@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
+import { NodeServices } from "@effect/platform-node"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
 import type {
   AgentState,
@@ -22,6 +23,7 @@ import { AgentConfig } from "../src/ai/AgentConfig.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
+import { ToolExecution } from "../src/tools/ToolExecution.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
@@ -408,7 +410,13 @@ const makeChatFlowLayer = (
     Layer.provide(sqlInfrastructureLayer)
   )
 
+  const toolExecutionLayer = ToolExecution.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(NodeServices.layer)
+  )
+
   const toolRegistryLayer = ToolRegistry.layer.pipe(
+    Layer.provide(toolExecutionLayer),
     Layer.provide(governanceTagLayer),
     Layer.provide(memoryPortTagLayer),
     Layer.provide(agentConfigLayer),

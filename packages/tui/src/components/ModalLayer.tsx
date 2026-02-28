@@ -1,20 +1,24 @@
 import * as React from "react"
-import type { ModalId } from "../types.js"
+import type { ChannelSummary, ModalId } from "../types.js"
 import { theme } from "../theme.js"
 import { ModalBox } from "./ModalBox.js"
+import { SessionPickerModal } from "./SessionPickerModal.js"
 
 export function ModalLayer({
   activeModal,
   onClose,
-  children
+  children,
+  sessionPicker
 }: {
   readonly activeModal: ModalId | null
   readonly onClose: () => void
   readonly children: React.ReactNode
+  readonly sessionPicker?: {
+    readonly channels: ReadonlyArray<ChannelSummary>
+    readonly activeChannelId: string
+    readonly selectedIndex: number
+  }
 }) {
-  // onClose is accepted for forward compatibility — will be wired in Task 4
-  void onClose
-
   return (
     <box flexDirection="column" flexGrow={1}>
       {children}
@@ -27,14 +31,26 @@ export function ModalLayer({
           height="100%"
           backgroundColor={theme.bg}
         >
-          {renderModal(activeModal)}
+          {renderModal(
+            activeModal,
+            sessionPicker !== undefined
+              ? { onClose, sessionPicker }
+              : { onClose }
+          )}
         </box>
       )}
     </box>
   )
 }
 
-function renderModal(modalId: ModalId): React.ReactNode {
+function renderModal(modalId: ModalId, handlers: {
+  readonly onClose: () => void
+  readonly sessionPicker?: {
+    readonly channels: ReadonlyArray<ChannelSummary>
+    readonly activeChannelId: string
+    readonly selectedIndex: number
+  }
+}): React.ReactNode {
   // Placeholder modals — each will be replaced with a real component in later slices
   switch (modalId) {
     case "command-palette":
@@ -44,11 +60,19 @@ function renderModal(modalId: ModalId): React.ReactNode {
         </ModalBox>
       )
     case "session-picker":
-      return (
-        <ModalBox title="Sessions" width="60%" height="60%">
-          <text content="Session picker coming soon..." fg={theme.textMuted} />
-        </ModalBox>
-      )
+      return handlers.sessionPicker
+        ? (
+          <SessionPickerModal
+            channels={handlers.sessionPicker.channels}
+            activeChannelId={handlers.sessionPicker.activeChannelId}
+            selectedIndex={handlers.sessionPicker.selectedIndex}
+          />
+        )
+        : (
+          <ModalBox title="Sessions" width="60%" height="60%">
+            <text content="Session picker unavailable." fg={theme.textMuted} />
+          </ModalBox>
+        )
     case "settings":
       return (
         <ModalBox title="Settings" width="50%" height="50%">

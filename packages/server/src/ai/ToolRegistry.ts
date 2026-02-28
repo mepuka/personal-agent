@@ -21,6 +21,7 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
 import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import { ToolExecution } from "../tools/ToolExecution.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
 const DEFAULT_AUDIT_LOG_ID = "auditlog:governance:default:v1" as AuditLogId
@@ -195,6 +196,7 @@ export interface ToolExecutionContext {
   readonly iteration?: number
   readonly channelId: string
   readonly checkpointId?: string
+  readonly checkpointAction?: string
   readonly userId?: string
   readonly content?: string
 }
@@ -234,6 +236,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
       const memoryPort = yield* MemoryPortTag
       const checkpointPort = yield* CheckpointPortTag
       const agentConfig = yield* AgentConfig
+      const toolExecution = yield* ToolExecution
 
       const persistInvocation = (params: {
         readonly context: ToolExecutionContext
@@ -413,7 +416,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           )
 
           // --- Approved bypass path ---
-          if (context.checkpointId !== undefined) {
+          if (context.checkpointId !== undefined && context.checkpointAction === "InvokeTool") {
             const checkpoint = yield* checkpointPort.get(context.checkpointId as CheckpointId).pipe(
               Effect.catchCause(() =>
                 Effect.succeed(null)
@@ -437,7 +440,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             }
 
             // Bypass policy/idempotency — execute directly
-            const result = yield* execute.pipe(
+            const result = yield* governance.enforceSandbox(context.agentId, execute).pipe(
+              Effect.mapError(toToolFailure),
               Effect.tap((r) =>
                 persistInvocation({
                   context,
@@ -603,7 +607,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             )
           )
 
-          return yield* execute.pipe(
+          return yield* governance.enforceSandbox(context.agentId, execute).pipe(
+            Effect.mapError(toToolFailure),
             Effect.tap((result) =>
               persistInvocation({
                 context,
@@ -789,11 +794,17 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   context,
                   TOOL_NAMES.file_write,
                   { path, content },
-                  Effect.succeed({
-                    ok: true as const,
-                    path,
-                    bytesWritten: content.length
-                  }),
+                  toolExecution.writeFile({ path, content }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      bytesWritten: result.bytesWritten
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
                   checkpointSignalsRef
                 ),
               "shell_execute": ({ command, cwd }) =>
@@ -801,12 +812,21 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   context,
                   TOOL_NAMES.shell_execute,
                   { command, cwd },
-                  Effect.succeed({
-                    ok: true as const,
-                    exitCode: 0,
-                    stdout: "(simulated output)",
-                    stderr: ""
-                  }),
+                  toolExecution.executeShell({
+                    command,
+                    ...(cwd !== undefined ? { cwd } : {})
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      exitCode: result.exitCode,
+                      stdout: result.stdout,
+                      stderr: result.stderr
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
                   checkpointSignalsRef
                 ),
               "send_notification": ({ recipient, message }) =>
@@ -814,11 +834,17 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   context,
                   TOOL_NAMES.send_notification,
                   { recipient, message },
-                  Effect.succeed({
-                    ok: true as const,
-                    notificationId: "notif:simulated",
-                    delivered: true
-                  }),
+                  toolExecution.sendNotification({ recipient, message }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      notificationId: result.notificationId,
+                      delivered: result.delivered
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
                   checkpointSignalsRef
                 )
             })
@@ -898,6 +924,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             now: params.now,
             channelId: params.channelId,
             checkpointId: params.checkpointId,
+            checkpointAction: "InvokeTool",
             userId: params.decidedBy
           })
 

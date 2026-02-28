@@ -20,6 +20,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import type * as Socket from "effect/unstable/socket/Socket"
 import { WebChatAdapterEntity } from "../entities/WebChatAdapterEntity.js"
+import { toTurnFailureCode, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
 
 // ---------------------------------------------------------------------------
 // Frame Schemas
@@ -207,13 +208,14 @@ const wsChat = HttpRouter.add(
           }).pipe(
             Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
             Effect.catchCause((cause) => {
+              const message = toTurnFailureMessage(Cause.squash(cause), Cause.pretty(cause))
               const failedEvent = new TurnFailedEvent({
                 type: "turn.failed",
                 sequence: Number.MAX_SAFE_INTEGER,
                 turnId: "",
                 sessionId: "",
-                errorCode: "MESSAGE_ERROR",
-                message: Cause.pretty(cause)
+                errorCode: toTurnFailureCode(Cause.squash(cause), message),
+                message
               })
               return writeFn(encodeToJson(failedEvent)).pipe(Effect.ignore)
             })

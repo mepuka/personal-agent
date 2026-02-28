@@ -438,7 +438,12 @@ export const layer = TurnProcessingWorkflow.toLayer(
           now: payload.createdAt,
           channelId: payload.channelId,
           userId: payload.userId,
-          ...(payload.checkpointId !== undefined ? { checkpointId: payload.checkpointId } : {})
+          ...(payload.checkpointId !== undefined
+            ? {
+              checkpointId: payload.checkpointId,
+              checkpointAction: "ReadMemory" as const
+            }
+            : {})
         },
         rawUserContent: payload.content,
         userPrompt,
@@ -641,6 +646,7 @@ const processWithToolLoop = (params: {
     readonly now: Instant
     readonly channelId: string
     readonly checkpointId?: string
+    readonly checkpointAction?: string
     readonly userId?: string
   }
   readonly rawUserContent: string

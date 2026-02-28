@@ -77,12 +77,26 @@ export class TurnCompletedEvent extends Schema.Class<TurnCompletedEvent>(
   modelUsageJson: Schema.Union([Schema.String, Schema.Null])
 }) {}
 
+export const TurnFailureCode = Schema.Literals([
+  "provider_credit_exhausted",
+  "checkpoint_payload_mismatch",
+  "checkpoint_not_approved",
+  "checkpoint_payload_invalid",
+  "policy_denied",
+  "tool_quota_exceeded",
+  "tool_timeout",
+  "tool_execution_error",
+  "session_entity_error",
+  "turn_processing_error"
+])
+export type TurnFailureCode = typeof TurnFailureCode.Type
+
 export class TurnFailedEvent extends Schema.Class<TurnFailedEvent>("TurnFailedEvent")({
   type: Schema.Literal("turn.failed"),
   sequence: Schema.Number,
   turnId: Schema.String,
   sessionId: Schema.String,
-  errorCode: Schema.String,
+  errorCode: TurnFailureCode,
   message: Schema.String
 }) {}
 

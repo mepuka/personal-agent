@@ -6,6 +6,7 @@ import {
   InvokeToolReplayPayload,
   ReadMemoryReplayPayload,
   type AgentState,
+  type ChannelSummaryRecord,
   type CheckpointRecord,
   type ContentBlock,
   type TurnRecord
@@ -321,6 +322,9 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           return yield* sessionTurnPort.listTurns(channel.activeSessionId)
         })
 
+      const listChannels = (agentId?: AgentId) =>
+        channelPort.list(agentId ? { agentId } : undefined)
+
       const setModelPreference = (params: {
         readonly channelId: ChannelId
         readonly modelOverride?: { readonly provider: string; readonly modelId: string } | null | undefined
@@ -499,6 +503,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         initializeChannel,
         buildTurnPayload,
         processTurn,
+        listChannels,
         getHistory,
         setModelPreference,
         listPendingCheckpoints,
@@ -535,6 +540,10 @@ export type ChannelCoreService = {
   readonly processTurn: (
     turnPayload: ProcessTurnPayload
   ) => Stream.Stream<TurnStreamEvent, TurnProcessingError>
+
+  readonly listChannels: (
+    agentId?: AgentId
+  ) => Effect.Effect<ReadonlyArray<ChannelSummaryRecord>>
 
   readonly getHistory: (
     channelId: ChannelId

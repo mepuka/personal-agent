@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest"
+import { NodeServices } from "@effect/platform-node"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
 import type { AgentState, CheckpointPort, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
-import { rmSync } from "node:fs"
+import { readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
@@ -15,6 +16,7 @@ import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import { ToolExecution } from "../src/tools/ToolExecution.js"
 
 const SESSION_ID = "session:tool-registry" as SessionId
 const CONVERSATION_ID = "conversation:tool-registry" as ConversationId
@@ -275,11 +277,117 @@ describe("ToolRegistry", () => {
     )
     await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
   })
+
+  it("shell_execute uses Effect process runtime and returns command output", async () => {
+    const dbPath = testDatabasePath("tool-registry-shell-execute")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:shell-execute" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Permissive",
+        budgetResetAt: NOW
+      }))
+
+      const output = yield* invokeTool(agentId, "shell_execute", {
+        command: "echo effect-shell"
+      })
+      expect(output).toContain("effect-shell")
+      expect(output).toContain("\"exitCode\":0")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("file_write uses Effect filesystem runtime and writes workspace files", async () => {
+    const dbPath = testDatabasePath("tool-registry-file-write")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:file-write" as AgentId
+    const relativePath = `tmp/tool-registry-${crypto.randomUUID()}.txt`
+    const absolutePath = join(process.cwd(), relativePath)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Permissive",
+        budgetResetAt: NOW
+      }))
+
+      const output = yield* invokeTool(agentId, "file_write", {
+        path: relativePath,
+        content: "effect native write"
+      })
+      expect(output).toContain("bytesWritten")
+      expect(output).toContain(relativePath)
+      expect(readFileSync(absolutePath, "utf8")).toBe("effect native write")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath)),
+      Effect.ensuring(Effect.sync(() => rmSync(absolutePath, { force: true })))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("send_notification persists delivered notifications", async () => {
+    const dbPath = testDatabasePath("tool-registry-send-notification")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:notify" as AgentId
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      const sql = yield* SqlClient.SqlClient
+
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Permissive",
+        budgetResetAt: NOW
+      }))
+
+      const output = yield* invokeTool(agentId, "send_notification", {
+        recipient: "ops",
+        message: "run completed"
+      })
+      expect(output).toContain("notificationId")
+      expect(output).toContain("\"delivered\":true")
+
+      const rows = yield* sql`
+        SELECT recipient, message, delivery_status
+        FROM notifications
+      `.unprepared
+      expect(rows.length).toBe(1)
+      const row = rows[0] as {
+        readonly recipient: string
+        readonly message: string
+        readonly delivery_status: string
+      }
+      expect(row.recipient).toBe("ops")
+      expect(row.message).toBe("run completed")
+      expect(row.delivery_status).toBe("Delivered")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
 })
 
 const invokeTool = (
   agentId: AgentId,
-  toolName: "echo_text" | "math_calculate" | "time_now" | "store_memory" | "retrieve_memories" | "forget_memories",
+  toolName:
+    | "echo_text"
+    | "math_calculate"
+    | "time_now"
+    | "store_memory"
+    | "retrieve_memories"
+    | "forget_memories"
+    | "shell_execute"
+    | "file_write"
+    | "send_notification",
   params: Record<string, unknown>
 ) =>
   Effect.gen(function*() {
@@ -365,6 +473,11 @@ const makeToolRegistryLayer = (
     })
   ).pipe(Layer.provide(checkpointPortSqliteLayer))
 
+  const toolExecutionLayer = ToolExecution.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(NodeServices.layer)
+  )
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
@@ -374,7 +487,9 @@ const makeToolRegistryLayer = (
     memoryPortTagLayer,
     checkpointPortSqliteLayer,
     checkpointPortTagLayer,
+    toolExecutionLayer,
     ToolRegistry.layer.pipe(
+      Layer.provide(toolExecutionLayer),
       Layer.provide(governanceTagLayer),
       Layer.provide(memoryPortTagLayer),
       Layer.provide(mockAgentConfigLayer),

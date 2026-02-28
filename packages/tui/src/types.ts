@@ -2,7 +2,13 @@ export interface ChatMessage {
   readonly role: "user" | "assistant"
   readonly content: string
   readonly turnId: string
-  readonly status: "streaming" | "complete" | "failed" | "checkpoint_required"
+  readonly status:
+    | "streaming"
+    | "complete"
+    | "failed"
+    | "checkpoint_required"
+    | "checkpoint_rejected"
+    | "checkpoint_deferred"
   readonly errorMessage?: string | undefined
   readonly checkpointId?: string | undefined
   readonly checkpointAction?: string | undefined
@@ -26,3 +32,14 @@ export type ModalId =
   | "settings"
   | "memory-search"
   | "tool-inspector"
+
+export interface ChannelSummary {
+  readonly channelId: string
+  readonly channelType: string
+  readonly agentId: string
+  readonly activeSessionId: string
+  readonly activeConversationId: string
+  readonly createdAt: string
+  readonly lastTurnAt: string | null
+  readonly messageCount: number
+}

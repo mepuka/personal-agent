@@ -8,6 +8,17 @@ export type DecideCheckpointResult =
   | { readonly kind: "ack" }
   | { readonly kind: "stream"; readonly stream: Stream.Stream<TurnStreamEvent, unknown> }
 
+export interface ChannelSummary {
+  readonly channelId: string
+  readonly channelType: string
+  readonly agentId: string
+  readonly activeSessionId: string
+  readonly activeConversationId: string
+  readonly createdAt: string
+  readonly lastTurnAt: string | null
+  readonly messageCount: number
+}
+
 export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatClient", {
   make: Effect.gen(function*() {
     const baseUrl = yield* Config.string("PA_SERVER_URL").pipe(
@@ -51,6 +62,17 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         Effect.scoped
       )
 
+    const listChannels = (agentId?: string) => {
+      const query = agentId !== undefined ? `?agentId=${encodeURIComponent(agentId)}` : ""
+      return httpClient.execute(
+        HttpClientRequest.get(`${baseUrl}/channels${query}`)
+      ).pipe(
+        Effect.flatMap((response) => response.json),
+        Effect.map((body: any) => Array.isArray(body?.items) ? body.items as ReadonlyArray<ChannelSummary> : []),
+        Effect.scoped
+      )
+    }
+
     const decideCheckpoint = (
       checkpointId: string,
       decision: "Approved" | "Rejected" | "Deferred"
@@ -82,7 +104,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       Effect.scoped
     )
 
-    return { initialize, sendMessage, decideCheckpoint, getHistory, health } as const
+    return { initialize, sendMessage, decideCheckpoint, getHistory, listChannels, health } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)

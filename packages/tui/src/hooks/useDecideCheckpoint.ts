@@ -29,6 +29,13 @@ export function useDecideCheckpoint(client: ChatClientShape) {
             if (msgs.length === 0) return msgs
             const last = msgs[msgs.length - 1]!
             if (last.status !== "checkpoint_required") return msgs
+
+            if (decision === "Rejected") {
+              return [...msgs.slice(0, -1), { ...last, status: "checkpoint_rejected" as const }]
+            }
+            if (decision === "Deferred") {
+              return [...msgs.slice(0, -1), { ...last, status: "checkpoint_deferred" as const }]
+            }
             return [...msgs.slice(0, -1), { ...last, status: "complete" as const }]
           })
         }

@@ -1,4 +1,4 @@
-import { BunFileSystem, BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import { BunFileSystem, BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
 import type {
   AgentStatePort,
   ChannelPort,
@@ -18,6 +18,7 @@ import { AgentConfig } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
+import { ToolExecution } from "./tools/ToolExecution.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
@@ -211,7 +212,13 @@ const chatPersistenceLayer = ChatPersistence.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
 )
 
+const toolExecutionLayer = ToolExecution.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer),
+  Layer.provide(BunServices.layer)
+)
+
 const toolRegistryLayer = ToolRegistry.layer.pipe(
+  Layer.provide(toolExecutionLayer),
   Layer.provide(governancePortTagLayer),
   Layer.provide(memoryPortTagLayer),
   Layer.provide(agentConfigLayer),

@@ -700,6 +700,24 @@ const loader = SqliteMigrator.fromRecord({
       ALTER TABLE checkpoints
       ADD COLUMN consumed_by TEXT
     `.unprepared.pipe(Effect.catch(() => Effect.void))
+  }),
+  "0015_notifications_table": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS notifications (
+        notification_id TEXT PRIMARY KEY,
+        recipient TEXT NOT NULL,
+        message TEXT NOT NULL,
+        delivery_status TEXT NOT NULL CHECK (delivery_status IN ('Delivered', 'Failed')),
+        created_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+      ON notifications (created_at DESC)
+    `.unprepared
   })
 })
 

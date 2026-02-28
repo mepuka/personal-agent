@@ -4,7 +4,14 @@ import { Effect, ServiceMap } from "effect"
 import * as React from "react"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { channelIdAtom, connectionStatusAtom, messagesAtom, modalAtom } from "./atoms/session.js"
+import {
+  availableChannelsAtom,
+  channelIdAtom,
+  connectionStatusAtom,
+  messagesAtom,
+  modalAtom,
+  toolEventsAtom
+} from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
 import { ModalLayer } from "./components/ModalLayer.js"
@@ -19,17 +26,109 @@ type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
 type FocusTarget = "input" | "tools"
 
+const DEFAULT_AGENT_ID = "agent:bootstrap"
+
+const toChatMessages = (history: unknown): Array<ChatMessage> => {
+  if (!Array.isArray(history)) {
+    return []
+  }
+
+  const restored: Array<ChatMessage> = []
+  for (const entry of history as Array<any>) {
+    const participantRole = String(entry?.participantRole ?? "")
+    const content = String(entry?.message?.content ?? entry?.message_content ?? "")
+    const turnId = String(entry?.turnId ?? entry?.turn_id ?? "")
+
+    if (turnId.length === 0) {
+      continue
+    }
+
+    if (participantRole === "UserRole") {
+      restored.push({ role: "user", content, turnId, status: "complete" })
+      continue
+    }
+
+    if (participantRole === "AssistantRole" || participantRole === "ToolRole") {
+      restored.push({ role: "assistant", content, turnId, status: "complete" })
+    }
+  }
+
+  return restored
+}
+
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
   const initializedRef = React.useRef(false)
   const sendMessage = useSendMessage(client)
   const decideCheckpoint = useDecideCheckpoint(client)
   const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
+  const [sessionPickerIndex, setSessionPickerIndex] = React.useState(0)
   const activeModal = useAtomValue(modalAtom)
+  const activeChannelId = useAtomValue(channelIdAtom)
+  const availableChannels = useAtomValue(availableChannelsAtom)
   const { width } = useTerminalDimensions()
   const inputRef = React.useRef(null)
 
   const showToolPane = width >= 80
+
+  const refreshChannels = React.useCallback(() => {
+    const load = Effect.gen(function*() {
+      const channels = yield* client.listChannels(DEFAULT_AGENT_ID)
+      registry.set(availableChannelsAtom, channels)
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          console.error("Loading channels failed:", error)
+        })
+      )
+    )
+    Effect.runFork(load)
+  }, [registry, client])
+
+  const restoreChannel = React.useCallback((channelId: string) => {
+    const program = Effect.gen(function*() {
+      registry.set(connectionStatusAtom, "connecting")
+      registry.set(channelIdAtom, channelId)
+      yield* client.initialize(channelId, DEFAULT_AGENT_ID)
+      const history = yield* client.getHistory(channelId)
+      registry.set(messagesAtom, toChatMessages(history))
+      registry.set(toolEventsAtom, [])
+      registry.set(connectionStatusAtom, "connected")
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          console.error("Channel restore failed:", error)
+          registry.set(connectionStatusAtom, "error")
+        })
+      )
+    )
+    Effect.runFork(program)
+  }, [registry, client])
+
+  const selectChannel = React.useCallback((channelId: string) => {
+    registry.set(modalAtom, null)
+    if (channelId === activeChannelId) {
+      return
+    }
+    restoreChannel(channelId)
+  }, [registry, restoreChannel, activeChannelId])
+
+  React.useEffect(() => {
+    if (activeModal !== "session-picker") {
+      return
+    }
+
+    const activeIndex = availableChannels.findIndex((channel) => channel.channelId === activeChannelId)
+    setSessionPickerIndex((prev) => {
+      if (availableChannels.length === 0) {
+        return 0
+      }
+      if (activeIndex >= 0) {
+        return activeIndex
+      }
+      return Math.min(prev, availableChannels.length - 1)
+    })
+  }, [activeModal, availableChannels, activeChannelId])
 
   useKeyboard((key: { name: string; ctrl: boolean }) => {
     if (key.ctrl && key.name === "c") {
@@ -40,11 +139,43 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       registry.set(modalAtom, null)
       return
     }
+
+    if (activeModal === "session-picker") {
+      if (key.name === "up") {
+        setSessionPickerIndex((prev) => {
+          if (availableChannels.length === 0) {
+            return 0
+          }
+          return (prev - 1 + availableChannels.length) % availableChannels.length
+        })
+        return
+      }
+      if (key.name === "down") {
+        setSessionPickerIndex((prev) => {
+          if (availableChannels.length === 0) {
+            return 0
+          }
+          return (prev + 1) % availableChannels.length
+        })
+        return
+      }
+      if (key.name === "enter" || key.name === "return") {
+        const selected = availableChannels[sessionPickerIndex]
+        if (selected !== undefined) {
+          selectChannel(selected.channelId)
+        }
+        return
+      }
+    }
+
     if (key.ctrl && key.name === "k") {
       registry.set(modalAtom, "command-palette")
       return
     }
     if (key.ctrl && key.name === "s") {
+      refreshChannels()
+      const activeIndex = availableChannels.findIndex((channel) => channel.channelId === activeChannelId)
+      setSessionPickerIndex(activeIndex >= 0 ? activeIndex : 0)
       registry.set(modalAtom, "session-picker")
       return
     }
@@ -72,24 +203,19 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     }
     initializedRef.current = true
 
-    const chId = `channel:${crypto.randomUUID()}`
-    registry.set(channelIdAtom, chId)
-    registry.set(connectionStatusAtom, "connecting")
-
     const init = Effect.gen(function*() {
-      yield* client.initialize(chId, "agent:bootstrap")
+      registry.set(connectionStatusAtom, "connecting")
+      const channels = yield* client.listChannels(DEFAULT_AGENT_ID)
+      registry.set(availableChannelsAtom, channels)
+      const chId = channels[0]?.channelId ?? `channel:${crypto.randomUUID()}`
+      registry.set(channelIdAtom, chId)
+
+      yield* client.initialize(chId, DEFAULT_AGENT_ID)
       registry.set(connectionStatusAtom, "connected")
 
       const history = yield* client.getHistory(chId)
-      if (Array.isArray(history) && history.length > 0) {
-        const restored: Array<ChatMessage> = history.map((msg: any) => ({
-          role: msg.role as "user" | "assistant",
-          content: String(msg.content ?? ""),
-          turnId: String(msg.turnId ?? ""),
-          status: "complete" as const
-        }))
-        registry.set(messagesAtom, restored)
-      }
+      registry.set(messagesAtom, toChatMessages(history))
+      registry.set(toolEventsAtom, [])
     }).pipe(
       Effect.catch((error) =>
         Effect.sync(() => {
@@ -102,7 +228,15 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   }, [registry, client])
 
   return (
-    <ModalLayer activeModal={activeModal} onClose={closeModal}>
+    <ModalLayer
+      activeModal={activeModal}
+      onClose={closeModal}
+      sessionPicker={{
+        channels: availableChannels,
+        activeChannelId,
+        selectedIndex: sessionPickerIndex
+      }}
+    >
       <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
         <box flexDirection="row" flexGrow={1}>
           <ChatPane />

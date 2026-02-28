@@ -8,6 +8,7 @@ import { join } from "node:path"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
+import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 
 const makeChannel = (overrides: Partial<ChannelRecord> = {}): ChannelRecord => ({
   channelId: "channel:test" as ChannelId,
@@ -186,6 +187,131 @@ describe("ChannelPortSqlite", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("list returns channels ordered by most recent activity with counts", () => {
+    const dbPath = testDatabasePath("channel-list")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+
+      const older = makeChannel({
+        channelId: "channel:older" as ChannelId,
+        activeSessionId: "session:older" as SessionId,
+        activeConversationId: "conv:older" as ConversationId,
+        createdAt: instant("2026-02-24T12:00:00.000Z")
+      })
+      const newer = makeChannel({
+        channelId: "channel:newer" as ChannelId,
+        activeSessionId: "session:newer" as SessionId,
+        activeConversationId: "conv:newer" as ConversationId,
+        createdAt: instant("2026-02-24T12:05:00.000Z")
+      })
+
+      yield* sessionPort.startSession({
+        sessionId: older.activeSessionId,
+        conversationId: older.activeConversationId,
+        tokenCapacity: 1000,
+        tokensUsed: 0
+      })
+      yield* sessionPort.startSession({
+        sessionId: newer.activeSessionId,
+        conversationId: newer.activeConversationId,
+        tokenCapacity: 1000,
+        tokensUsed: 0
+      })
+
+      yield* port.create(older)
+      yield* port.create(newer)
+
+      yield* sessionPort.appendTurn({
+        turnId: "turn:older:1" as any,
+        sessionId: older.activeSessionId,
+        conversationId: older.activeConversationId,
+        turnIndex: 0,
+        participantRole: "UserRole",
+        participantAgentId: older.agentId,
+        message: {
+          messageId: "message:older:1" as any,
+          role: "UserRole",
+          content: "older",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "older" }]
+        },
+        modelFinishReason: null,
+        modelUsageJson: null,
+        createdAt: instant("2026-02-24T12:06:00.000Z")
+      })
+
+      yield* sessionPort.appendTurn({
+        turnId: "turn:newer:1" as any,
+        sessionId: newer.activeSessionId,
+        conversationId: newer.activeConversationId,
+        turnIndex: 0,
+        participantRole: "UserRole",
+        participantAgentId: newer.agentId,
+        message: {
+          messageId: "message:newer:1" as any,
+          role: "UserRole",
+          content: "newer",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "newer" }]
+        },
+        modelFinishReason: null,
+        modelUsageJson: null,
+        createdAt: instant("2026-02-24T12:07:00.000Z")
+      })
+
+      yield* sessionPort.appendTurn({
+        turnId: "turn:newer:2" as any,
+        sessionId: newer.activeSessionId,
+        conversationId: newer.activeConversationId,
+        turnIndex: 0,
+        participantRole: "AssistantRole",
+        participantAgentId: newer.agentId,
+        message: {
+          messageId: "message:newer:2" as any,
+          role: "AssistantRole",
+          content: "reply",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "reply" }]
+        },
+        modelFinishReason: "stop",
+        modelUsageJson: "{}",
+        createdAt: instant("2026-02-24T12:08:00.000Z")
+      })
+
+      const listed = yield* port.list()
+      expect(listed.map((channel) => channel.channelId)).toEqual([
+        "channel:newer",
+        "channel:older"
+      ])
+      expect(listed[0]?.messageCount).toBe(2)
+      expect(listed[1]?.messageCount).toBe(1)
+      expect(listed[0]?.lastTurnAt).not.toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("list supports filtering by agentId", () => {
+    const dbPath = testDatabasePath("channel-list-filter")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+      yield* port.create(makeChannel({
+        channelId: "channel:agent-a" as ChannelId,
+        agentId: "agent:a" as AgentId
+      }))
+      yield* port.create(makeChannel({
+        channelId: "channel:agent-b" as ChannelId,
+        agentId: "agent:b" as AgentId
+      }))
+
+      const filtered = yield* port.list({ agentId: "agent:a" as AgentId })
+      expect(filtered).toHaveLength(1)
+      expect(filtered[0]?.channelId).toBe("channel:agent-a")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeTestLayer = (dbPath: string) => {
@@ -194,6 +320,7 @@ const makeTestLayer = (dbPath: string) => {
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
 
   return ChannelPortSqlite.layer.pipe(
+    Layer.provideMerge(SessionTurnPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))),
     Layer.provide(sqlInfrastructureLayer)
   )
 }

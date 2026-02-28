@@ -26,13 +26,31 @@ export function MessageBubble({ message }: { readonly message: ChatMessage }) {
       ) : (
         <text
           content={`${message.content}${message.status === "streaming" ? " ..." : ""}`}
-          fg={message.status === "failed" ? theme.error : theme.text}
+          fg={
+            message.status === "failed" || message.status === "checkpoint_rejected"
+              ? theme.error
+              : message.status === "checkpoint_deferred"
+              ? theme.textMuted
+              : theme.text
+          }
         />
       )}
       {message.status === "checkpoint_required" ? (
         <text
           content={`  ⚠ Checkpoint: ${message.checkpointAction ?? "unknown"} — ${message.checkpointReason ?? ""}`}
           fg={theme.statusPending}
+        />
+      ) : null}
+      {message.status === "checkpoint_rejected" ? (
+        <text
+          content="  ✗ Checkpoint rejected."
+          fg={theme.error}
+        />
+      ) : null}
+      {message.status === "checkpoint_deferred" ? (
+        <text
+          content="  … Checkpoint deferred."
+          fg={theme.textMuted}
         />
       ) : null}
       {message.errorMessage ? (

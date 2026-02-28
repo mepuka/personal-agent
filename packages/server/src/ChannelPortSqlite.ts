@@ -3,7 +3,7 @@ import { Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import type { AgentId, ChannelId, ConversationId, SessionId } from "../../domain/src/ids.js"
-import type { ChannelPort, ChannelRecord } from "../../domain/src/ports.js"
+import type { ChannelPort, ChannelRecord, ChannelSummaryRecord } from "../../domain/src/ports.js"
 import { ChannelCapability, ChannelType } from "../../domain/src/status.js"
 
 const ChannelRowSchema = Schema.Struct({
@@ -18,6 +18,18 @@ const ChannelRowSchema = Schema.Struct({
   created_at: Schema.String
 })
 type ChannelRow = typeof ChannelRowSchema.Type
+
+const ChannelSummaryRowSchema = Schema.Struct({
+  channel_id: Schema.String,
+  channel_type: ChannelType,
+  agent_id: Schema.String,
+  active_session_id: Schema.String,
+  active_conversation_id: Schema.String,
+  created_at: Schema.String,
+  last_turn_at: Schema.Union([Schema.String, Schema.Null]),
+  message_count: Schema.Number
+})
+type ChannelSummaryRow = typeof ChannelSummaryRowSchema.Type
 
 const ChannelIdRequest = Schema.Struct({ channelId: Schema.String })
 const CapabilitiesFromJsonString = Schema.fromJsonString(Schema.Array(ChannelCapability))
@@ -68,6 +80,66 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
               onSome: decodeChannelRow
             })
           ),
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
+      const list: ChannelPort["list"] = (query) =>
+        Effect.gen(function*() {
+          const rows = query?.agentId
+            ? yield* sql`
+                SELECT
+                  c.channel_id,
+                  c.channel_type,
+                  c.agent_id,
+                  c.active_session_id,
+                  c.active_conversation_id,
+                  c.created_at,
+                  MAX(t.created_at) AS last_turn_at,
+                  COALESCE(COUNT(t.turn_id), 0) AS message_count
+                FROM channels c
+                LEFT JOIN turns t ON t.session_id = c.active_session_id
+                WHERE c.agent_id = ${query.agentId}
+                GROUP BY
+                  c.channel_id,
+                  c.channel_type,
+                  c.agent_id,
+                  c.active_session_id,
+                  c.active_conversation_id,
+                  c.created_at
+                ORDER BY
+                  COALESCE(MAX(t.created_at), c.created_at) DESC,
+                  c.created_at DESC
+              `.withoutTransform
+            : yield* sql`
+                SELECT
+                  c.channel_id,
+                  c.channel_type,
+                  c.agent_id,
+                  c.active_session_id,
+                  c.active_conversation_id,
+                  c.created_at,
+                  MAX(t.created_at) AS last_turn_at,
+                  COALESCE(COUNT(t.turn_id), 0) AS message_count
+                FROM channels c
+                LEFT JOIN turns t ON t.session_id = c.active_session_id
+                GROUP BY
+                  c.channel_id,
+                  c.channel_type,
+                  c.agent_id,
+                  c.active_session_id,
+                  c.active_conversation_id,
+                  c.created_at
+                ORDER BY
+                  COALESCE(MAX(t.created_at), c.created_at) DESC,
+                  c.created_at DESC
+              `.withoutTransform
+
+          return rows.map((row: any) => {
+            const decoded = Schema.decodeUnknownSync(ChannelSummaryRowSchema)(row)
+            return decodeChannelSummaryRow(decoded)
+          })
+        }).pipe(
           Effect.tapDefect(Effect.logError),
           Effect.orDie
         )
@@ -137,6 +209,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
 
       return {
         get,
+        list,
         create,
         updateModelPreference
       } as const
@@ -158,4 +231,15 @@ const decodeChannelRow = (row: ChannelRow): ChannelRecord => ({
     ? decodeGenerationConfigOverrideJson(row.generation_config_override_json)
     : null,
   createdAt: decodeSqlInstant(row.created_at)
+})
+
+const decodeChannelSummaryRow = (row: ChannelSummaryRow): ChannelSummaryRecord => ({
+  channelId: row.channel_id as ChannelSummaryRecord["channelId"],
+  channelType: row.channel_type,
+  agentId: row.agent_id as ChannelSummaryRecord["agentId"],
+  activeSessionId: row.active_session_id as ChannelSummaryRecord["activeSessionId"],
+  activeConversationId: row.active_conversation_id as ChannelSummaryRecord["activeConversationId"],
+  createdAt: decodeSqlInstant(row.created_at),
+  lastTurnAt: row.last_turn_at ? decodeSqlInstant(row.last_turn_at) : null,
+  messageCount: row.message_count
 })

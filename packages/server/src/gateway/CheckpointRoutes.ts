@@ -5,6 +5,7 @@ import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
+import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,19 +27,16 @@ const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
 })
 
 const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
-  // Schema.ErrorClass subclasses don't set Error.message — extract from fields
-  const errorObj = error as Record<string, unknown> | null
-  const reason = typeof errorObj?.reason === "string" ? errorObj.reason : ""
-  const tag = typeof errorObj?._tag === "string" ? errorObj._tag : ""
-  const fallback = error instanceof Error ? error.message : "Replay stream failed unexpectedly"
-  const message = reason || tag || fallback
+  const identity = toTurnFailureIdentity(error)
+  const message = toTurnFailureMessage(error, "Replay stream failed unexpectedly")
+  const errorCode = toTurnFailureCode(error, message)
 
   return {
     type: "turn.failed",
     sequence: Number.MAX_SAFE_INTEGER,
-    turnId: typeof errorObj?.turnId === "string" ? errorObj.turnId : "unknown",
-    sessionId: "unknown",
-    errorCode: "ReplayError",
+    turnId: identity.turnId || "unknown",
+    sessionId: identity.sessionId || "unknown",
+    errorCode,
     message
   }
 }

@@ -446,9 +446,23 @@ export interface ChannelRecord {
   readonly createdAt: Instant
 }
 
+export interface ChannelSummaryRecord {
+  readonly channelId: ChannelId
+  readonly channelType: ChannelType
+  readonly agentId: AgentId
+  readonly activeSessionId: SessionId
+  readonly activeConversationId: ConversationId
+  readonly createdAt: Instant
+  readonly lastTurnAt: Instant | null
+  readonly messageCount: number
+}
+
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
+  readonly list: (query?: {
+    readonly agentId?: AgentId
+  }) => Effect.Effect<ReadonlyArray<ChannelSummaryRecord>>
   readonly updateModelPreference: (
     channelId: ChannelId,
     update: {

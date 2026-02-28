@@ -5,7 +5,9 @@ import { Effect, Layer, Option, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
+import { ChannelCore } from "../ChannelCore.js"
 import { CLIAdapterEntity } from "../entities/CLIAdapterEntity.js"
+import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,18 +61,8 @@ const badRequest = (message: string) =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-const getStringField = (value: unknown, key: string): string => {
-  if (!isRecord(value)) {
-    return ""
-  }
-
-  const field = value[key]
-  return typeof field === "string" ? field : ""
-}
-
 const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
-  const turnId = getStringField(error, "turnId")
-  const sessionId = getStringField(error, "sessionId")
+  const identity = toTurnFailureIdentity(error)
 
   if (
     typeof error === "object" &&
@@ -84,40 +76,54 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
       return {
         type: "turn.failed",
         sequence: Number.MAX_SAFE_INTEGER,
-        turnId,
-        sessionId,
-        errorCode,
+        turnId: identity.turnId || "unknown",
+        sessionId: identity.sessionId || "unknown",
+        errorCode: "turn_processing_error",
         message: `Channel not found: ${channelId}`
       }
     }
-
-    const message = "reason" in error && typeof error.reason === "string"
-      ? error.reason
-      : errorCode
-
-    return {
-      type: "turn.failed",
-      sequence: Number.MAX_SAFE_INTEGER,
-      turnId,
-      sessionId,
-      errorCode,
-      message
-    }
   }
+
+  const message = toTurnFailureMessage(error, "Turn processing failed unexpectedly")
+  const errorCode = toTurnFailureCode(error, message)
 
   return {
     type: "turn.failed",
     sequence: Number.MAX_SAFE_INTEGER,
-    turnId,
-    sessionId,
-    errorCode: "TurnProcessingError",
-    message: error instanceof Error ? error.message : String(error)
+    turnId: identity.turnId || "unknown",
+    sessionId: identity.sessionId || "unknown",
+    errorCode,
+    message
   }
 }
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+
+const listChannels = HttpRouter.add(
+  "GET",
+  "/channels",
+  (request) =>
+    Effect.gen(function*() {
+      const channelCore = yield* ChannelCore
+      const url = new URL(request.url, "http://localhost")
+      const agentId = url.searchParams.get("agentId") ?? undefined
+      const items = yield* channelCore.listChannels(agentId as any)
+      return yield* HttpServerResponse.json({
+        items,
+        totalCount: items.length
+      })
+    }).pipe(
+      Effect.withSpan("ChannelRoutes.listChannels"),
+      Effect.catchCause(() =>
+        HttpServerResponse.json(
+          { error: "InternalServerError" },
+          { status: 500 }
+        )
+      )
+    )
+)
 
 const initializeChannel = HttpRouter.add(
   "POST",
@@ -317,4 +323,4 @@ const health = HttpRouter.add(
 // ---------------------------------------------------------------------------
 
 export const healthLayer = health // always-on, never gated
-export const layer = Layer.mergeAll(initializeChannel, sendMessage, getHistory, getStatus, setModelPreference) // gatable
+export const layer = Layer.mergeAll(listChannels, initializeChannel, sendMessage, getHistory, getStatus, setModelPreference) // gatable
