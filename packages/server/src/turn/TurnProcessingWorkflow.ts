@@ -157,7 +157,7 @@ const PolicyDecisionSchema = Schema.Struct({
 
 const PersistTurnError = Schema.Union([SessionNotFound, ContextWindowExceeded])
 
-const toProviderConfigOverride = (
+export const toProviderConfigOverride = (
   provider: string,
   config: {
     readonly temperature?: number
@@ -182,7 +182,7 @@ const toProviderConfigOverride = (
   return overrides
 }
 
-const inferToolChoice = (
+export const inferToolChoice = (
   rawUserContent: string
 ): { readonly toolChoice: { readonly tool: "shell_execute" } } | {} => {
   const normalized = rawUserContent.trim().toLowerCase()
@@ -756,7 +756,7 @@ const writeAuditEntry = (
     })
   }).asEffect().pipe(Effect.ignore)
 
-const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
+export const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
   turnId: payload.turnId as TurnId,
   sessionId: payload.sessionId as SessionId,
   conversationId: payload.conversationId as ConversationId,
@@ -776,7 +776,7 @@ const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
   createdAt: payload.createdAt
 })
 
-const makeAssistantTurn = (
+export const makeAssistantTurn = (
   payload: ProcessTurnPayload,
   details: {
     readonly assistantContent: string
@@ -802,7 +802,7 @@ const makeAssistantTurn = (
   createdAt: payload.createdAt
 })
 
-const toPromptText = (
+export const toPromptText = (
   fallback: string,
   contentBlocks: ReadonlyArray<ContentBlock>
 ): string => {
@@ -815,7 +815,7 @@ const toPromptText = (
   return textFromBlocks.length > 0 ? textFromBlocks : fallback
 }
 
-const toTurnModelFailure = (
+export const toTurnModelFailure = (
   turnId: string,
   error: unknown
 ): TurnModelFailure =>
@@ -829,7 +829,7 @@ const toTurnModelFailure = (
       reason: normalizeModelFailureReason(toModelFailureMessage(error))
     })
 
-const toModelFailureMessage = (error: unknown): string => {
+export const toModelFailureMessage = (error: unknown): string => {
   if (typeof error === "string") {
     return error
   }
@@ -847,17 +847,17 @@ const toModelFailureMessage = (error: unknown): string => {
   return String(error)
 }
 
-const toModelFailureAuditReason = (
+export const toModelFailureAuditReason = (
   reason: string
 ): TurnAuditReasonCode =>
   isProviderCreditExhaustedReason(reason)
     ? "turn_processing_provider_credit_exhausted"
     : "turn_processing_model_error"
 
-const isProviderCreditExhaustedReason = (reason: string): boolean =>
+export const isProviderCreditExhaustedReason = (reason: string): boolean =>
   reason.startsWith("provider_credit_exhausted:")
 
-const normalizeModelFailureReason = (reason: string): string => {
+export const normalizeModelFailureReason = (reason: string): string => {
   const trimmed = reason.trim()
   if (trimmed.length === 0) {
     return "model_error"
@@ -870,7 +870,7 @@ const normalizeModelFailureReason = (reason: string): string => {
     : trimmed
 }
 
-const looksLikeProviderCreditExhausted = (reason: string): boolean => {
+export const looksLikeProviderCreditExhausted = (reason: string): boolean => {
   const normalized = reason.toLowerCase()
   return normalized.includes("credit balance is too low")
     || normalized.includes("insufficient credits")
@@ -878,7 +878,7 @@ const looksLikeProviderCreditExhausted = (reason: string): boolean => {
     || normalized.includes("billing")
 }
 
-const zeroUsage = (): Response.Usage =>
+export const zeroUsage = (): Response.Usage =>
   new Response.Usage({
     inputTokens: {
       uncached: 0,
@@ -893,10 +893,10 @@ const zeroUsage = (): Response.Usage =>
     }
   })
 
-const addOptional = (a: number | undefined, b: number | undefined): number =>
+export const addOptional = (a: number | undefined, b: number | undefined): number =>
   (a ?? 0) + (b ?? 0)
 
-const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage =>
+export const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage =>
   new Response.Usage({
     inputTokens: {
       uncached: addOptional(left.inputTokens.uncached, right.inputTokens.uncached),
@@ -911,7 +911,7 @@ const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage
     }
   })
 
-const makeLoopCapResponse = (
+export const makeLoopCapResponse = (
   maxIterations: number,
   usage: Response.Usage
 ): LanguageModel.GenerateTextResponse<any> =>
