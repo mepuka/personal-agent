@@ -789,7 +789,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   { recipient, message },
                   Effect.succeed({
                     ok: true as const,
-                    notificationId: `notif:${crypto.randomUUID()}`,
+                    notificationId: "notif:simulated",
                     delivered: true
                   }),
                   checkpointSignalsRef
