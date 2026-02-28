@@ -634,6 +634,59 @@ const loader = SqliteMigrator.fromRecord({
         ('policy:transition_task:standard:v1', 'TransitionTask', 'Standard', 'AllTools', 'Allow', 'transition_task_standard_allow', 10, 1, ${now}, ${now}),
         ('policy:transition_task:restrictive:v1', 'TransitionTask', 'Restrictive', 'AllTools', 'RequireApproval', 'transition_task_restrictive_requires_approval', 10, 1, ${now}, ${now})
     `.unprepared
+  }),
+  "0013_test_tool_definitions_and_policies": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const now = new Date().toISOString()
+
+    // Tool definitions — is_safe_standard = 0 so SafeStandardTools selector won't match
+    yield* sql`
+      INSERT OR IGNORE INTO tool_definitions (
+        tool_definition_id,
+        tool_name,
+        source_kind,
+        integration_id,
+        is_safe_standard,
+        created_at
+      ) VALUES
+        ('tooldef:file_write:v1', 'file_write', 'BuiltIn', NULL, 0, ${now}),
+        ('tooldef:shell_execute:v1', 'shell_execute', 'BuiltIn', NULL, 0, ${now}),
+        ('tooldef:send_notification:v1', 'send_notification', 'BuiltIn', NULL, 0, ${now})
+    `.unprepared
+
+    // Standard mode: ExplicitToolList → RequireApproval (precedence 15)
+    // Sits between SafeStandardTools Allow (10) and AllTools Deny (20)
+    yield* sql`
+      INSERT OR IGNORE INTO permission_policies (
+        policy_id,
+        action,
+        permission_mode,
+        selector,
+        decision,
+        reason_template,
+        precedence,
+        active,
+        created_at,
+        updated_at
+      ) VALUES
+        ('policy:invoke_tool:standard:require_file_write:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'file_write_requires_approval', 15, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:require_shell_execute:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'shell_execute_requires_approval', 15, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:require_send_notification:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'send_notification_requires_approval', 15, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_write:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_write_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_shell_execute:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'shell_execute_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_send_notification:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'send_notification_permissive_allow', 5, 1, ${now}, ${now})
+    `.unprepared
+
+    // Link tools to their ExplicitToolList policies via junction table
+    yield* sql`
+      INSERT OR IGNORE INTO permission_policy_tools (policy_id, tool_definition_id) VALUES
+        ('policy:invoke_tool:standard:require_file_write:v1', 'tooldef:file_write:v1'),
+        ('policy:invoke_tool:standard:require_shell_execute:v1', 'tooldef:shell_execute:v1'),
+        ('policy:invoke_tool:standard:require_send_notification:v1', 'tooldef:send_notification:v1'),
+        ('policy:invoke_tool:permissive:allow_file_write:v1', 'tooldef:file_write:v1'),
+        ('policy:invoke_tool:permissive:allow_shell_execute:v1', 'tooldef:shell_execute:v1'),
+        ('policy:invoke_tool:permissive:allow_send_notification:v1', 'tooldef:send_notification:v1')
+    `.unprepared
   })
 })
 
