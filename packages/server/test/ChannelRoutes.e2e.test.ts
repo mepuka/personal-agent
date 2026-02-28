@@ -1,9 +1,9 @@
 import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
-import type { ChannelId } from "@template/domain/ids"
-import type { AgentStatePort, ChannelPort, CheckpointPort, SessionTurnPort } from "@template/domain/ports"
-import { Effect, Layer, Stream } from "effect"
+import type { ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
+import type { AgentStatePort, ChannelPort, CheckpointPort, CheckpointRecord, SessionTurnPort } from "@template/domain/ports"
+import { DateTime, Effect, Layer, Stream } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { HttpRouter } from "effect/unstable/http"
@@ -14,19 +14,21 @@ import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
-import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
+import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { layer as CLIAdapterEntityLayer } from "../src/entities/CLIAdapterEntity.js"
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { healthLayer as HealthRoutesLayer, layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
+import { layer as CheckpointRoutesLayer } from "../src/gateway/CheckpointRoutes.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
-import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
+import { TurnModelFailure, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
 // ---------------------------------------------------------------------------
 // Mock TurnProcessingRuntime — same as CLIAdapterEntity.test.ts
@@ -47,8 +49,48 @@ const makeMockTurnProcessingRuntime = () =>
         modelFinishReason: "stop",
         modelUsageJson: "{}"
       }),
-    processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> =>
-      Stream.make(
+    processTurnStream: (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent> => {
+      if (input.content.includes("credit fail")) {
+        return Stream.fail(new TurnModelFailure({
+          turnId: input.turnId,
+          reason: "provider_credit_exhausted: Your credit balance is too low to access the Anthropic API."
+        })) as any
+      }
+
+      if (input.content.includes("checkpoint please")) {
+        return Stream.make(
+          {
+            type: "turn.started" as const,
+            sequence: 1,
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+            createdAt: input.createdAt
+          },
+          {
+            type: "turn.checkpoint_required" as const,
+            sequence: 2,
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+            checkpointId: "checkpoint:mock",
+            action: "InvokeTool",
+            reason: "requires approval"
+          },
+          {
+            type: "turn.completed" as const,
+            sequence: 3,
+            turnId: input.turnId,
+            sessionId: input.sessionId,
+            accepted: false,
+            auditReasonCode: "turn_processing_checkpoint_required",
+            iterationsUsed: 1,
+            toolCallsTotal: 1,
+            modelFinishReason: "tool-calls",
+            modelUsageJson: "{}"
+          }
+        )
+      }
+
+      return Stream.make(
         {
           type: "turn.started" as const,
           sequence: 1,
@@ -76,6 +118,7 @@ const makeMockTurnProcessingRuntime = () =>
           modelUsageJson: "{}"
         }
       )
+    }
   } as any)
 
 // ---------------------------------------------------------------------------
@@ -133,6 +176,11 @@ const makeAppLayer = (dbPath: string) => {
   ).pipe(Layer.provide(checkpointPortSqliteLayer))
 
   const mockTurnProcessingRuntimeLayer = makeMockTurnProcessingRuntime()
+  const toolRegistryStubLayer = Layer.succeed(ToolRegistry, {
+    makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in ChannelRoutes tests"),
+    executeApprovedCheckpointTool: () =>
+      Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in ChannelRoutes tests")
+  } as any)
   const sessionEntityLayer = SessionEntityLayer.pipe(
     Layer.provide(clusterLayer),
     Layer.provide(sessionTurnTagLayer),
@@ -159,7 +207,8 @@ const makeAppLayer = (dbPath: string) => {
     Layer.provide(checkpointPortTagLayer),
     Layer.provide(mockTurnProcessingRuntimeLayer),
     Layer.provide(sessionEntityLayer),
-    Layer.provide(mockAgentConfigLayer)
+    Layer.provide(mockAgentConfigLayer),
+    Layer.provide(toolRegistryStubLayer)
   )
 
   const cliAdapterEntityLayer = CLIAdapterEntityLayer.pipe(
@@ -179,6 +228,7 @@ const makeAppLayer = (dbPath: string) => {
     checkpointPortSqliteLayer,
     checkpointPortTagLayer,
     mockTurnProcessingRuntimeLayer,
+    channelCoreLayer,
     sessionEntityLayer,
     cliAdapterEntityLayer
   ).pipe(
@@ -198,7 +248,20 @@ const cleanupDatabase = (path: string) =>
     rmSync(path, { force: true })
   })
 
-const AllRoutesLayer = Layer.mergeAll(ChannelRoutesLayer, HealthRoutesLayer)
+const AllRoutesLayer = Layer.mergeAll(ChannelRoutesLayer, CheckpointRoutesLayer, HealthRoutesLayer)
+
+const makeCheckpointSeedLayer = (dbPath: string) => {
+  const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+  const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+  const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  return CheckpointPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+}
+
+const seedCheckpoint = (dbPath: string, record: CheckpointRecord) =>
+  Effect.gen(function*() {
+    const checkpointPort = yield* CheckpointPortSqlite
+    yield* checkpointPort.create(record)
+  }).pipe(Effect.provide(makeCheckpointSeedLayer(dbPath)))
 
 // ---------------------------------------------------------------------------
 // Tests — using Layer.build pattern for streaming support
@@ -320,6 +383,144 @@ describe("ChannelRoutes e2e", () => {
 
       expect(body.length).toBeGreaterThan(0)
       expect(body).toContain("turn.started")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("send message e2e emits checkpoint_required and terminal completed(false)", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-stream")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const sendReq = yield* HttpClientRequest.post(`/channels/${channelId}/messages`).pipe(
+        HttpClientRequest.bodyJson({ content: "checkpoint please" })
+      )
+      const body = yield* client.execute(sendReq).pipe(
+        Effect.flatMap((r) => r.text)
+      )
+
+      expect(body).toContain("turn.checkpoint_required")
+      expect(body).toContain("turn.completed")
+      expect(body).toContain("\"accepted\":false")
+      expect(body).toContain("turn_processing_checkpoint_required")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("send message e2e surfaces provider credit exhaustion as a specific failure", () => {
+    const dbPath = testDatabasePath("e2e-credit-failure")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const sendReq = yield* HttpClientRequest.post(`/channels/${channelId}/messages`).pipe(
+        HttpClientRequest.bodyJson({ content: "credit fail please" })
+      )
+      const body = yield* client.execute(sendReq).pipe(
+        Effect.flatMap((r) => r.text)
+      )
+
+      expect(body).toContain("turn.failed")
+      expect(body).toContain("provider_credit_exhausted")
+      expect(body).not.toContain("session_entity_stream_error")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("checkpoint decide e2e approved replay transitions checkpoint to Consumed", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-decide")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
+      const payloadJson = JSON.stringify({
+        kind: "ReadMemory",
+        content: "replay approved request",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "replay approved request" }],
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-02-28T00:00:00.000Z"
+        }
+      })
+
+      const checkpointRecord: CheckpointRecord = {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson,
+        payloadHash: "irrelevant-for-mock-runtime",
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      }
+      yield* seedCheckpoint(dbPath, checkpointRecord)
+
+      const decideReq = yield* HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
+        HttpClientRequest.bodyJson({ decision: "Approved", decidedBy: "user:cli:local" })
+      )
+      const decideResponse = yield* client.execute(decideReq)
+      expect(decideResponse.status).toBe(200)
+      const decideBody = yield* decideResponse.text
+
+      expect(decideBody).toContain("turn.completed")
+      const getCheckpointResponse = yield* client.get(`/checkpoints/${checkpointId}`)
+      expect(getCheckpointResponse.status).toBe(200)
+      const persisted = (yield* getCheckpointResponse.json) as Record<string, unknown>
+      expect(persisted.status).toBe("Consumed")
+      expect(persisted.decidedBy).toBe("user:cli:local")
+      expect(persisted.consumedBy).toBe("user:cli:local")
+      expect(typeof persisted.consumedAt === "string" && persisted.consumedAt.length > 0).toBe(true)
     }).pipe(
       Effect.provide(NodeHttpServer.layerTest),
       Effect.ensuring(cleanupDatabase(dbPath))

@@ -1,6 +1,6 @@
 import * as Anthropic from "@effect/ai-anthropic"
 import * as OpenAi from "@effect/ai-openai"
-import { Effect, Layer, Option, Ref, Schema } from "effect"
+import { DateTime, Effect, Layer, Option, Ref, Schema } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
@@ -60,6 +60,7 @@ export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_requires_approval",
   "turn_processing_checkpoint_required",
   "turn_processing_token_budget_exceeded",
+  "turn_processing_provider_credit_exhausted",
   "turn_processing_model_error"
 ])
 export type TurnAuditReasonCode = typeof TurnAuditReasonCode.Type
@@ -181,6 +182,26 @@ const toProviderConfigOverride = (
   return overrides
 }
 
+const inferToolChoice = (
+  rawUserContent: string
+): { readonly toolChoice: { readonly tool: "shell_execute" } } | {} => {
+  const normalized = rawUserContent.trim().toLowerCase()
+  if (normalized.length === 0) return {}
+
+  if (
+    normalized.startsWith("run ")
+    || normalized.startsWith("execute ")
+    || /^ls(\s|$)/.test(normalized)
+    || /^pwd(\s|$)/.test(normalized)
+    || /^cat(\s|$)/.test(normalized)
+    || /^echo(\s|$)/.test(normalized)
+  ) {
+    return { toolChoice: { tool: "shell_execute" } }
+  }
+
+  return {}
+}
+
 const makePayloadHash = (
   action: string,
   toolName: string,
@@ -261,11 +282,19 @@ export const layer = TurnProcessingWorkflow.toLayer(
         }
         // Checkpoint valid — bypass the gate and continue processing
       } else {
-        // First run: create a Pending checkpoint and return non-accepted result
-        // Store original user content so replay can re-run the model with it
+        // First run: create a Pending checkpoint and return non-accepted result.
         const checkpointPayload = Schema.encodeSync(Schema.UnknownFromJsonString)({
+          kind: "ReadMemory",
           content: payload.content,
-          contentBlocks: payload.contentBlocks
+          contentBlocks: payload.contentBlocks,
+          turnContext: {
+            agentId: payload.agentId,
+            sessionId: payload.sessionId,
+            conversationId: payload.conversationId,
+            channelId: payload.channelId,
+            turnId: payload.turnId,
+            createdAt: DateTime.formatIso(payload.createdAt)
+          }
         })
         const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
         yield* checkpointPort.create({
@@ -283,6 +312,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
           requestedAt: payload.createdAt,
           decidedAt: null,
           decidedBy: null,
+          consumedAt: null,
+          consumedBy: null,
           expiresAt: null
         })
         yield* writeAuditEntry(
@@ -355,7 +386,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
     const checkpointSignalsRef = yield* Ref.make<ReadonlyArray<CheckpointSignal>>([])
 
-    const modelResult = yield* Effect.gen(function*() {
+    const modelOutcome = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
 
@@ -409,6 +440,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
           userId: payload.userId,
           ...(payload.checkpointId !== undefined ? { checkpointId: payload.checkpointId } : {})
         },
+        rawUserContent: payload.content,
         userPrompt,
         maxIterations: maxToolIterations,
         checkpointSignalsRef
@@ -423,19 +455,78 @@ export const layer = TurnProcessingWorkflow.toLayer(
         })
       }
 
-      return loopResultOption.value
+      return { _outcome: "success" as const, result: loopResultOption.value }
     }).pipe(
-      Effect.catch((error) =>
-        writeAuditEntry(
+      Effect.catch((error) => {
+        // Tool governance RequiresApproval — the @effect/ai framework does not
+        // catch tool handler failures, so they propagate here. When a tool needed
+        // approval, a checkpoint signal was already stored in checkpointSignalsRef.
+        // Return it as a checkpoint outcome instead of failing the turn.
+        const isRequiresApproval = typeof error === "object" && error !== null
+          && "errorCode" in error && (error as any).errorCode === "RequiresApproval"
+
+        if (isRequiresApproval) {
+          return Ref.get(checkpointSignalsRef).pipe(
+            Effect.flatMap((signals) => {
+              if (signals.length > 0) {
+                return Effect.succeed({
+                  _outcome: "checkpoint" as const,
+                  signals
+                })
+              }
+              // No signals despite RequiresApproval — treat as model error
+              const modelFailure = toTurnModelFailure(payload.turnId, error)
+              return writeAuditEntry(
+                governancePort,
+                payload,
+                "Deny",
+                toModelFailureAuditReason(modelFailure.reason)
+              ).pipe(
+                Effect.andThen(Effect.fail(modelFailure))
+              )
+            })
+          )
+        }
+
+        const modelFailure = toTurnModelFailure(payload.turnId, error)
+        return writeAuditEntry(
           governancePort,
           payload,
           "Deny",
-          "turn_processing_model_error"
+          toModelFailureAuditReason(modelFailure.reason)
         ).pipe(
-          Effect.andThen(Effect.fail(toTurnModelFailure(payload.turnId, error)))
+          Effect.andThen(Effect.fail(modelFailure))
         )
-      )
+      })
     )
+
+    // Tool governance checkpoint — return early with checkpoint result
+    if (modelOutcome._outcome === "checkpoint") {
+      const firstSignal = modelOutcome.signals[0]!
+      yield* writeAuditEntry(
+        governancePort,
+        payload,
+        "RequireApproval",
+        "turn_processing_checkpoint_required"
+      )
+      return {
+        turnId: payload.turnId,
+        accepted: false,
+        auditReasonCode: "turn_processing_checkpoint_required",
+        assistantContent: "",
+        assistantContentBlocks: [],
+        iterationsUsed: 0,
+        toolCallsTotal: 0,
+        iterationStats: [],
+        modelFinishReason: null,
+        modelUsageJson: null,
+        checkpointId: firstSignal.checkpointId,
+        checkpointAction: firstSignal.action,
+        checkpointReason: firstSignal.reason
+      } satisfies ProcessTurnResult
+    }
+
+    const modelResult = modelOutcome.result
 
     const assistantResult = yield* Effect.gen(function*() {
       const assistantContent = modelResult.finalResponse.text
@@ -510,16 +601,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
       } satisfies ProcessTurnResult
     }
 
-    // 7a: Transition ReadMemory checkpoint to Consumed on successful completion
-    if (payload.checkpointId !== undefined) {
-      yield* checkpointPort.transition(
-        payload.checkpointId as CheckpointId,
-        "Consumed",
-        payload.userId ?? "system",
-        payload.createdAt
-      ).pipe(Effect.catchCause(() => Effect.void))
-    }
-
     yield* writeAuditEntry(
       governancePort,
       payload,
@@ -562,6 +643,7 @@ const processWithToolLoop = (params: {
     readonly checkpointId?: string
     readonly userId?: string
   }
+  readonly rawUserContent: string
   readonly userPrompt: string
   readonly maxIterations: number
   readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
@@ -583,7 +665,10 @@ const processWithToolLoop = (params: {
 
       const generateTextEffect = params.chat.generateText({
         prompt: iteration === 0 ? params.userPrompt : Prompt.empty,
-        toolkit: toolkitBundle.toolkit
+        toolkit: toolkitBundle.toolkit,
+        ...(iteration === 0
+          ? inferToolChoice(params.rawUserContent)
+          : {})
       })
 
       // Apply generation config via provider-specific withConfigOverride
@@ -735,11 +820,63 @@ const toTurnModelFailure = (
   error: unknown
 ): TurnModelFailure =>
   error instanceof TurnModelFailure
-    ? error
+    ? new TurnModelFailure({
+      turnId: error.turnId,
+      reason: normalizeModelFailureReason(error.reason)
+    })
     : new TurnModelFailure({
       turnId,
-      reason: error instanceof Error ? error.message : String(error)
+      reason: normalizeModelFailureReason(toModelFailureMessage(error))
     })
+
+const toModelFailureMessage = (error: unknown): string => {
+  if (typeof error === "string") {
+    return error
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  if (typeof error === "object" && error !== null) {
+    if ("reason" in error && typeof error.reason === "string" && error.reason.length > 0) {
+      return error.reason
+    }
+    if ("message" in error && typeof error.message === "string" && error.message.length > 0) {
+      return error.message
+    }
+  }
+  return String(error)
+}
+
+const toModelFailureAuditReason = (
+  reason: string
+): TurnAuditReasonCode =>
+  isProviderCreditExhaustedReason(reason)
+    ? "turn_processing_provider_credit_exhausted"
+    : "turn_processing_model_error"
+
+const isProviderCreditExhaustedReason = (reason: string): boolean =>
+  reason.startsWith("provider_credit_exhausted:")
+
+const normalizeModelFailureReason = (reason: string): string => {
+  const trimmed = reason.trim()
+  if (trimmed.length === 0) {
+    return "model_error"
+  }
+  if (isProviderCreditExhaustedReason(trimmed)) {
+    return trimmed
+  }
+  return looksLikeProviderCreditExhausted(trimmed)
+    ? `provider_credit_exhausted: ${trimmed}`
+    : trimmed
+}
+
+const looksLikeProviderCreditExhausted = (reason: string): boolean => {
+  const normalized = reason.toLowerCase()
+  return normalized.includes("credit balance is too low")
+    || normalized.includes("insufficient credits")
+    || normalized.includes("insufficient_quota")
+    || normalized.includes("billing")
+}
 
 const zeroUsage = (): Response.Usage =>
   new Response.Usage({

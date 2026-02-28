@@ -34,6 +34,7 @@ import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
   layer as TurnProcessingWorkflowLayer,
   type ProcessTurnPayload,
+  TurnModelFailure,
   TurnPolicyDenied
 } from "../src/turn/TurnProcessingWorkflow.js"
 
@@ -270,6 +271,68 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("classifies provider credit exhaustion with a specific reason and audit", () => {
+    const dbPath = testDatabasePath("turn-credit-exhausted")
+    const layer = makeTurnProcessingLayer(
+      dbPath,
+      "Allow",
+      undefined,
+      { failWithErrorMessage: "Your credit balance is too low to access the Anthropic API." }
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const governance = yield* GovernancePortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      const agent = makeAgentState({
+        agentId: "agent:credit" as AgentId,
+        tokenBudget: 200,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      })
+      const session = makeSessionState({
+        sessionId: "session:credit" as SessionId,
+        conversationId: "conversation:credit" as ConversationId,
+        tokenCapacity: 200,
+        tokensUsed: 0
+      })
+
+      yield* agentPort.upsert(agent)
+      yield* sessionPort.startSession(session)
+
+      const failed = (yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:credit" as TurnId,
+        agentId: agent.agentId,
+        sessionId: session.sessionId,
+        conversationId: session.conversationId,
+        createdAt: now,
+        inputTokens: 20,
+        content: "hello"
+      })).pipe(
+        Effect.flip
+      )) as TurnModelFailure
+
+      const audits = yield* governance.listAuditEntries()
+
+      expect(failed).toBeInstanceOf(TurnModelFailure)
+      expect(failed._tag).toBe("TurnModelFailure")
+      expect(failed.reason).toContain("provider_credit_exhausted:")
+      expect(failed.reason).toContain("credit balance is too low")
+      expect(
+        audits.some(
+          (entry) =>
+            entry.reason === "turn_processing_provider_credit_exhausted" && entry.decision === "Deny"
+        )
+      ).toBe(true)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("prepends retrieved memory context to prompt", () => {
     const dbPath = testDatabasePath("turn-memory")
     const capturedPrompts: Array<string> = []
@@ -476,13 +539,60 @@ describe("TurnProcessingWorkflow e2e", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("emits checkpoint_required and completed(false) when approval is required", () => {
+    const dbPath = testDatabasePath("turn-checkpoint-required")
+    const layer = makeTurnProcessingLayer(dbPath, "RequireApproval")
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:checkpoint" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:checkpoint" as SessionId,
+        conversationId: "conversation:checkpoint" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const events = yield* runtime.processTurnStream(makeTurnPayload({
+        turnId: "turn:checkpoint" as TurnId,
+        sessionId: "session:checkpoint" as SessionId,
+        conversationId: "conversation:checkpoint" as ConversationId,
+        agentId: "agent:checkpoint" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "read memory please"
+      })).pipe(Stream.runCollect)
+
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events.some((event) => event.type === "turn.checkpoint_required")).toBe(true)
+      const completed = events.find((event) => event.type === "turn.completed")
+      expect(completed).toBeDefined()
+      expect((completed as any).accepted).toBe(false)
+      expect((completed as any).auditReasonCode).toBe("turn_processing_checkpoint_required")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeTurnProcessingLayer = (
   dbPath: string,
   forcedDecision: AuthorizationDecision = "Allow",
   capturedPrompts?: Array<string>,
-  mockOptions?: { readonly finishReasons?: ReadonlyArray<Response.FinishReason> }
+  mockOptions?: {
+    readonly finishReasons?: ReadonlyArray<Response.FinishReason>
+    readonly failWithErrorMessage?: string
+  }
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -680,7 +790,10 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
 
 const makeMockLanguageModel = (
   capturedPrompts?: Array<string>,
-  mockOptions?: { readonly finishReasons?: ReadonlyArray<Response.FinishReason> }
+  mockOptions?: {
+    readonly finishReasons?: ReadonlyArray<Response.FinishReason>
+    readonly failWithErrorMessage?: string
+  }
 ): LanguageModel.Service => {
   let callCount = 0
 
@@ -688,6 +801,12 @@ const makeMockLanguageModel = (
     generateText: (options: any) => {
       if (capturedPrompts) {
         capturedPrompts.push(JSON.stringify(options))
+      }
+      if (mockOptions?.failWithErrorMessage) {
+        return Effect.fail({
+          _tag: "MockModelProviderError",
+          message: mockOptions.failWithErrorMessage
+        }) as any
       }
       const finishReasons = mockOptions?.finishReasons
       const currentCall = callCount++

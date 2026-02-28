@@ -2,12 +2,20 @@ import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
 import type { CheckpointAlreadyDecided, CheckpointExpired, CheckpointNotFound } from "@template/domain/errors"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
-import type { AgentState, CheckpointRecord, ContentBlock, TurnRecord } from "@template/domain/ports"
+import {
+  InvokeToolReplayPayload,
+  ReadMemoryReplayPayload,
+  type AgentState,
+  type CheckpointRecord,
+  type ContentBlock,
+  type TurnRecord
+} from "@template/domain/ports"
 import type { ChannelCapability, ChannelType } from "@template/domain/status"
-import { Cause, DateTime, Effect, Layer, Schema, ServiceMap, Stream } from "effect"
+import { Cause, DateTime, Effect, Layer, Option, Schema, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
 import { AgentConfig } from "./ai/AgentConfig.js"
+import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "./PortTags.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload, TurnProcessingError } from "./turn/TurnProcessingWorkflow.js"
@@ -28,6 +36,109 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
       const runtime = yield* TurnProcessingRuntime
       const sharding = yield* Sharding.Sharding
       const agentConfig = yield* AgentConfig
+      const toolRegistry = yield* ToolRegistry
+
+      const decodeReplayPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+      const decodeInvokeToolReplayPayload = Schema.decodeUnknownOption(InvokeToolReplayPayload)
+      const decodeReadMemoryReplayPayload = Schema.decodeUnknownOption(ReadMemoryReplayPayload)
+
+      const replayFailureStream = (
+        turnId: string,
+        reason: string
+      ): Stream.Stream<TurnStreamEvent, TurnProcessingError> =>
+        Stream.fail(
+          new TurnModelFailure({
+            turnId,
+            reason
+          })
+        )
+
+      const withConsumedTransition = (
+        checkpointId: CheckpointId,
+        decidedBy: string,
+        stream: Stream.Stream<TurnStreamEvent, TurnProcessingError>
+      ): Stream.Stream<TurnStreamEvent, TurnProcessingError> =>
+        Stream.concat(
+          stream,
+          Stream.fromEffect(
+            DateTime.now.pipe(
+              Effect.flatMap((consumedAt) =>
+                checkpointPort.transition(
+                  checkpointId,
+                  "Consumed",
+                  decidedBy,
+                  consumedAt
+                )
+              ),
+              Effect.catchCause(() => Effect.void)
+            )
+          ).pipe(Stream.drain)
+        )
+
+      const toInvokeToolReplayStream = (params: {
+        readonly turnId: string
+        readonly sessionId: SessionId
+        readonly createdAt: ProcessTurnPayload["createdAt"]
+        readonly toolName: string
+        readonly inputJson: string
+        readonly outputJson: string
+        readonly isError: boolean
+      }): Stream.Stream<TurnStreamEvent, TurnProcessingError> => {
+        const toolCallId = `toolcall:${params.turnId}:replay`
+        const baseEvents: ReadonlyArray<TurnStreamEvent> = [
+          {
+            type: "turn.started",
+            sequence: 1,
+            turnId: params.turnId,
+            sessionId: params.sessionId,
+            createdAt: params.createdAt
+          },
+          {
+            type: "tool.call",
+            sequence: 2,
+            turnId: params.turnId,
+            sessionId: params.sessionId,
+            toolCallId,
+            toolName: params.toolName,
+            inputJson: params.inputJson
+          },
+          {
+            type: "tool.result",
+            sequence: 3,
+            turnId: params.turnId,
+            sessionId: params.sessionId,
+            toolCallId,
+            toolName: params.toolName,
+            outputJson: params.outputJson,
+            isError: params.isError
+          }
+        ]
+
+        if (params.isError) {
+          return Stream.concat(
+            Stream.fromIterable(baseEvents),
+            replayFailureStream(
+              params.turnId,
+              `checkpoint_tool_replay_failed:${params.toolName}`
+            )
+          )
+        }
+
+        const completedEvent: TurnStreamEvent = {
+          type: "turn.completed",
+          sequence: 4,
+          turnId: params.turnId,
+          sessionId: params.sessionId,
+          accepted: true,
+          auditReasonCode: "turn_processing_accepted",
+          iterationsUsed: 1,
+          toolCallsTotal: 1,
+          modelFinishReason: "tool-calls",
+          modelUsageJson: null
+        }
+
+        return Stream.fromIterable([...baseEvents, completedEvent])
+      }
 
       const ensureAgentState = (agentId: AgentId) =>
         Effect.gen(function*() {
@@ -185,7 +296,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
                 }),
                 Stream.catchCause((cause) =>
                   failWithModelFailure(
-                    `session_entity_stream_error: ${Cause.pretty(cause)}`
+                    describeSessionEntityCause("session_entity_stream_error", cause)
                   )
                 )
               )
@@ -193,7 +304,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             Effect.catchCause((cause) =>
               Effect.succeed(
                 failWithModelFailure(
-                  `session_entity_client_error: ${Cause.pretty(cause)}`
+                  describeSessionEntityCause("session_entity_client_error", cause)
                 )
               )
             )
@@ -251,59 +362,137 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           )
 
           if (params.decision !== "Approved") {
-            return { ok: true as const, stream: null }
+            return { ok: true as const, kind: "ack" as const }
           }
 
           // Approved: load checkpoint and replay
           const checkpoint = yield* checkpointPort.get(params.checkpointId)
           if (checkpoint === null) {
-            return { ok: true as const, stream: null }
-          }
-
-          // Build replay turn payload with new turnId, setting checkpointId for bypass
-          const channel = yield* channelPort.get(checkpoint.channelId)
-          if (channel === null) {
-            return { ok: true as const, stream: null }
-          }
-
-          // Restore original user content from checkpoint payload
-          const ReplayPayloadSchema = Schema.Struct({
-            content: Schema.optionalKey(Schema.String),
-            contentBlocks: Schema.optionalKey(Schema.Array(Schema.Unknown))
-          })
-          const decodeReplayPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
-          const decodeReplayPayload = Schema.decodeUnknownOption(ReplayPayloadSchema)
-          let replayContent = ""
-          let replayContentBlocks: ReadonlyArray<ContentBlock> = []
-          if (checkpoint.payloadJson) {
-            const parsed = decodeReplayPayloadJson(checkpoint.payloadJson)
-            if (parsed._tag === "Some") {
-              const decoded = decodeReplayPayload(parsed.value)
-              if (decoded._tag === "Some") {
-                replayContent = decoded.value.content ?? ""
-                replayContentBlocks = (decoded.value.contentBlocks ?? []) as ReadonlyArray<ContentBlock>
-              }
+            return {
+              ok: true as const,
+              kind: "stream" as const,
+              stream: replayFailureStream(
+                `turn:replay:${crypto.randomUUID()}`,
+                "checkpoint_not_found_after_transition"
+              )
             }
           }
 
-          const replayTurnId = `turn:replay:${crypto.randomUUID()}`
-          const replayPayload: ProcessTurnPayload = {
-            turnId: replayTurnId,
-            sessionId: checkpoint.sessionId,
-            conversationId: channel.activeConversationId,
-            agentId: checkpoint.agentId,
-            userId: params.decidedBy,
-            channelId: checkpoint.channelId,
-            content: replayContent,
-            contentBlocks: replayContentBlocks,
-            createdAt: now,
-            inputTokens: estimateInputTokens(replayContent, replayContentBlocks),
-            checkpointId: params.checkpointId
+          if (checkpoint.action === "InvokeTool") {
+            const parsedJson = decodeReplayPayloadJson(checkpoint.payloadJson)
+            if (parsedJson._tag === "None") {
+              return {
+                ok: true as const,
+                kind: "stream" as const,
+                stream: replayFailureStream(
+                  `turn:replay:${crypto.randomUUID()}`,
+                  "checkpoint_payload_invalid_json"
+                )
+              }
+            }
+            const decodedPayload = decodeInvokeToolReplayPayload(parsedJson.value)
+            if (decodedPayload._tag === "None") {
+              return {
+                ok: true as const,
+                kind: "stream" as const,
+                stream: replayFailureStream(
+                  `turn:replay:${crypto.randomUUID()}`,
+                  "checkpoint_payload_invalid_invoke_tool"
+                )
+              }
+            }
+
+            const toolReplay = yield* toolRegistry.executeApprovedCheckpointTool({
+              checkpointId: params.checkpointId,
+              payloadJson: checkpoint.payloadJson,
+              agentId: checkpoint.agentId,
+              sessionId: checkpoint.sessionId,
+              conversationId: decodedPayload.value.turnContext.conversationId as ConversationId,
+              channelId: decodedPayload.value.turnContext.channelId as ChannelId,
+              decidedBy: params.decidedBy,
+              now
+            })
+
+            return {
+              ok: true as const,
+              kind: "stream" as const,
+              stream: withConsumedTransition(
+                params.checkpointId,
+                params.decidedBy,
+                toInvokeToolReplayStream({
+                  turnId: toolReplay.turnId,
+                  sessionId: checkpoint.sessionId,
+                  createdAt: toolReplay.createdAt,
+                  toolName: toolReplay.toolName,
+                  inputJson: toolReplay.inputJson,
+                  outputJson: toolReplay.outputJson,
+                  isError: toolReplay.isError
+                })
+              )
+            }
           }
 
-          // Return the SSE stream from processTurn
-          const stream = processTurn(replayPayload)
-          return { ok: true as const, stream }
+          if (checkpoint.action === "ReadMemory") {
+            const parsedJson = decodeReplayPayloadJson(checkpoint.payloadJson)
+            if (parsedJson._tag === "None") {
+              return {
+                ok: true as const,
+                kind: "stream" as const,
+                stream: replayFailureStream(
+                  `turn:replay:${crypto.randomUUID()}`,
+                  "checkpoint_payload_invalid_json"
+                )
+              }
+            }
+            const decodedPayload = decodeReadMemoryReplayPayload(parsedJson.value)
+            if (decodedPayload._tag === "None") {
+              return {
+                ok: true as const,
+                kind: "stream" as const,
+                stream: replayFailureStream(
+                  `turn:replay:${crypto.randomUUID()}`,
+                  "checkpoint_payload_invalid_read_memory"
+                )
+              }
+            }
+
+            const replayTurnId = `turn:replay:${crypto.randomUUID()}`
+            const replayPayload: ProcessTurnPayload = {
+              turnId: replayTurnId,
+              sessionId: checkpoint.sessionId,
+              conversationId: decodedPayload.value.turnContext.conversationId,
+              agentId: checkpoint.agentId,
+              userId: params.decidedBy,
+              channelId: checkpoint.channelId,
+              content: decodedPayload.value.content,
+              contentBlocks: decodedPayload.value.contentBlocks,
+              createdAt: now,
+              inputTokens: estimateInputTokens(
+                decodedPayload.value.content,
+                decodedPayload.value.contentBlocks
+              ),
+              checkpointId: params.checkpointId
+            }
+
+            return {
+              ok: true as const,
+              kind: "stream" as const,
+              stream: withConsumedTransition(
+                params.checkpointId,
+                params.decidedBy,
+                processTurn(replayPayload)
+              )
+            }
+          }
+
+          return {
+            ok: true as const,
+            kind: "stream" as const,
+            stream: replayFailureStream(
+              `turn:replay:${crypto.randomUUID()}`,
+              `unsupported_checkpoint_action:${checkpoint.action}`
+            )
+          }
         })
 
       return {
@@ -374,7 +563,8 @@ export type ChannelCoreService = {
     readonly decision: "Approved" | "Rejected" | "Deferred"
     readonly decidedBy: string
   }) => Effect.Effect<
-    { readonly ok: true; readonly stream: Stream.Stream<TurnStreamEvent, TurnProcessingError> | null },
+    | { readonly ok: true; readonly kind: "ack" }
+    | { readonly ok: true; readonly kind: "stream"; readonly stream: Stream.Stream<TurnStreamEvent, TurnProcessingError> },
     CheckpointNotFound | CheckpointAlreadyDecided | CheckpointExpired
   >
 }
@@ -415,4 +605,54 @@ const estimateTextTokens = (text: string): number => {
     return 0
   }
   return Math.ceil(normalized.length / 4)
+}
+
+const describeSessionEntityCause = (
+  prefix: "session_entity_stream_error" | "session_entity_client_error",
+  cause: Cause.Cause<unknown>
+): string => {
+  const typedError = Cause.findErrorOption(cause)
+  if (Option.isSome(typedError)) {
+    const taggedFailure = typedError.value as Record<string, unknown>
+    if (
+      typeof taggedFailure === "object" &&
+      taggedFailure !== null &&
+      taggedFailure._tag === "TurnModelFailure" &&
+      typeof taggedFailure.reason === "string" &&
+      taggedFailure.reason.length > 0
+    ) {
+      return taggedFailure.reason
+    }
+
+    const message = extractErrorMessage(typedError.value)
+    if (message.length > 0) {
+      return `${prefix}: ${message}`
+    }
+  }
+
+  const squashed = Cause.squash(cause)
+  const squashedMessage = extractErrorMessage(squashed)
+  if (squashedMessage.length > 0) {
+    return `${prefix}: ${squashedMessage}`
+  }
+
+  return `${prefix}: ${Cause.pretty(cause)}`
+}
+
+const extractErrorMessage = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value
+  }
+  if (value instanceof Error) {
+    return value.message
+  }
+  if (typeof value === "object" && value !== null) {
+    if ("reason" in value && typeof value.reason === "string") {
+      return value.reason
+    }
+    if ("message" in value && typeof value.message === "string") {
+      return value.message
+    }
+  }
+  return ""
 }
