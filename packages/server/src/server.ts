@@ -18,6 +18,14 @@ import { AgentConfig } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
+import { layer as CliRuntimeLocalLayer } from "./tools/cli/CliRuntimeLocal.js"
+import { layer as CommandBackendLocalLayer } from "./tools/command/CommandBackendLocal.js"
+import { CommandRuntime } from "./tools/command/CommandRuntime.js"
+import { CommandHooksDefaultLayer } from "./tools/command/hooks/CommandHooksDefault.js"
+import { FileHooksDefaultLayer } from "./tools/file/hooks/FileHooksDefault.js"
+import { FilePathPolicy } from "./tools/file/FilePathPolicy.js"
+import { FileReadTracker } from "./tools/file/FileReadTracker.js"
+import { FileRuntime } from "./tools/file/FileRuntime.js"
 import { ToolExecution } from "./tools/ToolExecution.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
@@ -157,21 +165,6 @@ const schedulerCommandLayer = SchedulerCommandLayer.pipe(
   Layer.provide(governancePortTagLayer)
 )
 
-const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
-  Layer.provide(governancePortTagLayer)
-)
-
-const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(schedulerRuntimeLayer),
-  Layer.provide(schedulerCommandLayer),
-  Layer.provide(schedulerActionExecutorLayer)
-)
-
-const schedulerTickLayer = SchedulerTickService.layer.pipe(
-  Layer.provide(schedulerDispatchLayer)
-)
-
 const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
 )
@@ -212,7 +205,58 @@ const chatPersistenceLayer = ChatPersistence.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
 )
 
+const commandHooksLayer = CommandHooksDefaultLayer
+
+const cliRuntimeLayer = CliRuntimeLocalLayer.pipe(
+  Layer.provide(BunServices.layer)
+)
+
+const commandBackendLayer = CommandBackendLocalLayer.pipe(
+  Layer.provide(cliRuntimeLayer)
+)
+
+const commandRuntimeLayer = CommandRuntime.layer.pipe(
+  Layer.provide(commandHooksLayer),
+  Layer.provide(commandBackendLayer),
+  Layer.provide(BunServices.layer)
+)
+
+const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
+  Layer.provide(commandRuntimeLayer),
+  Layer.provide(governancePortTagLayer)
+)
+
+const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(schedulerRuntimeLayer),
+  Layer.provide(schedulerCommandLayer),
+  Layer.provide(schedulerActionExecutorLayer)
+)
+
+const schedulerTickLayer = SchedulerTickService.layer.pipe(
+  Layer.provide(schedulerDispatchLayer)
+)
+
+const fileHooksLayer = FileHooksDefaultLayer
+
+const filePathPolicyLayer = FilePathPolicy.layer.pipe(
+  Layer.provide(BunServices.layer)
+)
+
+const fileReadTrackerLayer = FileReadTracker.layer
+
+const fileRuntimeLayer = FileRuntime.layer.pipe(
+  Layer.provide(fileHooksLayer),
+  Layer.provide(fileReadTrackerLayer),
+  Layer.provide(filePathPolicyLayer),
+  Layer.provide(BunServices.layer)
+)
+
 const toolExecutionLayer = ToolExecution.layer.pipe(
+  Layer.provide(fileRuntimeLayer),
+  Layer.provide(filePathPolicyLayer),
+  Layer.provide(cliRuntimeLayer),
+  Layer.provide(commandRuntimeLayer),
   Layer.provide(sqlInfrastructureLayer),
   Layer.provide(BunServices.layer)
 )

@@ -23,6 +23,14 @@ import { AgentConfig } from "../src/ai/AgentConfig.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
+import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
+import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
+import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
+import { CommandHooksDefaultLayer } from "../src/tools/command/hooks/CommandHooksDefault.js"
+import { FileHooksDefaultLayer } from "../src/tools/file/hooks/FileHooksDefault.js"
+import { FilePathPolicy } from "../src/tools/file/FilePathPolicy.js"
+import { FileReadTracker } from "../src/tools/file/FileReadTracker.js"
+import { FileRuntime } from "../src/tools/file/FileRuntime.js"
 import { ToolExecution } from "../src/tools/ToolExecution.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
@@ -410,7 +418,42 @@ const makeChatFlowLayer = (
     Layer.provide(sqlInfrastructureLayer)
   )
 
+  const commandHooksLayer = CommandHooksDefaultLayer
+
+  const cliRuntimeLayer = CliRuntimeLocalLayer.pipe(
+    Layer.provide(NodeServices.layer)
+  )
+
+  const commandBackendLayer = CommandBackendLocalLayer.pipe(
+    Layer.provide(cliRuntimeLayer)
+  )
+
+  const commandRuntimeLayer = CommandRuntime.layer.pipe(
+    Layer.provide(commandHooksLayer),
+    Layer.provide(commandBackendLayer),
+    Layer.provide(NodeServices.layer)
+  )
+
+  const fileHooksLayer = FileHooksDefaultLayer
+
+  const filePathPolicyLayer = FilePathPolicy.layer.pipe(
+    Layer.provide(NodeServices.layer)
+  )
+
+  const fileReadTrackerLayer = FileReadTracker.layer
+
+  const fileRuntimeLayer = FileRuntime.layer.pipe(
+    Layer.provide(fileHooksLayer),
+    Layer.provide(fileReadTrackerLayer),
+    Layer.provide(filePathPolicyLayer),
+    Layer.provide(NodeServices.layer)
+  )
+
   const toolExecutionLayer = ToolExecution.layer.pipe(
+    Layer.provide(fileRuntimeLayer),
+    Layer.provide(filePathPolicyLayer),
+    Layer.provide(cliRuntimeLayer),
+    Layer.provide(commandRuntimeLayer),
     Layer.provide(sqlInfrastructureLayer),
     Layer.provide(NodeServices.layer)
   )

@@ -21,6 +21,7 @@ import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
 import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import type { CommandInvocationContext } from "../tools/command/CommandTypes.js"
 import { ToolExecution } from "../tools/ToolExecution.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
@@ -33,7 +34,12 @@ const TOOL_NAMES = {
   store_memory: ToolName.makeUnsafe("store_memory"),
   retrieve_memories: ToolName.makeUnsafe("retrieve_memories"),
   forget_memories: ToolName.makeUnsafe("forget_memories"),
+  file_read: ToolName.makeUnsafe("file_read"),
   file_write: ToolName.makeUnsafe("file_write"),
+  file_edit: ToolName.makeUnsafe("file_edit"),
+  file_ls: ToolName.makeUnsafe("file_ls"),
+  file_find: ToolName.makeUnsafe("file_find"),
+  file_grep: ToolName.makeUnsafe("file_grep"),
   shell_execute: ToolName.makeUnsafe("shell_execute"),
   send_notification: ToolName.makeUnsafe("send_notification")
 } as const
@@ -123,6 +129,21 @@ const ForgetMemoriesTool = Tool.make("forget_memories", {
   failure: ToolFailure
 })
 
+const FileReadTool = Tool.make("file_read", {
+  description: "Read file content from the specified path.",
+  parameters: Schema.Struct({
+    path: Schema.String,
+    offset: Schema.optionalKey(Schema.Number),
+    limit: Schema.optionalKey(Schema.Number)
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    content: Schema.String
+  }),
+  failure: ToolFailure
+})
+
 const FileWriteTool = Tool.make("file_write", {
   description: "Write content to a file at the specified path.",
   parameters: Schema.Struct({
@@ -133,6 +154,81 @@ const FileWriteTool = Tool.make("file_write", {
     ok: Schema.Literal(true),
     path: Schema.String,
     bytesWritten: Schema.Number
+  }),
+  failure: ToolFailure
+})
+
+const FileEditTool = Tool.make("file_edit", {
+  description: "Edit a file by replacing a unique matching string.",
+  parameters: Schema.Struct({
+    path: Schema.String,
+    old_string: Schema.NonEmptyString,
+    new_string: Schema.String
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    bytesWritten: Schema.Number,
+    diff: Schema.String
+  }),
+  failure: ToolFailure
+})
+
+const FileLsTool = Tool.make("file_ls", {
+  description: "List files in a directory.",
+  parameters: Schema.Struct({
+    path: Schema.optionalKey(Schema.String),
+    recursive: Schema.optionalKey(Schema.Boolean),
+    include_hidden: Schema.optionalKey(Schema.Boolean),
+    ignore: Schema.optionalKey(Schema.Array(Schema.String)),
+    limit: Schema.optionalKey(Schema.Number)
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    entries: Schema.Array(Schema.String),
+    truncated: Schema.Boolean
+  }),
+  failure: ToolFailure
+})
+
+const FileFindTool = Tool.make("file_find", {
+  description: "Find files by glob pattern.",
+  parameters: Schema.Struct({
+    pattern: Schema.NonEmptyString,
+    path: Schema.optionalKey(Schema.String),
+    include_hidden: Schema.optionalKey(Schema.Boolean),
+    limit: Schema.optionalKey(Schema.Number)
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    matches: Schema.Array(Schema.String),
+    truncated: Schema.Boolean
+  }),
+  failure: ToolFailure
+})
+
+const FileGrepTool = Tool.make("file_grep", {
+  description: "Search file content with grep-style matching.",
+  parameters: Schema.Struct({
+    pattern: Schema.NonEmptyString,
+    path: Schema.optionalKey(Schema.String),
+    include_hidden: Schema.optionalKey(Schema.Boolean),
+    include: Schema.optionalKey(Schema.String),
+    literal_text: Schema.optionalKey(Schema.Boolean),
+    case_sensitive: Schema.optionalKey(Schema.Boolean),
+    limit: Schema.optionalKey(Schema.Number)
+  }),
+  success: Schema.Struct({
+    ok: Schema.Literal(true),
+    path: Schema.String,
+    matches: Schema.Array(Schema.Struct({
+      path: Schema.String,
+      line: Schema.Number,
+      text: Schema.String
+    })),
+    truncated: Schema.Boolean
   }),
   failure: ToolFailure
 })
@@ -173,7 +269,12 @@ const SafeToolkit = Toolkit.make(
   StoreMemoryTool,
   RetrieveMemoriesTool,
   ForgetMemoriesTool,
+  FileReadTool,
   FileWriteTool,
+  FileEditTool,
+  FileLsTool,
+  FileFindTool,
+  FileGrepTool,
   ShellExecuteTool,
   SendNotificationTool
 )
@@ -642,6 +743,22 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           )
         }) as Effect.Effect<A, ToolFailure>
 
+      const toToolInvocationContext = (
+        context: ToolExecutionContext,
+        toolName: ToolName
+      ): CommandInvocationContext =>
+        ({
+          source: context.checkpointId !== undefined ? "checkpoint_replay" : "tool",
+          agentId: context.agentId,
+          sessionId: context.sessionId,
+          turnId: context.turnId,
+          channelId: context.channelId as ChannelId,
+          ...(context.checkpointId !== undefined
+            ? { checkpointId: context.checkpointId as CheckpointId }
+            : {}),
+          toolName
+        }) satisfies CommandInvocationContext
+
       const makeToolkit: ToolRegistryService["makeToolkit"] = (context, checkpointSignalsRef) =>
         Effect.gen(function*() {
           const profile = yield* agentConfig.getAgent(context.agentId as string).pipe(Effect.orDie)
@@ -789,16 +906,146 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   }),
                   checkpointSignalsRef
                 ),
+              "file_read": ({ path, offset, limit }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_read,
+                  { path, offset, limit },
+                  toolExecution.readFile({
+                    path,
+                    ...(offset !== undefined ? { offset } : {}),
+                    ...(limit !== undefined ? { limit } : {}),
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_read)
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      content: result.content
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
+                  checkpointSignalsRef
+                ),
               "file_write": ({ path, content }) =>
                 runGovernedTool(
                   context,
                   TOOL_NAMES.file_write,
                   { path, content },
-                  toolExecution.writeFile({ path, content }).pipe(
+                  toolExecution.writeFile({
+                    path,
+                    content,
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_write)
+                  }).pipe(
                     Effect.map((result) => ({
                       ok: true as const,
                       path: result.path,
                       bytesWritten: result.bytesWritten
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
+                  checkpointSignalsRef
+                ),
+              "file_edit": ({ path, old_string, new_string }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_edit,
+                  { path, old_string, new_string },
+                  toolExecution.editFile({
+                    path,
+                    oldString: old_string,
+                    newString: new_string,
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_edit)
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      bytesWritten: result.bytesWritten,
+                      diff: result.diff
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
+                  checkpointSignalsRef
+                ),
+              "file_ls": ({ path, recursive, include_hidden, ignore, limit }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_ls,
+                  { path, recursive, include_hidden, ignore, limit },
+                  toolExecution.listFiles({
+                    ...(path !== undefined ? { path } : {}),
+                    ...(recursive !== undefined ? { recursive } : {}),
+                    ...(include_hidden !== undefined ? { includeHidden: include_hidden } : {}),
+                    ...(ignore !== undefined ? { ignore } : {}),
+                    ...(limit !== undefined ? { limit } : {}),
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_ls)
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      entries: result.entries,
+                      truncated: result.truncated
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
+                  checkpointSignalsRef
+                ),
+              "file_find": ({ pattern, path, include_hidden, limit }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_find,
+                  { pattern, path, include_hidden, limit },
+                  toolExecution.findFiles({
+                    pattern,
+                    ...(path !== undefined ? { path } : {}),
+                    ...(include_hidden !== undefined ? { includeHidden: include_hidden } : {}),
+                    ...(limit !== undefined ? { limit } : {}),
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_find)
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      matches: result.matches,
+                      truncated: result.truncated
+                    })),
+                    Effect.mapError((error) => ({
+                      errorCode: error.errorCode,
+                      message: error.message
+                    }))
+                  ),
+                  checkpointSignalsRef
+                ),
+              "file_grep": ({ pattern, path, include_hidden, include, literal_text, case_sensitive, limit }) =>
+                runGovernedTool(
+                  context,
+                  TOOL_NAMES.file_grep,
+                  { pattern, path, include_hidden, include, literal_text, case_sensitive, limit },
+                  toolExecution.grepFiles({
+                    pattern,
+                    ...(path !== undefined ? { path } : {}),
+                    ...(include_hidden !== undefined ? { includeHidden: include_hidden } : {}),
+                    ...(include !== undefined ? { include } : {}),
+                    ...(literal_text !== undefined ? { literalText: literal_text } : {}),
+                    ...(case_sensitive !== undefined ? { caseSensitive: case_sensitive } : {}),
+                    ...(limit !== undefined ? { limit } : {}),
+                    context: toToolInvocationContext(context, TOOL_NAMES.file_grep)
+                  }).pipe(
+                    Effect.map((result) => ({
+                      ok: true as const,
+                      path: result.path,
+                      matches: result.matches,
+                      truncated: result.truncated
                     })),
                     Effect.mapError((error) => ({
                       errorCode: error.errorCode,
@@ -814,7 +1061,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   { command, cwd },
                   toolExecution.executeShell({
                     command,
-                    ...(cwd !== undefined ? { cwd } : {})
+                    ...(cwd !== undefined ? { cwd } : {}),
+                    context: toToolInvocationContext(context, TOOL_NAMES.shell_execute)
                   }).pipe(
                     Effect.map((result) => ({
                       ok: true as const,

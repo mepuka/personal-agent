@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
+import { NodeServices } from "@effect/platform-node"
 import type { AgentId, ScheduleId } from "@template/domain/ids"
 import type { GovernancePort, Instant, SchedulePort, ScheduleRecord } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
@@ -12,6 +13,10 @@ import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { GovernancePortTag, SchedulePortTag } from "../src/PortTags.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
+import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
+import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
+import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
+import { CommandHooksDefaultLayer } from "../src/tools/command/hooks/CommandHooksDefault.js"
 import {
   layer as SchedulerCommandLayer,
   SchedulerCommandEntity,
@@ -181,6 +186,20 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
     })
   ).pipe(Layer.provide(governancePortSqliteLayer))
 
+  const cliRuntimeLayer = CliRuntimeLocalLayer.pipe(
+    Layer.provide(NodeServices.layer)
+  )
+
+  const commandBackendLayer = CommandBackendLocalLayer.pipe(
+    Layer.provide(cliRuntimeLayer)
+  )
+
+  const commandRuntimeLayer = CommandRuntime.layer.pipe(
+    Layer.provide(CommandHooksDefaultLayer),
+    Layer.provide(commandBackendLayer),
+    Layer.provide(NodeServices.layer)
+  )
+
   const schedulerRuntimeLayer = SchedulerRuntime.layer.pipe(
     Layer.provide(schedulePortTagLayer)
   )
@@ -197,6 +216,7 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
   )
 
   const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
+    Layer.provide(commandRuntimeLayer),
     Layer.provide(governancePortTagLayer)
   )
 
@@ -232,7 +252,7 @@ const makeSchedule = (overrides: Partial<ScheduleRecord>): ScheduleRecord => ({
     intervalSeconds: 60
   },
   trigger: { _tag: "IntervalTrigger" },
-  actionRef: "action:default",
+  actionRef: "action:log",
   scheduleStatus: "ScheduleActive",
   concurrencyPolicy: "ConcurrencyAllow",
   allowsCatchUp: true,

@@ -639,7 +639,7 @@ const loader = SqliteMigrator.fromRecord({
     const sql = yield* SqlClient.SqlClient
     const now = new Date().toISOString()
 
-    // Tool definitions — is_safe_standard = 0 so SafeStandardTools selector won't match
+    // Tool definitions for file/shell/notification test tools
     yield* sql`
       INSERT OR IGNORE INTO tool_definitions (
         tool_definition_id,
@@ -649,7 +649,12 @@ const loader = SqliteMigrator.fromRecord({
         is_safe_standard,
         created_at
       ) VALUES
+        ('tooldef:file_read:v1', 'file_read', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:file_ls:v1', 'file_ls', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:file_find:v1', 'file_find', 'BuiltIn', NULL, 1, ${now}),
+        ('tooldef:file_grep:v1', 'file_grep', 'BuiltIn', NULL, 1, ${now}),
         ('tooldef:file_write:v1', 'file_write', 'BuiltIn', NULL, 0, ${now}),
+        ('tooldef:file_edit:v1', 'file_edit', 'BuiltIn', NULL, 0, ${now}),
         ('tooldef:shell_execute:v1', 'shell_execute', 'BuiltIn', NULL, 0, ${now}),
         ('tooldef:send_notification:v1', 'send_notification', 'BuiltIn', NULL, 0, ${now})
     `.unprepared
@@ -669,10 +674,20 @@ const loader = SqliteMigrator.fromRecord({
         created_at,
         updated_at
       ) VALUES
+        ('policy:invoke_tool:standard:allow_file_read:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'Allow', 'file_read_standard_allow', 12, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:allow_file_ls:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'Allow', 'file_ls_standard_allow', 12, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:allow_file_find:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'Allow', 'file_find_standard_allow', 12, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:allow_file_grep:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'Allow', 'file_grep_standard_allow', 12, 1, ${now}, ${now}),
         ('policy:invoke_tool:standard:require_file_write:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'file_write_requires_approval', 15, 1, ${now}, ${now}),
+        ('policy:invoke_tool:standard:require_file_edit:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'file_edit_requires_approval', 15, 1, ${now}, ${now}),
         ('policy:invoke_tool:standard:require_shell_execute:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'shell_execute_requires_approval', 15, 1, ${now}, ${now}),
         ('policy:invoke_tool:standard:require_send_notification:v1', 'InvokeTool', 'Standard', 'ExplicitToolList', 'RequireApproval', 'send_notification_requires_approval', 15, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_read:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_read_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_ls:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_ls_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_find:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_find_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_grep:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_grep_permissive_allow', 5, 1, ${now}, ${now}),
         ('policy:invoke_tool:permissive:allow_file_write:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_write_permissive_allow', 5, 1, ${now}, ${now}),
+        ('policy:invoke_tool:permissive:allow_file_edit:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'file_edit_permissive_allow', 5, 1, ${now}, ${now}),
         ('policy:invoke_tool:permissive:allow_shell_execute:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'shell_execute_permissive_allow', 5, 1, ${now}, ${now}),
         ('policy:invoke_tool:permissive:allow_send_notification:v1', 'InvokeTool', 'Permissive', 'ExplicitToolList', 'Allow', 'send_notification_permissive_allow', 5, 1, ${now}, ${now})
     `.unprepared
@@ -680,10 +695,20 @@ const loader = SqliteMigrator.fromRecord({
     // Link tools to their ExplicitToolList policies via junction table
     yield* sql`
       INSERT OR IGNORE INTO permission_policy_tools (policy_id, tool_definition_id) VALUES
+        ('policy:invoke_tool:standard:allow_file_read:v1', 'tooldef:file_read:v1'),
+        ('policy:invoke_tool:standard:allow_file_ls:v1', 'tooldef:file_ls:v1'),
+        ('policy:invoke_tool:standard:allow_file_find:v1', 'tooldef:file_find:v1'),
+        ('policy:invoke_tool:standard:allow_file_grep:v1', 'tooldef:file_grep:v1'),
         ('policy:invoke_tool:standard:require_file_write:v1', 'tooldef:file_write:v1'),
+        ('policy:invoke_tool:standard:require_file_edit:v1', 'tooldef:file_edit:v1'),
         ('policy:invoke_tool:standard:require_shell_execute:v1', 'tooldef:shell_execute:v1'),
         ('policy:invoke_tool:standard:require_send_notification:v1', 'tooldef:send_notification:v1'),
+        ('policy:invoke_tool:permissive:allow_file_read:v1', 'tooldef:file_read:v1'),
+        ('policy:invoke_tool:permissive:allow_file_ls:v1', 'tooldef:file_ls:v1'),
+        ('policy:invoke_tool:permissive:allow_file_find:v1', 'tooldef:file_find:v1'),
+        ('policy:invoke_tool:permissive:allow_file_grep:v1', 'tooldef:file_grep:v1'),
         ('policy:invoke_tool:permissive:allow_file_write:v1', 'tooldef:file_write:v1'),
+        ('policy:invoke_tool:permissive:allow_file_edit:v1', 'tooldef:file_edit:v1'),
         ('policy:invoke_tool:permissive:allow_shell_execute:v1', 'tooldef:shell_execute:v1'),
         ('policy:invoke_tool:permissive:allow_send_notification:v1', 'tooldef:send_notification:v1')
     `.unprepared
