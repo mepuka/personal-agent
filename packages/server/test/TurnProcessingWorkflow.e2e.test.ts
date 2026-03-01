@@ -343,82 +343,6 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
-  it.effect("prepends retrieved memory context to prompt", () => {
-    const dbPath = testDatabasePath("turn-memory")
-    const capturedPrompts: Array<string> = []
-    const layer = makeTurnProcessingLayer(dbPath, "Allow", capturedPrompts)
-
-    return Effect.gen(function*() {
-      const agentPort = yield* AgentStatePortSqlite
-      const sessionPort = yield* SessionTurnPortSqlite
-      const memoryPort = yield* MemoryPortSqlite
-      const runtime = yield* TurnProcessingRuntime
-
-      const now = instant("2026-02-24T12:00:00.000Z")
-      const agentId = "agent:memory" as AgentId
-      const agent = makeAgentState({
-        agentId,
-        tokenBudget: 200,
-        tokensConsumed: 0,
-        budgetResetAt: DateTime.add(now, { hours: 1 })
-      })
-      const session = makeSessionState({
-        sessionId: "session:memory" as SessionId,
-        conversationId: "conversation:memory" as ConversationId,
-        tokenCapacity: 500,
-        tokensUsed: 0
-      })
-
-      yield* agentPort.upsert(agent)
-      yield* sessionPort.startSession(session)
-
-      // Store semantic memories for this agent
-      yield* memoryPort.encode(agentId, [
-        {
-          tier: "SemanticMemory",
-          scope: "GlobalScope",
-          source: "UserSource",
-          content: "User's name is Alex",
-          metadataJson: null,
-          generatedByTurnId: null,
-          sessionId: null
-        },
-        {
-          tier: "SemanticMemory",
-          scope: "GlobalScope",
-          source: "AgentSource",
-          content: "User prefers concise responses",
-          metadataJson: null,
-          generatedByTurnId: null,
-          sessionId: null
-        }
-      ], now)
-
-      const userContent = "Tell me about the user and their preferences"
-      const result = yield* runtime.processTurn(makeTurnPayload({
-        turnId: "turn:memory" as TurnId,
-        agentId,
-        sessionId: session.sessionId,
-        conversationId: session.conversationId,
-        createdAt: now,
-        inputTokens: 25,
-        content: userContent,
-        contentBlocks: [{ contentBlockType: "TextBlock", text: userContent }]
-      }))
-
-      expect(result.accepted).toBe(true)
-      expect(capturedPrompts.length).toBeGreaterThanOrEqual(1)
-      const allCaptured = capturedPrompts.join("\n")
-      expect(allCaptured).toContain("[Relevant Memory]")
-      expect(allCaptured).toContain("User's name is Alex")
-      expect(allCaptured).toContain("User prefers concise responses")
-      expect(allCaptured).toContain("Tell me about the user and their preferences")
-    }).pipe(
-      Effect.provide(layer),
-      Effect.ensuring(cleanupDatabase(dbPath))
-    )
-  })
-
   it.effect("tool loop recurses on tool-calls finish reason", () => {
     const dbPath = testDatabasePath("turn-tool-loop")
     const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, {
@@ -764,12 +688,10 @@ const makeTurnProcessingLayer = (
     Layer.provide(agentStateTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(governanceTagLayer),
-    Layer.provide(memoryPortTagLayer),
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(memoryPortSqliteLayer),
     Layer.provide(checkpointPortTagLayer)
   )
 

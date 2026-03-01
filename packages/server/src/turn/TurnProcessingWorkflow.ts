@@ -44,12 +44,10 @@ import {
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
-import { MemoryPortSqlite } from "../MemoryPortSqlite.js"
 import {
   AgentStatePortTag,
   CheckpointPortTag,
   GovernancePortTag,
-  MemoryPortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
 
@@ -232,12 +230,10 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const agentStatePort = yield* AgentStatePortTag
     const sessionTurnPort = yield* SessionTurnPortTag
     const governancePort = yield* GovernancePortTag
-    yield* MemoryPortTag // required by layer — actual retrieval uses sqlitePort below
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
     const agentConfig = yield* AgentConfig
     const modelRegistry = yield* ModelRegistry
-    const sqlitePort = yield* MemoryPortSqlite
     const checkpointPort = yield* CheckpointPortTag
 
     const policy = yield* Activity.make({
@@ -377,13 +373,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
       Effect.map((state) => Math.min(Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1), MAX_TOOL_ITERATIONS_CAP))
     )
 
-    // Retrieve semantic memories for context injection (snapshot read, not an Activity)
-    // Uses FTS5 full-text search via MemoryPortSqlite.retrieve for relevance ranking
-    const semanticMemories = yield* sqlitePort.retrieve(
-      payload.agentId as AgentId,
-      { query: payload.content, tier: "SemanticMemory", limit: 20 }
-    )
-
     const checkpointSignalsRef = yield* Ref.make<ReadonlyArray<CheckpointSignal>>([])
 
     const modelOutcome = yield* Effect.gen(function*() {
@@ -408,20 +397,12 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
-      // Build system prompt: base persona + fresh memory context each turn
       const baseSystemPrompt = profile.persona.systemPrompt
-      const systemPromptWithMemory = semanticMemories.length > 0
-        ? baseSystemPrompt
-          + "\n\n[Relevant Memory]\n"
-          + semanticMemories.map((m) => `- ${m.content}`).join("\n")
-        : baseSystemPrompt
 
-      // Set system prompt (always re-set to avoid stale memory accumulation)
       const currentHistory = yield* Ref.get(chat.history)
-      const withSystem = Prompt.setSystem(currentHistory, systemPromptWithMemory)
+      const withSystem = Prompt.setSystem(currentHistory, baseSystemPrompt)
       yield* Ref.set(chat.history, withSystem)
 
-      // Build prompt with memory context prepended
       const userPrompt = toPromptText(payload.content, payload.contentBlocks)
 
       const loopResultOption = yield* processWithToolLoop({

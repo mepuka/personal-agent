@@ -214,126 +214,6 @@ describe("ChatFlow E2E", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
-  it.effect("semantic memory is injected into system prompt", () => {
-    const dbPath = testDatabasePath("chatflow-memory")
-    const capturedMessages: Array<Array<{ role: string; content: string }>> = []
-    const layer = makeChatFlowLayer(dbPath, capturedMessages)
-
-    return Effect.gen(function*() {
-      const agentPort = yield* AgentStatePortSqlite
-      const sessionPort = yield* SessionTurnPortSqlite
-      const memoryPort = yield* MemoryPortSqlite
-      const runtime = yield* TurnProcessingRuntime
-
-      const now = instant("2026-02-25T12:00:00.000Z")
-      const agentId = "agent:chatflow-memory" as AgentId
-      const sessionId = "session:chatflow-memory" as SessionId
-
-      // Store a semantic memory that will match the user message via FTS5
-      yield* memoryPort.encode(agentId, [
-        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User's name is Alex" }
-      ], now)
-
-      yield* agentPort.upsert(makeAgentState({
-        agentId,
-        tokenBudget: 500,
-        budgetResetAt: DateTime.add(now, { hours: 1 })
-      }))
-      yield* sessionPort.startSession(makeSessionState({
-        sessionId,
-        conversationId: "conversation:chatflow-memory" as ConversationId,
-        tokenCapacity: 1000
-      }))
-
-      // Use content that will FTS5-match "Alex"
-      const result = yield* runtime.processTurn(makeTurnPayload({
-        turnId: "turn:chatflow-memory" as TurnId,
-        agentId,
-        sessionId,
-        conversationId: "conversation:chatflow-memory" as ConversationId,
-        createdAt: now,
-        inputTokens: 20,
-        content: "Alex"
-      }))
-
-      expect(result.accepted).toBe(true)
-
-      // Verify the system prompt sent to the LLM contains memory
-      const systemMessages = capturedMessages.flat().filter((m) => m.role === "system")
-      const systemText = systemMessages.map((m) => m.content).join("\n")
-      expect(systemText).toContain("[Relevant Memory]")
-      expect(systemText).toContain("User's name is Alex")
-    }).pipe(
-      Effect.provide(layer),
-      Effect.ensuring(cleanupDatabase(dbPath))
-    )
-  })
-
-  it.effect("memory does not accumulate across turns", () => {
-    const dbPath = testDatabasePath("chatflow-memory-noaccum")
-    const capturedMessages: Array<Array<{ role: string; content: string }>> = []
-    const layer = makeChatFlowLayer(dbPath, capturedMessages)
-
-    return Effect.gen(function*() {
-      const agentPort = yield* AgentStatePortSqlite
-      const sessionPort = yield* SessionTurnPortSqlite
-      const memoryPort = yield* MemoryPortSqlite
-      const runtime = yield* TurnProcessingRuntime
-
-      const now = instant("2026-02-25T12:00:00.000Z")
-      const agentId = "agent:chatflow-noaccum" as AgentId
-      const sessionId = "session:chatflow-noaccum" as SessionId
-
-      yield* memoryPort.encode(agentId, [
-        { tier: "SemanticMemory", scope: "GlobalScope", source: "AgentSource", content: "User likes pizza" }
-      ], now)
-
-      yield* agentPort.upsert(makeAgentState({
-        agentId,
-        tokenBudget: 1000,
-        budgetResetAt: DateTime.add(now, { hours: 1 })
-      }))
-      yield* sessionPort.startSession(makeSessionState({
-        sessionId,
-        conversationId: "conversation:chatflow-noaccum" as ConversationId,
-        tokenCapacity: 2000
-      }))
-
-      // Turn 1 -- single-token query to reliably FTS5-match "pizza"
-      yield* runtime.processTurn(makeTurnPayload({
-        turnId: "turn:noaccum-1" as TurnId,
-        agentId,
-        sessionId,
-        conversationId: "conversation:chatflow-noaccum" as ConversationId,
-        createdAt: now,
-        inputTokens: 20,
-        content: "pizza"
-      }))
-
-      // Turn 2 -- also single-token FTS5 match
-      yield* runtime.processTurn(makeTurnPayload({
-        turnId: "turn:noaccum-2" as TurnId,
-        agentId,
-        sessionId,
-        conversationId: "conversation:chatflow-noaccum" as ConversationId,
-        createdAt: instant("2026-02-25T12:01:00.000Z"),
-        inputTokens: 20,
-        content: "pizza"
-      }))
-
-      // Each LLM call should have exactly one [Relevant Memory] block
-      expect(capturedMessages.length).toBe(2)
-      for (const messages of capturedMessages) {
-        const systemText = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n")
-        const memoryOccurrences = systemText.split("[Relevant Memory]").length - 1
-        expect(memoryOccurrences).toBe(1)
-        expect(systemText).toContain("User likes pizza")
-      }
-    }).pipe(
-      Effect.provide(layer),
-      Effect.ensuring(cleanupDatabase(dbPath))
-    )
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -480,12 +360,10 @@ const makeChatFlowLayer = (
     Layer.provide(agentStateTagLayer),
     Layer.provide(sessionTurnTagLayer),
     Layer.provide(governanceTagLayer),
-    Layer.provide(memoryPortTagLayer),
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(memoryPortSqliteLayer),
     Layer.provide(checkpointPortTagLayer)
   )
 
