@@ -59,3 +59,6 @@ export type CheckpointId = typeof CheckpointId.Type
 
 export const CompactionCheckpointId = Schema.String.pipe(Schema.brand("CompactionCheckpointId"))
 export type CompactionCheckpointId = typeof CompactionCheckpointId.Type
+
+export const PostCommitTaskId = Schema.String.pipe(Schema.brand("PostCommitTaskId"))
+export type PostCommitTaskId = typeof PostCommitTaskId.Type

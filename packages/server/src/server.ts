@@ -1,21 +1,10 @@
 import { BunFileSystem, BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
-import type {
-  AgentStatePort,
-  ChannelPort,
-  CheckpointPort,
-  CompactionCheckpointPort,
-  GovernancePort,
-  IntegrationPort,
-  MemoryPort,
-  SchedulePort,
-  SessionTurnPort
-} from "@template/domain/ports"
-import { Effect, Layer, Logger } from "effect"
+import { Effect, Layer, Logger, ServiceMap } from "effect"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
 import { HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentStatePortSqlite } from "./AgentStatePortSqlite.js"
-import { AgentConfig } from "./ai/AgentConfig.js"
+import { AgentConfig, type AgentConfigService } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
@@ -63,7 +52,8 @@ import {
   IntegrationPortTag,
   MemoryPortTag,
   SchedulePortTag,
-  SessionTurnPortTag
+  SessionTurnPortTag,
+  TurnPostCommitPortTag
 } from "./PortTags.js"
 import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
 import { SchedulerActionExecutor } from "./scheduler/SchedulerActionExecutor.js"
@@ -72,6 +62,9 @@ import { SchedulerDispatchLoop } from "./scheduler/SchedulerDispatchLoop.js"
 import { SchedulerTickService } from "./scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
+import { TurnPostCommitPortSqlite } from "./TurnPostCommitPortSqlite.js"
+import { layer as TurnPostCommitCommandLayer } from "./turn/TurnPostCommitCommandEntity.js"
+import { TurnPostCommitDispatchLoop } from "./turn/TurnPostCommitDispatchLoop.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "./turn/TurnProcessingWorkflow.js"
 
@@ -85,90 +78,93 @@ const sqlInfrastructureLayer = Layer.mergeAll(
   migrationLayer
 )
 
-const agentStatePortSqliteLayer = AgentStatePortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
-const sessionTurnPortSqliteLayer = SessionTurnPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
-const schedulePortSqliteLayer = SchedulePortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
-const governancePortSqliteLayer = GovernancePortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
+const sqliteBackedLayer = <A>(
+  serviceLayer: Layer.Layer<A>
+): Layer.Layer<A> =>
+  serviceLayer.pipe(Layer.provide(sqlInfrastructureLayer))
 
-const agentStatePortTagLayer = Layer.effect(
+const exposeAsPortTagLayer = <Tag>(
+  tag: ServiceMap.Service<any, Tag>,
+  service: ServiceMap.Service<any, Tag>,
+  layer: Layer.Layer<any>
+): Layer.Layer<Tag> =>
+  Layer.effect(
+    tag,
+    Effect.gen(function*() {
+      return yield* (service as unknown as Effect.Effect<Tag>)
+    })
+  ).pipe(Layer.provide(layer))
+
+const agentStatePortSqliteLayer = sqliteBackedLayer(AgentStatePortSqlite.layer)
+const sessionTurnPortSqliteLayer = sqliteBackedLayer(SessionTurnPortSqlite.layer)
+const schedulePortSqliteLayer = sqliteBackedLayer(SchedulePortSqlite.layer)
+const governancePortSqliteLayer = sqliteBackedLayer(GovernancePortSqlite.layer)
+
+const agentStatePortTagLayer = exposeAsPortTagLayer(
   AgentStatePortTag,
-  Effect.gen(function*() {
-    return (yield* AgentStatePortSqlite) as AgentStatePort
-  })
-).pipe(Layer.provide(agentStatePortSqliteLayer))
+  AgentStatePortSqlite,
+  agentStatePortSqliteLayer
+)
 
-const sessionTurnPortTagLayer = Layer.effect(
+const sessionTurnPortTagLayer = exposeAsPortTagLayer(
   SessionTurnPortTag,
-  Effect.gen(function*() {
-    return (yield* SessionTurnPortSqlite) as SessionTurnPort
-  })
-).pipe(Layer.provide(sessionTurnPortSqliteLayer))
+  SessionTurnPortSqlite,
+  sessionTurnPortSqliteLayer
+)
 
-const schedulePortTagLayer = Layer.effect(
+const schedulePortTagLayer = exposeAsPortTagLayer(
   SchedulePortTag,
-  Effect.gen(function*() {
-    return (yield* SchedulePortSqlite) as SchedulePort
-  })
-).pipe(Layer.provide(schedulePortSqliteLayer))
+  SchedulePortSqlite,
+  schedulePortSqliteLayer
+)
 
-const governancePortTagLayer = Layer.effect(
+const governancePortTagLayer = exposeAsPortTagLayer(
   GovernancePortTag,
-  Effect.gen(function*() {
-    return (yield* GovernancePortSqlite) as GovernancePort
-  })
-).pipe(Layer.provide(governancePortSqliteLayer))
-
-const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
+  GovernancePortSqlite,
+  governancePortSqliteLayer
 )
 
-const checkpointPortTagLayer = Layer.effect(
+const checkpointPortSqliteLayer = sqliteBackedLayer(CheckpointPortSqlite.layer)
+
+const checkpointPortTagLayer = exposeAsPortTagLayer(
   CheckpointPortTag,
-  Effect.gen(function*() {
-    return (yield* CheckpointPortSqlite) as CheckpointPort
-  })
-).pipe(Layer.provide(checkpointPortSqliteLayer))
-
-const compactionCheckpointPortSqliteLayer = CompactionCheckpointPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
+  CheckpointPortSqlite,
+  checkpointPortSqliteLayer
 )
 
-const compactionCheckpointPortTagLayer = Layer.effect(
+const compactionCheckpointPortSqliteLayer = sqliteBackedLayer(
+  CompactionCheckpointPortSqlite.layer
+)
+
+const compactionCheckpointPortTagLayer = exposeAsPortTagLayer(
   CompactionCheckpointPortTag,
-  Effect.gen(function*() {
-    return (yield* CompactionCheckpointPortSqlite) as CompactionCheckpointPort
-  })
-).pipe(Layer.provide(compactionCheckpointPortSqliteLayer))
-
-const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
+  CompactionCheckpointPortSqlite,
+  compactionCheckpointPortSqliteLayer
 )
 
-const channelPortTagLayer = Layer.effect(
+const channelPortSqliteLayer = sqliteBackedLayer(ChannelPortSqlite.layer)
+
+const channelPortTagLayer = exposeAsPortTagLayer(
   ChannelPortTag,
-  Effect.gen(function*() {
-    return (yield* ChannelPortSqlite) as ChannelPort
-  })
-).pipe(Layer.provide(channelPortSqliteLayer))
-
-const integrationPortSqliteLayer = IntegrationPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
+  ChannelPortSqlite,
+  channelPortSqliteLayer
 )
 
-const integrationPortTagLayer = Layer.effect(
+const integrationPortSqliteLayer = sqliteBackedLayer(IntegrationPortSqlite.layer)
+
+const integrationPortTagLayer = exposeAsPortTagLayer(
   IntegrationPortTag,
-  Effect.gen(function*() {
-    return (yield* IntegrationPortSqlite) as IntegrationPort
-  })
-).pipe(Layer.provide(integrationPortSqliteLayer))
+  IntegrationPortSqlite,
+  integrationPortSqliteLayer
+)
+
+const postCommitPortSqliteLayer = sqliteBackedLayer(TurnPostCommitPortSqlite.layer)
+
+const postCommitPortTagLayer = exposeAsPortTagLayer(
+  TurnPostCommitPortTag,
+  TurnPostCommitPortSqlite,
+  postCommitPortSqliteLayer
+)
 
 const schedulerRuntimeLayer = SchedulerRuntime.layer.pipe(
   Layer.provide(schedulePortTagLayer)
@@ -187,16 +183,13 @@ const schedulerCommandLayer = SchedulerCommandLayer.pipe(
   ))
 )
 
-const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
+const memoryPortSqliteLayer = sqliteBackedLayer(MemoryPortSqlite.layer)
 
-const memoryPortTagLayer = Layer.effect(
+const memoryPortTagLayer = exposeAsPortTagLayer(
   MemoryPortTag,
-  Effect.gen(function*() {
-    return (yield* MemoryPortSqlite) as MemoryPort
-  })
-).pipe(Layer.provide(memoryPortSqliteLayer))
+  MemoryPortSqlite,
+  memoryPortSqliteLayer
+)
 
 const agentEntityLayer = AgentEntityLayer.pipe(
   Layer.provide(clusterLayer),
@@ -225,9 +218,25 @@ const modelRegistryLayer = ModelRegistry.layer.pipe(
   Layer.provide(agentConfigLayer)
 )
 
-const chatPersistenceLayer = ChatPersistence.layer.pipe(
-  Layer.provide(sqlInfrastructureLayer)
-)
+const chatPersistenceLayer = sqliteBackedLayer(ChatPersistence.layer)
+
+const withConfigLayer = <A>(
+  configLayer: Layer.Layer<any>,
+  build: (config: AgentConfigService) => Layer.Layer<A>
+): Layer.Layer<A> =>
+  Layer.unwrap(
+    Effect.gen(function*() {
+      const config = yield* AgentConfig
+      return build(config)
+    }).pipe(Effect.provide(configLayer))
+  )
+
+const whenEnabled = <A>(
+  configLayer: Layer.Layer<any>,
+  isEnabled: (config: AgentConfigService) => boolean,
+  build: (config: AgentConfigService) => Layer.Layer<A>
+): Layer.Layer<A> =>
+  withConfigLayer(configLayer, (config) => isEnabled(config) ? build(config) : Layer.empty as Layer.Layer<A>)
 
 const commandHooksLayer = CommandHooksDefaultLayer
 
@@ -338,7 +347,24 @@ const schedulerTickLayer = SchedulerTickService.layer.pipe(
 )
 
 const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
-  Layer.provide(memoryFileServicesLayer)
+  Layer.provide(Layer.mergeAll(memoryFileServicesLayer, sessionTurnPortTagLayer))
+)
+
+const postCommitCommandLayer = TurnPostCommitCommandLayer.pipe(
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    subroutineCatalogLayer,
+    subroutineRunnerLayer,
+    transcriptProjectorLayer
+  ))
+)
+
+const postCommitDispatchLayer = TurnPostCommitDispatchLoop.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    postCommitPortTagLayer,
+    postCommitCommandLayer
+  ))
 )
 
 const sessionIdleMonitorLayer = SessionIdleMonitor.layer.pipe(
@@ -362,7 +388,6 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     modelRegistryLayer,
     checkpointPortTagLayer,
     subroutineControlPlaneLayer,
-    transcriptProjectorLayer,
     subroutineCatalogLayer
   ))
 )
@@ -393,52 +418,38 @@ const channelCoreLayer = ChannelCore.layer.pipe(
   ))
 )
 
-const cliAdapterEntityLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    if (!config.channels.cli.enabled) {
-      return Layer.empty
-    }
-    return CLIAdapterEntityLayer.pipe(
-      Layer.provide(Layer.mergeAll(
-        clusterLayer,
-        channelCoreLayer,
-        channelPortTagLayer
-      ))
-    )
-  }).pipe(Effect.provide(agentConfigLayer))
+const channelAdapterEntityDepsLayer = () => Layer.mergeAll(
+  clusterLayer,
+  channelCoreLayer,
+  channelPortTagLayer
 )
 
-const webChatAdapterEntityLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    if (!config.channels.webchat.enabled) {
-      return Layer.empty
-    }
-    return WebChatAdapterEntityLayer.pipe(
-      Layer.provide(Layer.mergeAll(
-        clusterLayer,
-        channelCoreLayer,
-        channelPortTagLayer
-      ))
-    )
-  }).pipe(Effect.provide(agentConfigLayer))
+const cliAdapterEntityLayer = whenEnabled(
+  agentConfigLayer,
+  (config) => config.channels.cli.enabled,
+  () => CLIAdapterEntityLayer.pipe(
+    Layer.provide(channelAdapterEntityDepsLayer())
+  )
 )
 
-const integrationEntityLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    if (config.integrations.length === 0) {
-      return Layer.empty
-    }
-    return IntegrationEntityLayer.pipe(
-      Layer.provide(Layer.mergeAll(
-        clusterLayer,
-        integrationPortTagLayer,
-        agentConfigLayer
-      ))
-    )
-  }).pipe(Effect.provide(agentConfigLayer))
+const webChatAdapterEntityLayer = whenEnabled(
+  agentConfigLayer,
+  (config) => config.channels.webchat.enabled,
+  () => WebChatAdapterEntityLayer.pipe(
+    Layer.provide(channelAdapterEntityDepsLayer())
+  )
+)
+
+const integrationEntityLayer = whenEnabled(
+  agentConfigLayer,
+  (config) => config.integrations.length > 0,
+  () => IntegrationEntityLayer.pipe(
+    Layer.provide(Layer.mergeAll(
+      clusterLayer,
+      integrationPortTagLayer,
+      agentConfigLayer
+    ))
+  )
 )
 
 const portTagsLayer = Layer.mergeAll(
@@ -452,7 +463,8 @@ const portTagsLayer = Layer.mergeAll(
   checkpointPortTagLayer,
   compactionCheckpointPortTagLayer,
   channelPortTagLayer,
-  integrationPortTagLayer
+  integrationPortTagLayer,
+  postCommitPortTagLayer
 )
 
 const schedulerLayer = schedulerTickLayer.pipe(
@@ -481,11 +493,13 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(chatPersistenceLayer),
   Layer.provideMerge(agentConfigLayer),
   Layer.provideMerge(schedulerLayer),
+  Layer.provideMerge(postCommitDispatchLayer),
   Layer.provideMerge(portTagsLayer),
   Layer.provideMerge(memoryPortSqliteLayer),
   Layer.provideMerge(subroutineCatalogLayer),
   Layer.provideMerge(subroutineRunnerLayer),
   Layer.provideMerge(subroutineControlPlaneLayer),
+  Layer.provideMerge(transcriptProjectorLayer),
   Layer.provideMerge(sessionIdleMonitorLayer),
   Layer.provideMerge(clusterLayer)
 )
@@ -494,24 +508,16 @@ const ProxyApiLive = HttpApiBuilder.layer(ProxyApi).pipe(
   Layer.provide(ProxyHandlersLive)
 )
 
-const webChatRoutesLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    if (!config.channels.webchat.enabled) {
-      return Layer.empty
-    }
-    return WebChatRoutesLayer
-  }).pipe(Effect.provide(agentConfigLayer))
+const webChatRoutesLayer = whenEnabled(
+  agentConfigLayer,
+  (config) => config.channels.webchat.enabled,
+  () => WebChatRoutesLayer
 )
 
-const cliRoutesLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    if (!config.channels.cli.enabled) {
-      return Layer.empty
-    }
-    return ChannelRoutesLayer
-  }).pipe(Effect.provide(agentConfigLayer))
+const cliRoutesLayer = whenEnabled(
+  agentConfigLayer,
+  (config) => config.channels.cli.enabled,
+  () => ChannelRoutesLayer
 )
 
 const governanceRoutesLayer = GovernanceRoutesLayer.pipe(
@@ -534,11 +540,9 @@ const HttpApiAndRoutesLive = Layer.mergeAll(
   Layer.provide(clusterLayer)
 )
 
-const HttpServerLayer = Layer.unwrap(
-  Effect.gen(function*() {
-    const config = yield* AgentConfig
-    return BunHttpServer.layer({ port: config.server.port })
-  }).pipe(Effect.provide(agentConfigLayer))
+const HttpServerLayer = withConfigLayer(
+  agentConfigLayer,
+  (config) => BunHttpServer.layer({ port: config.server.port })
 )
 
 const HttpLive = HttpRouter.serve(

@@ -1,5 +1,6 @@
 import type { MemorySubroutineConfig, SubroutineToolScope } from "@template/domain/memory"
 import type { SubroutineTriggerType } from "@template/domain/status"
+import { DEFAULT_SUBROUTINE_TOOL_SCOPE } from "@template/domain/system-defaults"
 import { Effect, FileSystem, Layer, Path, Schema, ServiceMap } from "effect"
 import { AgentConfig } from "../ai/AgentConfig.js"
 
@@ -16,17 +17,8 @@ export class SubroutineNotFound extends Schema.ErrorClass<SubroutineNotFound>(
   subroutineId: Schema.String
 }) {}
 
-const DEFAULT_TOOL_SCOPE: SubroutineToolScope = {
-  fileRead: true,
-  fileWrite: false,
-  shell: false,
-  memoryRead: true,
-  memoryWrite: true,
-  notification: false
-}
-
 const resolveToolScope = (scope: SubroutineToolScope | undefined): SubroutineToolScope =>
-  scope ?? DEFAULT_TOOL_SCOPE
+  scope ?? DEFAULT_SUBROUTINE_TOOL_SCOPE
 
 export interface SubroutineCatalogService {
   readonly getByTrigger: (

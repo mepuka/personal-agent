@@ -214,7 +214,9 @@ describe("SchedulerActionExecutor", () => {
           iterationsUsed: 1,
           toolCallsTotal: 0,
           assistantContent: "done",
-          modelUsageJson: null
+          modelUsageJson: null,
+          checkpointWritten: "skipped" as const,
+          error: null
         })
       }
     })
@@ -256,7 +258,8 @@ describe("SchedulerActionExecutor", () => {
           toolCallsTotal: 0,
           assistantContent: "",
           modelUsageJson: null,
-          errorMessage: "model error"
+          checkpointWritten: "skipped" as const,
+          error: { tag: "model_error" as const, message: "model error" }
         })
     })
 
@@ -387,7 +390,9 @@ const makeMockRunner = (
         iterationsUsed: 1,
         toolCallsTotal: 0,
         assistantContent: "Memory stored.",
-        modelUsageJson: null
+        modelUsageJson: null,
+        checkpointWritten: "skipped" as const,
+        error: null
       })
 })
 

@@ -355,7 +355,8 @@ const makeIntegrationLayer = (
     TranscriptProjector,
     {
       appendTurn: () => Effect.void,
-      projectSession: () => Effect.void
+      projectSession: () => Effect.void,
+      projectFromStore: () => Effect.void
     } satisfies TranscriptProjectorService as any
   )
 

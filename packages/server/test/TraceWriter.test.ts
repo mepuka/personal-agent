@@ -70,7 +70,9 @@ const makeSuccessResult = (): SubroutineResult => ({
   iterationsUsed: 2,
   toolCallsTotal: 1,
   assistantContent: "Memory stored.",
-  modelUsageJson: null
+  modelUsageJson: null,
+  checkpointWritten: "skipped",
+  error: null
 })
 
 const makeFailedResult = (): SubroutineResult => ({
@@ -81,7 +83,8 @@ const makeFailedResult = (): SubroutineResult => ({
   toolCallsTotal: 0,
   assistantContent: "",
   modelUsageJson: null,
-  errorMessage: "model_error: connection timeout"
+  checkpointWritten: "skipped",
+  error: { tag: "model_error", message: "connection timeout" }
 })
 
 const makeContentParts = (): ReadonlyArray<Response.Part<any>> => [

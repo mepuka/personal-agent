@@ -1,3 +1,6 @@
+import type { SubroutineToolScope } from "./memory.js"
+import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "./status.js"
+
 /** Hard ceiling on maxToolIterations regardless of agent config. */
 export const MAX_TOOL_ITERATIONS_CAP = 200
 
@@ -37,3 +40,24 @@ export const DEFAULT_SUBROUTINE_DEDUPE_WINDOW_SECONDS = 30
 export const DEFAULT_TRANSCRIPT_DIRECTORY = "transcripts"
 export const DEFAULT_TRACE_DIRECTORY = "traces/memory"
 export const DEFAULT_IDLE_CHECK_INTERVAL_SECONDS = 60
+
+/** Memory domain defaults. */
+export const DEFAULT_SUBROUTINE_TOOL_SCOPE: SubroutineToolScope = {
+  fileRead: true,
+  fileWrite: false,
+  shell: false,
+  memoryRead: true,
+  memoryWrite: true,
+  notification: false
+}
+
+export const DEFAULT_SENSITIVITY_LEVEL: SensitivityLevel = "Internal"
+export const DEFAULT_MEMORY_TIER: MemoryTier = "SemanticMemory"
+export const DEFAULT_MEMORY_SCOPE: MemoryScope = "GlobalScope"
+export const DEFAULT_MEMORY_SOURCE: MemorySource = "AgentSource"
+
+/** Post-commit outbox dispatch. */
+export const POST_COMMIT_TICK_SECONDS = 5
+export const POST_COMMIT_CLAIM_BATCH_SIZE = 10
+export const POST_COMMIT_CLAIM_LEASE_SECONDS = 60
+export const POST_COMMIT_MAX_ATTEMPTS = 5

@@ -488,7 +488,7 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
-  it.effect("accepted turn calls dispatchByTrigger with PostTurn and correct IDs", () => {
+  it.effect("accepted turn does NOT call dispatchByTrigger (deferred to post-commit)", () => {
     const dbPath = testDatabasePath("turn-postturn-dispatch")
     const dispatches: Array<{ triggerType: string; context: TriggerContext }> = []
     const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, undefined, dispatches)
@@ -523,12 +523,8 @@ describe("TurnProcessingWorkflow e2e", () => {
       }))
 
       expect(result.accepted).toBe(true)
-      expect(dispatches).toHaveLength(1)
-      expect(dispatches[0].triggerType).toBe("PostTurn")
-      expect(dispatches[0].context.agentId).toBe("agent:dispatch")
-      expect(dispatches[0].context.sessionId).toBe("session:dispatch")
-      expect(dispatches[0].context.conversationId).toBe("conversation:dispatch")
-      expect(dispatches[0].context.turnId).toBe("turn:dispatch")
+      // Post-turn dispatch is now deferred to post-commit entity, not fire-and-forget
+      expect(dispatches).toHaveLength(0)
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -615,6 +611,66 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(completed).toBeDefined()
       expect((completed as any).accepted).toBe(false)
       expect((completed as any).auditReasonCode).toBe("turn_processing_checkpoint_required")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("InvokeTool checkpoint emits tool.call event with blocked tool info", () => {
+    const dbPath = testDatabasePath("turn-invoke-checkpoint-tool-call")
+
+    // Allow ReadMemory so the flow reaches the model, but RequireApproval for InvokeTool.
+    // Use store_memory (not in ALWAYS_ALLOWED_TOOLS) so governance is evaluated.
+    // Mock model generates tool-call WITHOUT tool-result so @effect/ai invokes the
+    // tool handler, which triggers governance evaluation and RequiresApproval.
+    const layer = makeTurnProcessingLayer(
+      dbPath,
+      (action) => action === "InvokeTool" ? "RequireApproval" : "Allow",
+      undefined,
+      { useProviderInterface: true, toolName: "store_memory", toolParams: { content: "test memory" } }
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T14:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:invoke-ckpt" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:invoke-ckpt" as SessionId,
+        conversationId: "conversation:invoke-ckpt" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:invoke-ckpt" as TurnId,
+        sessionId: "session:invoke-ckpt" as SessionId,
+        conversationId: "conversation:invoke-ckpt" as ConversationId,
+        agentId: "agent:invoke-ckpt" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "store a memory"
+      }))
+
+      // Should be a checkpoint result
+      expect(result.accepted).toBe(false)
+      expect(result.auditReasonCode).toBe("turn_processing_checkpoint_required")
+      expect(result.checkpointId).toBeDefined()
+      expect(result.checkpointAction).toBe("InvokeTool")
+
+      // assistantContentBlocks should include the blocked tool call
+      const toolUseBlock = result.assistantContentBlocks.find(
+        (b) => b.contentBlockType === "ToolUseBlock"
+      )
+      expect(toolUseBlock).toBeDefined()
+      expect((toolUseBlock as any).toolName).toBe("store_memory")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -1088,7 +1144,7 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
-  it.effect("accepted turn calls appendTurn with correct IDs and turn", () => {
+  it.effect("accepted turn does NOT call transcript appendTurn (deferred to post-commit)", () => {
     const dbPath = testDatabasePath("turn-transcript-append")
     const capturedAppends: Array<{ agentId: string; sessionId: string; turn: unknown }> = []
     const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, undefined, undefined, capturedAppends)
@@ -1123,15 +1179,8 @@ describe("TurnProcessingWorkflow e2e", () => {
       }))
 
       expect(result.accepted).toBe(true)
-      expect(capturedAppends).toHaveLength(2)
-      // First append is user turn
-      expect(capturedAppends[0].agentId).toBe("agent:transcript")
-      expect(capturedAppends[0].sessionId).toBe("session:transcript")
-      expect((capturedAppends[0].turn as any).participantRole).toBe("UserRole")
-      // Second append is assistant turn
-      expect(capturedAppends[1].agentId).toBe("agent:transcript")
-      expect(capturedAppends[1].sessionId).toBe("session:transcript")
-      expect((capturedAppends[1].turn as any).participantRole).toBe("AssistantRole")
+      // Transcript projection is now deferred to post-commit entity, not fire-and-forget
+      expect(capturedAppends).toHaveLength(0)
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -1467,7 +1516,7 @@ const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 
 const makeTurnProcessingLayer = (
   dbPath: string,
-  forcedDecision: AuthorizationDecision = "Allow",
+  forcedDecision: AuthorizationDecision | ((action: string) => AuthorizationDecision) = "Allow",
   capturedPrompts?: Array<string>,
   mockOptions?: {
     readonly finishReasons?: ReadonlyArray<Response.FinishReason>
@@ -1537,15 +1586,21 @@ const makeTurnProcessingLayer = (
         return governance as GovernancePort
       }
 
+      const resolveDecision = typeof forcedDecision === "function"
+        ? forcedDecision
+        : () => forcedDecision as AuthorizationDecision
+
       return {
         ...governance,
-        evaluatePolicy: (_input) =>
-          Effect.succeed({
-            decision: forcedDecision,
+        evaluatePolicy: (input: { readonly action: string }) => {
+          const decision = resolveDecision(input.action)
+          return Effect.succeed({
+            decision,
             policyId: null,
             toolDefinitionId: null,
-            reason: `forced_${forcedDecision.toLowerCase()}`
+            reason: `forced_${decision.toLowerCase()}`
           })
+        }
       } as GovernancePort
     })
   ).pipe(Layer.provide(governanceSqliteLayer))
@@ -1567,7 +1622,12 @@ const makeTurnProcessingLayer = (
     Effect.succeed({
       get: (_provider: string, _modelId: string) =>
         Effect.succeed(
-          Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel(capturedPrompts, mockOptions))
+          mockOptions?.useProviderInterface
+            ? Layer.effect(
+                LanguageModel.LanguageModel,
+                LanguageModel.make(makeMockProvider(capturedPrompts, mockOptions))
+              )
+            : Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel(capturedPrompts, mockOptions))
         )
     })
   )
@@ -1659,7 +1719,8 @@ const makeTurnProcessingLayer = (
       Effect.sync(() => {
         capturedTranscriptAppends?.push({ agentId, sessionId, turn })
       }),
-    projectSession: () => Effect.void
+    projectSession: () => Effect.void,
+    projectFromStore: () => Effect.void
   }
   const transcriptProjectorLayer = Layer.succeed(
     TranscriptProjector,
@@ -1760,6 +1821,10 @@ const makeMockLanguageModel = (
   mockOptions?: {
     readonly finishReasons?: ReadonlyArray<Response.FinishReason>
     readonly failWithErrorMessage?: string
+    readonly omitToolResults?: boolean
+    readonly toolName?: string
+    readonly toolParams?: Record<string, unknown>
+    readonly useProviderInterface?: boolean
   }
 ): LanguageModel.Service => {
   let callCount = 0
@@ -1795,22 +1860,26 @@ const makeMockLanguageModel = (
         }
       })
 
+      const mockToolName = mockOptions?.toolName ?? "echo.text"
+      const mockToolParams = mockOptions?.toolParams ?? { text: "hello" }
       const parts: Array<Response.Part<any>> = [
         Response.makePart("tool-call", {
-          id: `call_echo_${currentCall}`,
-          name: "echo.text",
-          params: { text: "hello" },
+          id: `call_${mockToolName}_${currentCall}`,
+          name: mockToolName,
+          params: mockToolParams,
           providerExecuted: false
         }),
-        Response.makePart("tool-result", {
-          id: `call_echo_${currentCall}`,
-          name: "echo.text",
-          isFailure: false,
-          result: { text: "hello" },
-          encodedResult: { text: "hello" },
-          providerExecuted: false,
-          preliminary: false
-        })
+        ...(mockOptions?.omitToolResults ? [] : [
+          Response.makePart("tool-result", {
+            id: `call_${mockToolName}_${currentCall}`,
+            name: mockToolName,
+            isFailure: false,
+            result: mockToolParams,
+            encodedResult: mockToolParams,
+            providerExecuted: false,
+            preliminary: false
+          })
+        ])
       ]
 
       if (finishReason !== "tool-calls") {
@@ -1831,6 +1900,66 @@ const makeMockLanguageModel = (
     },
     streamText: (_options: any) => Stream.empty as any,
     generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
+  }
+}
+
+/**
+ * Provider-based mock that goes through LanguageModel.make, enabling @effect/ai
+ * tool resolution. Use when the test needs tool handlers to be invoked.
+ */
+const makeMockProvider = (
+  capturedPrompts?: Array<string>,
+  mockOptions?: {
+    readonly finishReasons?: ReadonlyArray<Response.FinishReason>
+    readonly toolName?: string
+    readonly toolParams?: Record<string, unknown>
+    readonly useProviderInterface?: boolean
+  }
+): { readonly generateText: any; readonly streamText: any } => {
+  let callCount = 0
+
+  return {
+    generateText: (_providerOptions: any) => {
+      if (capturedPrompts) {
+        capturedPrompts.push(encodeJson(_providerOptions))
+      }
+      const finishReasons = mockOptions?.finishReasons
+      const currentCall = callCount++
+      const finishReason = finishReasons
+        ? (finishReasons[currentCall] ?? finishReasons[finishReasons.length - 1] ?? "stop")
+        : "stop"
+
+      const mockToolName = mockOptions?.toolName ?? "echo.text"
+      const mockToolParams = mockOptions?.toolParams ?? { text: "hello" }
+
+      // Return raw encoded parts — @effect/ai will process tool-calls
+      // via resolveToolCalls, invoking the real tool handlers
+      const parts: Array<any> = [
+        {
+          type: "tool-call",
+          id: `call_${mockToolName}_${currentCall}`,
+          name: mockToolName,
+          params: mockToolParams,
+          providerExecuted: false
+        }
+      ]
+
+      if (finishReason !== "tool-calls") {
+        parts.push({ type: "text", text: "assistant mock response" })
+      }
+
+      parts.push({
+        type: "finish",
+        reason: finishReason,
+        usage: {
+          inputTokens: { uncached: 10, total: 10 },
+          outputTokens: { total: 6, text: 6 }
+        }
+      })
+
+      return Effect.succeed(parts)
+    },
+    streamText: () => Stream.empty
   }
 }
 

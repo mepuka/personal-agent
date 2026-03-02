@@ -15,6 +15,7 @@ import { Cause, DateTime, Effect, Layer, Option, ServiceMap, Stream } from "effe
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
 import { AgentConfig } from "./ai/AgentConfig.js"
+import { makeToolCallId } from "./ai/ToolCallId.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
 import {
   toCheckpointFailureReason,
@@ -64,7 +65,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         readonly inputJson: string
         readonly outputJson: string
       }): Stream.Stream<TurnStreamEvent, TurnProcessingError> => {
-        const toolCallId = `toolcall:${params.turnId}:replay`
+        const toolCallId = makeToolCallId("toolcall", params.turnId, "replay")
         return Stream.concat(
           Stream.fromIterable([
             {

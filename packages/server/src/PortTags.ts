@@ -7,7 +7,8 @@ import type {
   IntegrationPort,
   MemoryPort,
   SchedulePort,
-  SessionTurnPort
+  SessionTurnPort,
+  TurnPostCommitPort
 } from "@template/domain/ports"
 import { ServiceMap } from "effect"
 
@@ -33,4 +34,8 @@ export const CheckpointPortTag = ServiceMap.Service<CheckpointPort>("server/port
 
 export const CompactionCheckpointPortTag = ServiceMap.Service<CompactionCheckpointPort>(
   "server/ports/CompactionCheckpointPort"
+)
+
+export const TurnPostCommitPortTag = ServiceMap.Service<TurnPostCommitPort>(
+  "server/ports/TurnPostCommitPort"
 )

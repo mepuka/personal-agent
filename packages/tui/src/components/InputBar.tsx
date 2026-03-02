@@ -25,13 +25,13 @@ export function InputBar({
 
   const handleSubmit = React.useCallback(
     (value: string) => {
-      if (isStreaming || !value.trim()) return
+      if (isStreaming || checkpoint || !value.trim()) return
       onSubmit(value.trim())
       setInputValue("")
       setHistoryIndex(-1)
       setStashedInput("")
     },
-    [onSubmit, isStreaming]
+    [onSubmit, isStreaming, checkpoint]
   )
 
   // Checkpoint decision keyboard handler

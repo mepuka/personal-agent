@@ -3,6 +3,7 @@ import type { AgentProfile } from "@template/domain/config"
 import type { TurnRecord } from "@template/domain/ports"
 import { DateTime, Effect, FileSystem, Layer, Path, ServiceMap } from "effect"
 import { AgentConfig } from "../ai/AgentConfig.js"
+import { SessionTurnPortTag } from "../PortTags.js"
 
 // ---------------------------------------------------------------------------
 // Service
@@ -20,6 +21,11 @@ export interface TranscriptProjectorService {
     sessionId: SessionId,
     turns: ReadonlyArray<TurnRecord>
   ) => Effect.Effect<void>
+
+  readonly projectFromStore: (
+    agentId: AgentId,
+    sessionId: SessionId
+  ) => Effect.Effect<void>
 }
 
 export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>()(
@@ -29,6 +35,7 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
       const fs = yield* FileSystem.FileSystem
       const pathService = yield* Path.Path
       const agentConfig = yield* AgentConfig
+      const sessionTurnPort = yield* SessionTurnPortTag
       const configPath = process.env.PA_CONFIG_PATH ?? "agent.yaml"
       const configDir = pathService.dirname(pathService.resolve(configPath))
 
@@ -51,7 +58,7 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const rendered = renderTurn(turn)
           yield* appendFileWithDirs(fs, pathService, filePath, rendered)
-        }).pipe(Effect.catch(() => Effect.void))
+        })
 
       const projectSession: TranscriptProjectorService["projectSession"] = (agentId, sessionId, turns) =>
         Effect.gen(function*() {
@@ -61,9 +68,15 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const content = renderTranscript(turns)
           yield* writeFileWithDirs(fs, pathService, filePath, content)
-        }).pipe(Effect.catch(() => Effect.void))
+        })
 
-      return { appendTurn, projectSession } satisfies TranscriptProjectorService
+      const projectFromStore: TranscriptProjectorService["projectFromStore"] = (agentId, sessionId) =>
+        Effect.gen(function*() {
+          const turns = yield* sessionTurnPort.listTurns(sessionId)
+          yield* projectSession(agentId, sessionId, turns)
+        })
+
+      return { appendTurn, projectSession, projectFromStore } satisfies TranscriptProjectorService
     })
   }
 ) {

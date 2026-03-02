@@ -48,6 +48,25 @@ export interface SubroutineContext {
   readonly runId: string
 }
 
+export const CheckpointWriteStatus = Schema.Literals(["success", "failed", "skipped"])
+export type CheckpointWriteStatus = typeof CheckpointWriteStatus.Type
+
+export const SubroutineErrorTag = Schema.Literals([
+  "model_error",
+  "tool_loop_error",
+  "checkpoint_error",
+  "trace_error",
+  "config_error",
+  "unknown_error"
+])
+export type SubroutineErrorTag = typeof SubroutineErrorTag.Type
+
+export const SubroutineError = Schema.Struct({
+  tag: SubroutineErrorTag,
+  message: Schema.String
+})
+export type SubroutineError = typeof SubroutineError.Type
+
 export const SubroutineResult = Schema.Struct({
   subroutineId: Schema.String,
   runId: Schema.String,
@@ -56,18 +75,10 @@ export const SubroutineResult = Schema.Struct({
   toolCallsTotal: Schema.Number,
   assistantContent: Schema.String,
   modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
-  errorMessage: Schema.optionalKey(Schema.String)
+  checkpointWritten: CheckpointWriteStatus,
+  error: Schema.Union([SubroutineError, Schema.Null])
 })
 export type SubroutineResult = typeof SubroutineResult.Type
-
-export class SubroutineExecutionError extends Schema.ErrorClass<SubroutineExecutionError>(
-  "SubroutineExecutionError"
-)({
-  _tag: Schema.tag("SubroutineExecutionError"),
-  subroutineId: Schema.String,
-  runId: Schema.String,
-  reason: Schema.String
-}) {}
 
 // ---------------------------------------------------------------------------
 // Service
@@ -94,11 +105,13 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
 
       const execute: SubroutineRunnerService["execute"] = (subroutine, context) =>
         Effect.gen(function*() {
-          // Use originating turnId for audit correlation when available;
-          // fall back to synthetic for scheduled/idle triggers where turnId is null.
-          const effectiveTurnId = context.turnId ?? (`turn:subroutine:${context.runId}` as TurnId)
-          const syntheticChannelId = `channel:subroutine:${context.sessionId}`
-          // Always use synthetic conversationId to isolate chat history from user session
+          // originTurnId: audit/provenance correlation (originating turn or synthetic)
+          const originTurnId = context.turnId ?? (`turn:subroutine:${context.runId}` as TurnId)
+          // executionTurnId: run-scoped for tool idempotency context (prevents collisions
+          // when multiple subroutines share the same originating turn)
+          const executionTurnId = `turn:subexec:${context.runId}` as TurnId
+          // Run-scoped synthetic channel and conversation — isolates each execution
+          const syntheticChannelId = `channel:subroutine:${context.runId}`
           const syntheticConversationId = `conversation:subroutine:${context.runId}` as ConversationId
           const chatSessionKey = `subroutine:${context.runId}`
 
@@ -143,7 +156,7 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
               agentId: context.agentId,
               sessionId: context.sessionId,
               conversationId: syntheticConversationId,
-              turnId: effectiveTurnId,
+              turnId: executionTurnId,
               now: context.now,
               channelId: syntheticChannelId
             },
@@ -183,14 +196,17 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
               iterationsUsed: loopResult.iterationsUsed,
               toolCallsTotal: loopResult.toolCallsTotal,
               assistantContent,
-              modelUsageJson
+              modelUsageJson,
+              checkpointWritten: "skipped",
+              error: null
             },
             usage: loopResult.usage
           }).pipe(Effect.ignore)
 
-          // Compaction checkpoint write (non-fatal, inline)
+          // Compaction checkpoint write — track outcome explicitly
+          let checkpointWritten: CheckpointWriteStatus = "skipped"
           if (subroutine.config.writesCheckpoint === true) {
-            yield* Effect.gen(function*() {
+            checkpointWritten = yield* Effect.gen(function*() {
               const createdAt = yield* DateTime.now
               yield* compactionCheckpointPort.create({
                 checkpointId: `compaction:${context.runId}` as CompactionCheckpointId,
@@ -205,13 +221,17 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
                 tokensAfter: null,
                 detailsJson: null
               })
+              return "success" as const
             }).pipe(
               Effect.catchCause((cause) =>
-                Effect.log("Compaction checkpoint write failed", {
-                  subroutineId: subroutine.config.id,
-                  runId: context.runId,
-                  cause
-                }).pipe(Effect.annotateLogs("level", "error"))
+                Effect.gen(function*() {
+                  yield* Effect.log("Compaction checkpoint write failed", {
+                    subroutineId: subroutine.config.id,
+                    runId: context.runId,
+                    cause
+                  }).pipe(Effect.annotateLogs("level", "error"))
+                  return "failed" as const
+                })
               )
             )
           }
@@ -223,7 +243,9 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
             iterationsUsed: loopResult.iterationsUsed,
             toolCallsTotal: loopResult.toolCallsTotal,
             assistantContent,
-            modelUsageJson
+            modelUsageJson,
+            checkpointWritten,
+            error: null
           } satisfies SubroutineResult
         }).pipe(
           Effect.catch((error) =>
@@ -236,32 +258,17 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
                 "memory_subroutine_failed"
               ).pipe(Effect.ignore)
 
-              const reason = error instanceof Error
+              const message = error instanceof Error
                 ? error.message
                 : typeof error === "object" && error !== null && "message" in error
                   && typeof (error as { message?: unknown }).message === "string"
                   ? (error as { message: string }).message
                   : String(error)
 
-              // Trace: write structured run trace for failure (fire-and-forget)
-              yield* traceWriter.writeRunTrace({
-                subroutine,
-                context,
-                contentParts: [],
-                result: {
-                  subroutineId: subroutine.config.id,
-                  runId: context.runId,
-                  success: false,
-                  iterationsUsed: 0,
-                  toolCallsTotal: 0,
-                  assistantContent: "",
-                  modelUsageJson: null,
-                  errorMessage: reason
-                },
-                usage: null
-              }).pipe(Effect.ignore)
+              const tag = classifySubroutineError(error)
+              const typedError: SubroutineError = { tag, message }
 
-              return {
+              const failResult: SubroutineResult = {
                 subroutineId: subroutine.config.id,
                 runId: context.runId,
                 success: false,
@@ -269,8 +276,20 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
                 toolCallsTotal: 0,
                 assistantContent: "",
                 modelUsageJson: null,
-                errorMessage: reason
-              } satisfies SubroutineResult
+                checkpointWritten: "skipped",
+                error: typedError
+              }
+
+              // Trace: write structured run trace for failure (fire-and-forget)
+              yield* traceWriter.writeRunTrace({
+                subroutine,
+                context,
+                contentParts: [],
+                result: failResult,
+                usage: null
+              }).pipe(Effect.ignore)
+
+              return failResult
             })
           )
         )
@@ -280,6 +299,31 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
   }
 ) {
   static layer = Layer.effect(this, this.make)
+}
+
+// ---------------------------------------------------------------------------
+// Error Classification
+// ---------------------------------------------------------------------------
+
+const classifySubroutineError = (error: unknown): SubroutineErrorTag => {
+  const msg = error instanceof Error ? error.message : String(error)
+  const lower = msg.toLowerCase()
+  if (lower.includes("model") || lower.includes("api") || lower.includes("provider")) {
+    return "model_error"
+  }
+  if (lower.includes("tool") || lower.includes("iteration") || lower.includes("loop")) {
+    return "tool_loop_error"
+  }
+  if (lower.includes("checkpoint") || lower.includes("compaction")) {
+    return "checkpoint_error"
+  }
+  if (lower.includes("trace")) {
+    return "trace_error"
+  }
+  if (lower.includes("config") || lower.includes("profile") || lower.includes("subroutine")) {
+    return "config_error"
+  }
+  return "unknown_error"
 }
 
 // ---------------------------------------------------------------------------

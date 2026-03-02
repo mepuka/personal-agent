@@ -777,6 +777,39 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS idx_compaction_checkpoints_session_only
       ON compaction_checkpoints (session_id, created_at ASC)
     `.unprepared
+  }),
+  "0017_turn_post_commit_tasks": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS turn_post_commit_tasks (
+        task_id TEXT PRIMARY KEY,
+        turn_id TEXT NOT NULL UNIQUE,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('Pending','Claimed','Succeeded','Retry','FailedPermanent')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        claimed_at TEXT,
+        claim_owner TEXT,
+        completed_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        payload_json TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_post_commit_status_next_attempt
+      ON turn_post_commit_tasks (status, next_attempt_at)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_post_commit_session_created
+      ON turn_post_commit_tasks (session_id, created_at)
+    `.unprepared
   })
 })
 

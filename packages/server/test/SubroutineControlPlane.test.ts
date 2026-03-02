@@ -84,7 +84,9 @@ const makeSuccessResult = (subroutineId: string, runId: string): SubroutineResul
   iterationsUsed: 1,
   toolCallsTotal: 0,
   assistantContent: "Memory stored.",
-  modelUsageJson: null
+  modelUsageJson: null,
+  checkpointWritten: "skipped",
+  error: null
 })
 
 // ---------------------------------------------------------------------------

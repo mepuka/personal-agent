@@ -132,6 +132,13 @@ const dispatchAction = (params: {
       }
 
       const result = yield* params.subroutineRunner.execute(loaded, context)
+      yield* Effect.log("SchedulerActionExecutor subroutine result", {
+        subroutineId: result.subroutineId,
+        runId: result.runId,
+        success: result.success,
+        checkpointWritten: result.checkpointWritten,
+        errorTag: result.error?.tag ?? null
+      })
       return result.success
         ? "ExecutionSucceeded" as const
         : "ExecutionFailed" as const

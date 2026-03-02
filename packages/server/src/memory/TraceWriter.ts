@@ -141,8 +141,8 @@ const renderTrace = (params: RunTraceParams): string => {
   lines.push(`Status: ${result.success ? "Success" : "Failed"}`)
   lines.push(`Iterations: ${result.iterationsUsed}`)
   lines.push(`Tool Calls: ${result.toolCallsTotal}`)
-  if (result.errorMessage) {
-    lines.push(`Error: ${result.errorMessage}`)
+  if (result.error) {
+    lines.push(`Error: ${result.error.tag}: ${result.error.message}`)
   }
   lines.push("")
 

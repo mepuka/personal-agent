@@ -84,7 +84,7 @@ const writeControlPlaneAudit = (
   decision: AuthorizationDecision = "Allow"
 ) =>
   governancePort.writeAudit({
-    auditEntryId: `audit:controlplane:${request.subroutineId}:${reason}:${Date.now()}` as AuditEntryId,
+    auditEntryId: `audit:controlplane:${request.subroutineId}:${reason}:${crypto.randomUUID()}` as AuditEntryId,
     agentId: request.agentId,
     sessionId: request.sessionId,
     decision,
@@ -250,7 +250,14 @@ export class SubroutineControlPlane extends ServiceMap.Service<SubroutineControl
             }
 
             // Execute — runner.execute never fails (errors captured in result)
-            yield* runner.execute(loaded, context)
+            const result = yield* runner.execute(loaded, context)
+            yield* Effect.log("SubroutineControlPlane processOne completed", {
+              subroutineId: result.subroutineId,
+              runId: result.runId,
+              success: result.success,
+              checkpointWritten: result.checkpointWritten,
+              errorTag: result.error?.tag ?? null
+            })
           }).pipe(
             Effect.ensuring(
               Ref.update(inFlight, (set) => {

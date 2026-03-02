@@ -370,7 +370,8 @@ const makeChatFlowLayer = (
     TranscriptProjector,
     {
       appendTurn: () => Effect.void,
-      projectSession: () => Effect.void
+      projectSession: () => Effect.void,
+      projectFromStore: () => Effect.void
     } as any
   )
 

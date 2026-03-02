@@ -7,7 +7,7 @@ import type {
   TokenBudgetExceeded,
   ToolQuotaExceeded
 } from "./errors.js"
-import { AgentId, ConversationId, MessageId, SessionId, TurnId } from "./ids.js"
+import { AgentId, ConversationId, MessageId, PostCommitTaskId, SessionId, TurnId } from "./ids.js"
 import type {
   AuditEntryId,
   AuditLogId,
@@ -18,6 +18,7 @@ import type {
   IntegrationId,
   MemoryItemId,
   PolicyId,
+  PostCommitTaskId,
   ScheduledExecutionId,
   ScheduleId,
   ToolDefinitionId,
@@ -41,6 +42,7 @@ import type {
   MemoryTier,
   PermissionMode,
   PolicySelector,
+  PostCommitTaskStatus,
   QuotaPeriod,
   ScheduleStatus,
   SensitivityLevel,
@@ -359,6 +361,10 @@ export interface AgentStatePort {
 export interface SessionTurnPort {
   readonly startSession: (state: SessionState) => Effect.Effect<void>
   readonly appendTurn: (turn: TurnRecord) => Effect.Effect<void>
+  readonly appendAssistantTurnWithPostCommitTask: (
+    turn: TurnRecord,
+    task: PostCommitTaskRecord
+  ) => Effect.Effect<void>
   readonly deleteSession: (sessionId: SessionId) => Effect.Effect<void>
   readonly updateContextWindow: (
     sessionId: SessionId,
@@ -612,4 +618,53 @@ export interface CompactionCheckpointPort {
     subroutineId: string
   ) => Effect.Effect<CompactionCheckpointRecord | null>
   readonly listBySession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<CompactionCheckpointRecord>>
+}
+
+// ---------------------------------------------------------------------------
+// Turn Post-Commit Outbox
+// ---------------------------------------------------------------------------
+
+export interface PostCommitTaskRecord {
+  readonly taskId: PostCommitTaskId
+  readonly turnId: TurnId
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+  readonly conversationId: ConversationId
+  readonly createdAt: Instant
+  readonly status: PostCommitTaskStatus
+  readonly attempts: number
+  readonly nextAttemptAt: Instant
+  readonly claimedAt: Instant | null
+  readonly claimOwner: string | null
+  readonly completedAt: Instant | null
+  readonly lastErrorCode: string | null
+  readonly lastErrorMessage: string | null
+  readonly payloadJson: string
+}
+
+export interface TurnPostCommitPort {
+  readonly enqueue: (task: PostCommitTaskRecord) => Effect.Effect<void>
+  readonly claimDue: (
+    now: Instant,
+    limit: number,
+    workerId: string,
+    claimLeaseSeconds: number
+  ) => Effect.Effect<ReadonlyArray<PostCommitTaskRecord>>
+  readonly markSucceeded: (
+    taskId: PostCommitTaskId,
+    completedAt: Instant
+  ) => Effect.Effect<void>
+  readonly markRetry: (
+    taskId: PostCommitTaskId,
+    now: Instant,
+    errorCode: string,
+    errorMessage: string,
+    nextAttemptAt: Instant
+  ) => Effect.Effect<void>
+  readonly markFailedPermanent: (
+    taskId: PostCommitTaskId,
+    now: Instant,
+    errorCode: string,
+    errorMessage: string
+  ) => Effect.Effect<void>
 }

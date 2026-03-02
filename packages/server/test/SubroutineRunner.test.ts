@@ -460,7 +460,9 @@ describe("SubroutineRunner.execute", () => {
       )
 
       expect(result.success).toBe(false)
-      expect(result.errorMessage).toBeDefined()
+      expect(result.error).not.toBeNull()
+      expect(result.error!.tag).toBeDefined()
+      expect(result.error!.message).toBeDefined()
       expect(result.iterationsUsed).toBe(0)
       expect(result.toolCallsTotal).toBe(0)
       expect(result.assistantContent).toBe("")

@@ -1,6 +1,6 @@
 import { TurnStreamEvent } from "@template/domain/events"
 import type { ConversationId, SessionId } from "@template/domain/ids"
-import { ContentBlock } from "@template/domain/ports"
+import { CHECKPOINT_REPLAY_PAYLOAD_VERSION, ContentBlock } from "@template/domain/ports"
 import { Effect, Schema, Stream } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -33,6 +33,13 @@ const ProcessTurnPayloadFields = {
   createdAt: Schema.DateTimeUtcFromString,
   inputTokens: Schema.Number,
   checkpointId: Schema.optionalKey(Schema.String),
+  invokeToolReplay: Schema.optionalKey(Schema.Struct({
+    replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
+    toolName: Schema.String,
+    inputJson: Schema.String,
+    outputJson: Schema.String,
+    isError: Schema.Boolean
+  })),
   modelOverride: Schema.optionalKey(Schema.Struct({
     provider: Schema.String,
     modelId: Schema.String

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import type { AgentId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
-import type { Instant, TurnRecord } from "@template/domain/ports"
+import type { Instant, SessionTurnPort, TurnRecord } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { SessionTurnPortTag } from "../src/PortTags.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
 import { rmSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -100,7 +101,20 @@ const makeToolUseTurn = (): TurnRecord => ({
 
 const testDir = () => join(tmpdir(), `transcript-projector-test-${crypto.randomUUID()}`)
 
-const makeTestLayer = (transcriptDir: string, enabled = true) => {
+const makeStubSessionTurnPort = (
+  turns: ReadonlyArray<TurnRecord> = []
+): Layer.Layer<typeof SessionTurnPortTag.Type> =>
+  Layer.succeed(SessionTurnPortTag, {
+    startSession: () => Effect.void,
+    appendTurn: () => Effect.void,
+    appendAssistantTurnWithPostCommitTask: () => Effect.void,
+    deleteSession: () => Effect.void,
+    updateContextWindow: () => Effect.void,
+    getSession: () => Effect.succeed(null),
+    listTurns: () => Effect.succeed(turns)
+  } as SessionTurnPort)
+
+const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArray<TurnRecord> = []) => {
   const agentConfigLayer = AgentConfig.layerFromParsed({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
@@ -121,7 +135,8 @@ const makeTestLayer = (transcriptDir: string, enabled = true) => {
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
-      agentConfigLayer
+      agentConfigLayer,
+      makeStubSessionTurnPort(turns)
     ))
   )
 }
@@ -143,7 +158,8 @@ const makeTestLayerNoConfig = () => {
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
-      agentConfigLayer
+      agentConfigLayer,
+      makeStubSessionTurnPort()
     ))
   )
 }
@@ -254,6 +270,30 @@ describe("TranscriptProjector", () => {
       expect(content).toContain("[Tool: retrieve_memories]")
       expect(content).toContain('Input: {"query":"recent"}')
       expect(content).toContain("Result (retrieve_memories)")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true })))
+    )
+  })
+
+  it.effect("projectFromStore loads turns from SessionTurnPort and writes transcript", () => {
+    const dir = testDir()
+    const storedTurns = [makeUserTurn(), makeAssistantTurn()]
+    const layer = makeTestLayer(dir, true, storedTurns)
+
+    return Effect.gen(function*() {
+      const projector = yield* TranscriptProjector
+      yield* projector.projectFromStore(AGENT_ID, SESSION_ID)
+
+      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      expect(existsSync(expectedPath)).toBe(true)
+
+      const content = readFileSync(expectedPath, "utf-8")
+      expect(content).toContain("# Session Transcript")
+      expect(content).toContain("## Turn 0 (user)")
+      expect(content).toContain("Hello, how are you?")
+      expect(content).toContain("## Turn 1 (assistant)")
+      expect(content).toContain("I'm doing well!")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true })))

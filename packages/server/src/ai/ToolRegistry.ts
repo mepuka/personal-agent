@@ -14,7 +14,12 @@ import type {
   TurnId
 } from "@template/domain/ids"
 import { toMemoryItemIds, type SubroutineToolScope } from "@template/domain/memory"
-import { MemoryTier } from "@template/domain/status"
+import { MemoryScope, MemoryTier } from "@template/domain/status"
+import {
+  DEFAULT_MEMORY_SCOPE,
+  DEFAULT_MEMORY_SOURCE,
+  DEFAULT_MEMORY_TIER
+} from "@template/domain/system-defaults"
 import {
   CHECKPOINT_REPLAY_PAYLOAD_VERSION,
   type CheckpointReplayPayloadVersion,
@@ -112,7 +117,7 @@ const StoreMemoryTool = Tool.make("store_memory", {
   parameters: Schema.Struct({
     content: Schema.String,
     tags: Schema.optionalKey(Schema.Array(Schema.String)),
-    scope: Schema.optionalKey(Schema.Literals(["SessionScope", "GlobalScope"])),
+    scope: Schema.optionalKey(MemoryScope),
     tier: Schema.optionalKey(MemoryTier)
   }),
   success: Schema.Struct({
@@ -895,9 +900,9 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       const [memoryId] = yield* memoryPort.encode(
                         context.agentId,
                         [{
-                          tier: tier ?? "SemanticMemory",
-                          scope: scope ?? "GlobalScope",
-                          source: "AgentSource",
+                          tier: tier ?? DEFAULT_MEMORY_TIER,
+                          scope: scope ?? DEFAULT_MEMORY_SCOPE,
+                          source: DEFAULT_MEMORY_SOURCE,
                           content,
                           metadataJson
                         }],

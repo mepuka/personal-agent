@@ -1,5 +1,5 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
-import { DEFAULT_MEMORY_SEARCH_LIMIT } from "@template/domain/system-defaults"
+import { DEFAULT_MEMORY_SEARCH_LIMIT, DEFAULT_SENSITIVITY_LEVEL } from "@template/domain/system-defaults"
 import type {
   Instant,
   MemoryForgetFilters,
@@ -26,12 +26,12 @@ const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
 interface StoreInput {
   readonly tier: MemoryTier
   readonly scope: MemoryScope
-  readonly source: "UserSource" | "SystemSource" | "AgentSource"
+  readonly source: MemorySource
   readonly content: string
   readonly metadataJson?: string | null
   readonly generatedByTurnId?: string | null
   readonly sessionId?: string | null
-  readonly sensitivity?: "Public" | "Internal" | "Confidential" | "Restricted"
+  readonly sensitivity?: SensitivityLevel
 }
 
 interface RetrieveFilters {
@@ -153,7 +153,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
                 ${id}, ${agentId}, ${item.tier}, ${item.scope}, ${item.source},
                 ${item.content}, ${item.metadataJson ?? null},
                 ${item.generatedByTurnId ?? null}, ${item.sessionId ?? null},
-                ${item.sensitivity ?? "Internal"}, ${agentId}, ${agentId},
+                ${item.sensitivity ?? DEFAULT_SENSITIVITY_LEVEL}, ${agentId}, ${agentId},
                 ${null}, ${null}, ${nowStr}, ${nowStr}
               )
             `.unprepared

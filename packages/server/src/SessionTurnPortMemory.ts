@@ -31,6 +31,12 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
           return HashMap.set(map, turn.sessionId, next)
         })
 
+      // In-memory: just appends the turn (no outbox persistence needed)
+      const appendAssistantTurnWithPostCommitTask: SessionTurnPort["appendAssistantTurnWithPostCommitTask"] = (
+        turn,
+        _task
+      ) => appendTurn(turn)
+
       const deleteSession: SessionTurnPort["deleteSession"] = (sessionId) =>
         Effect.all([
           Ref.update(sessions, HashMap.remove(sessionId)),
@@ -84,6 +90,7 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
       return {
         startSession,
         appendTurn,
+        appendAssistantTurnWithPostCommitTask,
         deleteSession,
         updateContextWindow,
         getSession,

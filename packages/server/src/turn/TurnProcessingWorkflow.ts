@@ -25,6 +25,7 @@ import type {
   ConversationId,
   MessageId,
   PolicyId,
+  PostCommitTaskId,
   SessionId,
   TurnId
 } from "../../../domain/src/ids.js"
@@ -34,6 +35,7 @@ import {
   type ContentBlock,
   ContentBlock as ContentBlockSchema,
   type Instant,
+  type PostCommitTaskRecord,
   type TurnRecord
 } from "../../../domain/src/ports.js"
 import { ModelFinishReason } from "../../../domain/src/status.js"
@@ -44,6 +46,7 @@ import {
   encodeUsageToJson
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
+import { makeToolCallId } from "../ai/ToolCallId.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
 import { makeCheckpointPayloadHash } from "../checkpoints/ReplayHash.js"
 import {
@@ -53,7 +56,6 @@ import {
 } from "../checkpoints/ReplayCheckpointValidator.js"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
-import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 import {
   AgentStatePortTag,
   CheckpointPortTag,
@@ -72,6 +74,14 @@ export const TurnAuditReasonCode = Schema.Literals([
   "turn_processing_model_error"
 ])
 export type TurnAuditReasonCode = typeof TurnAuditReasonCode.Type
+
+const PostCommitPayload = Schema.Struct({
+  turnId: Schema.String,
+  agentId: Schema.String,
+  sessionId: Schema.String,
+  conversationId: Schema.String
+})
+const encodePostCommitPayload = Schema.encodeSync(Schema.fromJsonString(PostCommitPayload))
 
 const InvokeToolReplayExecution = Schema.Struct({
   replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
@@ -289,7 +299,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const checkpointPort = yield* CheckpointPortTag
     const subroutineControlPlane = yield* SubroutineControlPlane
     const subroutineCatalog = yield* SubroutineCatalog
-    const transcriptProjector = yield* TranscriptProjector
 
     const invokeToolReplay = payload.invokeToolReplay
 
@@ -517,7 +526,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     }
 
-    const replayToolCallId = `toolcall:${payload.turnId}:replay`
+    const replayToolCallId = makeToolCallId("toolcall", payload.turnId, "replay")
     const replayPrefixContentBlocks =
       invokeToolReplay === undefined
         ? []
@@ -677,14 +686,26 @@ export const layer = TurnProcessingWorkflow.toLayer(
         "RequireApproval",
         "turn_processing_checkpoint_required"
       )
+      // Reconstruct the blocked tool call as a ToolUseBlock so the UI can
+      // display it in the Tools pane while the checkpoint is pending.
+      const checkpointToolCallId = makeToolCallId("toolcall", payload.turnId, "checkpoint")
+      const checkpointContentBlocks: ReadonlyArray<ContentBlock> = [
+        ...replayPrefixContentBlocks,
+        {
+          contentBlockType: "ToolUseBlock" as const,
+          toolCallId: checkpointToolCallId,
+          toolName: firstSignal.toolName,
+          inputJson: firstSignal.inputJson
+        }
+      ]
       return {
         turnId: payload.turnId,
         accepted: false,
         auditReasonCode: "turn_processing_checkpoint_required",
         assistantContent: "",
-        assistantContentBlocks: replayPrefixContentBlocks,
+        assistantContentBlocks: checkpointContentBlocks,
         iterationsUsed: 0,
-        toolCallsTotal: 0,
+        toolCallsTotal: 1,
         iterationStats: [],
         modelFinishReason: null,
         modelUsageJson: null,
@@ -779,8 +800,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
         turnId: payload.turnId,
         accepted: false,
         auditReasonCode: "turn_processing_checkpoint_required",
-        assistantContent: "",
-        assistantContentBlocks: [],
+        assistantContent: assistantResult.assistantContent,
+        assistantContentBlocks: assistantResult.assistantContentBlocks,
         iterationsUsed: assistantResult.iterationsUsed,
         toolCallsTotal: assistantResult.toolCallsTotal,
         iterationStats: assistantResult.iterationStats,
@@ -793,9 +814,9 @@ export const layer = TurnProcessingWorkflow.toLayer(
     }
 
     yield* Activity.make({
-      name: "PersistAssistantTurn",
-      execute: sessionTurnPort.appendTurn(
-        makeAssistantTurn(payload, {
+      name: "PersistAssistantTurnAndPostCommitTask",
+      execute: Effect.gen(function*() {
+        const assistantTurn = makeAssistantTurn(payload, {
           assistantContent: assistantResult.assistantContent,
           assistantContentBlocks: invokeToolReplay === undefined
             ? assistantResult.assistantContentBlocks
@@ -803,7 +824,31 @@ export const layer = TurnProcessingWorkflow.toLayer(
           modelFinishReason,
           modelUsageJson: assistantResult.modelUsageJson
         })
-      )
+        const taskId = `postcommit:${payload.turnId}` as PostCommitTaskId
+        const task: PostCommitTaskRecord = {
+          taskId,
+          turnId: payload.turnId as TurnId,
+          agentId: payload.agentId as AgentId,
+          sessionId: payload.sessionId as SessionId,
+          conversationId: payload.conversationId as ConversationId,
+          createdAt: payload.createdAt,
+          status: "Pending",
+          attempts: 0,
+          nextAttemptAt: payload.createdAt,
+          claimedAt: null,
+          claimOwner: null,
+          completedAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          payloadJson: encodePostCommitPayload({
+            turnId: payload.turnId,
+            agentId: payload.agentId,
+            sessionId: payload.sessionId,
+            conversationId: payload.conversationId
+          })
+        }
+        yield* sessionTurnPort.appendAssistantTurnWithPostCommitTask(assistantTurn, task)
+      })
     }).asEffect()
 
     yield* writeAuditEntry(
@@ -812,45 +857,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
       "Allow",
       "turn_processing_accepted"
     )
-
-    // Dispatch post-turn memory subroutines (fire-and-forget)
-    yield* subroutineControlPlane.dispatchByTrigger("PostTurn", {
-      agentId: payload.agentId as AgentId,
-      sessionId: payload.sessionId as SessionId,
-      conversationId: payload.conversationId as ConversationId,
-      turnId: payload.turnId as TurnId,
-      now: payload.createdAt
-    }).pipe(Effect.ignore)
-
-    // Project transcript for accepted turn — user + assistant (fire-and-forget)
-    yield* Effect.all([
-      ...(invokeToolReplay === undefined
-        ? [transcriptProjector.appendTurn(
-            payload.agentId as AgentId,
-            payload.sessionId as SessionId,
-            makeUserTurn(payload)
-          )]
-        : []),
-      ...(invokeToolReplay !== undefined
-        ? [transcriptProjector.appendTurn(
-            payload.agentId as AgentId,
-            payload.sessionId as SessionId,
-            makeReplayToolTurn(payload, replayPrefixContentBlocks)
-          )]
-        : []),
-      transcriptProjector.appendTurn(
-        payload.agentId as AgentId,
-        payload.sessionId as SessionId,
-        makeAssistantTurn(payload, {
-          assistantContent: assistantResult.assistantContent,
-          assistantContentBlocks: invokeToolReplay === undefined
-            ? assistantResult.assistantContentBlocks
-            : assistantResult.assistantContentBlocks.slice(replayPrefixContentBlocks.length),
-          modelFinishReason,
-          modelUsageJson: assistantResult.modelUsageJson
-        })
-      )
-    ], { concurrency: 1 }).pipe(Effect.ignore)
 
     return {
       turnId: payload.turnId,
@@ -1138,7 +1144,7 @@ const writeAuditEntry = (
         createdAt: payload.createdAt
       })
     })
-  }).asEffect().pipe(Effect.ignore)
+  }).asEffect()
 
 export const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
   turnId: payload.turnId as TurnId,
