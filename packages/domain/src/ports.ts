@@ -359,6 +359,7 @@ export interface AgentStatePort {
 export interface SessionTurnPort {
   readonly startSession: (state: SessionState) => Effect.Effect<void>
   readonly appendTurn: (turn: TurnRecord) => Effect.Effect<void>
+  readonly deleteSession: (sessionId: SessionId) => Effect.Effect<void>
   readonly updateContextWindow: (
     sessionId: SessionId,
     deltaTokens: number
@@ -461,6 +462,7 @@ export interface ChannelSummaryRecord {
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
+  readonly delete: (channelId: ChannelId) => Effect.Effect<void>
   readonly list: (query?: {
     readonly agentId?: AgentId
   }) => Effect.Effect<ReadonlyArray<ChannelSummaryRecord>>
@@ -503,7 +505,15 @@ export const CheckpointReplayTurnContext = Schema.Struct({
 })
 export type CheckpointReplayTurnContext = typeof CheckpointReplayTurnContext.Type
 
+export const CHECKPOINT_REPLAY_PAYLOAD_VERSION = 1 as const
+export const CheckpointReplayPayloadVersion = Schema.Literal(
+  CHECKPOINT_REPLAY_PAYLOAD_VERSION
+)
+export type CheckpointReplayPayloadVersion =
+  typeof CheckpointReplayPayloadVersion.Type
+
 export const InvokeToolReplayPayload = Schema.Struct({
+  replayPayloadVersion: CheckpointReplayPayloadVersion,
   kind: Schema.Literal("InvokeTool"),
   toolName: Schema.String,
   inputJson: Schema.String,
@@ -512,6 +522,7 @@ export const InvokeToolReplayPayload = Schema.Struct({
 export type InvokeToolReplayPayload = typeof InvokeToolReplayPayload.Type
 
 export const ReadMemoryReplayPayload = Schema.Struct({
+  replayPayloadVersion: CheckpointReplayPayloadVersion,
   kind: Schema.Literal("ReadMemory"),
   content: Schema.String,
   contentBlocks: Schema.Array(ContentBlock),
@@ -528,6 +539,31 @@ export type CheckpointReplayPayload = typeof CheckpointReplayPayload.Type
 export interface CheckpointPort {
   readonly create: (record: CheckpointRecord) => Effect.Effect<void>
   readonly get: (checkpointId: CheckpointId) => Effect.Effect<CheckpointRecord | null>
+  readonly deleteByChannel: (channelId: ChannelId) => Effect.Effect<void>
+  readonly decidePending: (
+    checkpointId: CheckpointId,
+    decision: "Approved" | "Rejected" | "Deferred",
+    decidedBy: string,
+    decidedAt: Instant
+  ) => Effect.Effect<
+    void,
+    import("./errors.js").CheckpointNotFound
+    | import("./errors.js").CheckpointAlreadyDecided
+    | import("./errors.js").CheckpointExpired
+  >
+  readonly consumeApproved: (
+    checkpointId: CheckpointId,
+    consumedBy: string,
+    consumedAt: Instant
+  ) => Effect.Effect<
+    void,
+    import("./errors.js").CheckpointNotFound
+    | import("./errors.js").CheckpointAlreadyDecided
+    | import("./errors.js").CheckpointExpired
+  >
+  /**
+   * @deprecated Prefer `decidePending` and `consumeApproved`.
+   */
   readonly transition: (
     checkpointId: CheckpointId,
     toStatus: CheckpointStatus,

@@ -29,6 +29,7 @@ import type {
   TurnId
 } from "../../../domain/src/ids.js"
 import {
+  CHECKPOINT_REPLAY_PAYLOAD_VERSION,
   type AuditEntryRecord,
   type ContentBlock,
   ContentBlock as ContentBlockSchema,
@@ -44,6 +45,12 @@ import {
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
+import { makeCheckpointPayloadHash } from "../checkpoints/ReplayHash.js"
+import {
+  toCheckpointFailureReason,
+  validateInvokeToolCheckpoint,
+  validateReadMemoryCheckpoint
+} from "../checkpoints/ReplayCheckpointValidator.js"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
@@ -66,6 +73,15 @@ export const TurnAuditReasonCode = Schema.Literals([
 ])
 export type TurnAuditReasonCode = typeof TurnAuditReasonCode.Type
 
+const InvokeToolReplayExecution = Schema.Struct({
+  replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
+  toolName: Schema.String,
+  inputJson: Schema.String,
+  outputJson: Schema.String,
+  isError: Schema.Boolean
+})
+type InvokeToolReplayExecution = typeof InvokeToolReplayExecution.Type
+
 export const ProcessTurnPayload = Schema.Struct({
   turnId: Schema.String,
   sessionId: Schema.String,
@@ -78,6 +94,7 @@ export const ProcessTurnPayload = Schema.Struct({
   createdAt: Schema.DateTimeUtc,
   inputTokens: Schema.Number,
   checkpointId: Schema.optionalKey(Schema.String),
+  invokeToolReplay: Schema.optionalKey(InvokeToolReplayExecution),
   modelOverride: Schema.optionalKey(Schema.Struct({
     provider: Schema.String,
     modelId: Schema.String
@@ -203,22 +220,54 @@ export const inferToolChoice = (
   return {}
 }
 
-const makePayloadHash = (
-  action: string,
-  toolName: string,
-  canonicalInputJson: string
-): Effect.Effect<string> =>
-  Effect.promise(() =>
-    crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`${action}:${toolName}:${canonicalInputJson}`)
-    )
-  ).pipe(
-    Effect.map((buffer) => {
-      const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
-      return hex
-    })
-  )
+const INVOKE_TOOL_REPLAY_CONTINUATION_PROMPT =
+  "Continue from the approved tool result and provide the assistant response."
+
+export const sanitizePromptForAnthropic = (prompt: Prompt.Prompt): Prompt.Prompt => {
+  const sanitizedMessages: Array<Prompt.Message> = []
+
+  for (const message of prompt.content) {
+    switch (message.role) {
+      case "system": {
+        const content = message.content.trim()
+        if (content.length === 0) {
+          break
+        }
+        sanitizedMessages.push({ ...message, content })
+        break
+      }
+      case "user": {
+        const content = message.content.filter(
+          (part) => part.type !== "text" || part.text.trim().length > 0
+        )
+        if (content.length === 0) {
+          break
+        }
+        sanitizedMessages.push({ ...message, content })
+        break
+      }
+      case "assistant": {
+        const content = message.content.filter(
+          (part) => part.type !== "text" || part.text.trim().length > 0
+        )
+        if (content.length === 0) {
+          break
+        }
+        sanitizedMessages.push({ ...message, content })
+        break
+      }
+      case "tool": {
+        sanitizedMessages.push(message)
+        break
+      }
+    }
+  }
+
+  return Prompt.fromMessages(sanitizedMessages)
+}
+
+const sanitizeInitialPromptForAnthropic = (input: Prompt.RawInput): Prompt.RawInput =>
+  sanitizePromptForAnthropic(Prompt.make(input))
 
 export const TurnProcessingWorkflow = Workflow.make({
   name: "TurnProcessingWorkflow",
@@ -242,180 +291,237 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const subroutineCatalog = yield* SubroutineCatalog
     const transcriptProjector = yield* TranscriptProjector
 
-    const policy = yield* Activity.make({
-      name: "EvaluatePolicy",
-      success: PolicyDecisionSchema,
-      execute: governancePort.evaluatePolicy({
-        agentId: payload.agentId as AgentId,
-        sessionId: payload.sessionId as SessionId,
-        action: "ReadMemory"
-      })
-    })
+    const invokeToolReplay = payload.invokeToolReplay
 
-    if (policy.decision === "Deny") {
-      yield* writeAuditEntry(
-        governancePort,
-        payload,
-        "Deny",
-        "turn_processing_policy_denied"
+    if (invokeToolReplay !== undefined) {
+      if (payload.checkpointId === undefined) {
+        return yield* new TurnPolicyDenied({
+          turnId: payload.turnId,
+          reason: "checkpoint_not_provided_for_invoke_tool_replay"
+        })
+      }
+
+      const validatedInvokeCheckpoint = yield* validateInvokeToolCheckpoint({
+        checkpointPort,
+        checkpointId: payload.checkpointId as CheckpointId,
+        expectedTurnContext: {
+          agentId: payload.agentId,
+          sessionId: payload.sessionId,
+          conversationId: payload.conversationId,
+          channelId: payload.channelId
+        },
+        expectedToolName: invokeToolReplay.toolName,
+        expectedInputJson: invokeToolReplay.inputJson
+      }).pipe(
+        Effect.mapError((failure) =>
+          new TurnPolicyDenied({
+            turnId: payload.turnId,
+            reason: toCheckpointFailureReason(failure)
+          })
+        )
       )
-      return yield* new TurnPolicyDenied({
-        turnId: payload.turnId,
-        reason: policy.reason
-      })
+
+      if (
+        validatedInvokeCheckpoint.payload.replayPayloadVersion !== invokeToolReplay.replayPayloadVersion
+        || validatedInvokeCheckpoint.payload.toolName !== invokeToolReplay.toolName
+        || validatedInvokeCheckpoint.payload.inputJson !== invokeToolReplay.inputJson
+      ) {
+        return yield* new TurnPolicyDenied({
+          turnId: payload.turnId,
+          reason: "checkpoint_payload_mismatch"
+        })
+      }
     }
 
-    if (policy.decision === "RequireApproval") {
-      if (payload.checkpointId !== undefined) {
-        // Replay path: validate approved checkpoint
-        const checkpoint = yield* checkpointPort.get(payload.checkpointId as CheckpointId)
-        if (checkpoint === null || checkpoint.status !== "Approved" || checkpoint.action !== "ReadMemory") {
-          return yield* new TurnPolicyDenied({
-            turnId: payload.turnId,
-            reason: `checkpoint not valid for ReadMemory bypass (status: ${checkpoint?.status ?? "not found"}, action: ${checkpoint?.action ?? "unknown"})`
-          })
-        }
-        const expectedHash = yield* makePayloadHash("ReadMemory", "", "")
-        if (expectedHash !== checkpoint.payloadHash) {
-          return yield* new TurnPolicyDenied({
-            turnId: payload.turnId,
-            reason: "checkpoint_payload_mismatch"
-          })
-        }
-        // Checkpoint valid — bypass the gate and continue processing
-      } else {
-        // First run: create a Pending checkpoint and return non-accepted result.
-        const checkpointPayload = Schema.encodeSync(Schema.UnknownFromJsonString)({
-          kind: "ReadMemory",
-          content: payload.content,
-          contentBlocks: payload.contentBlocks,
-          turnContext: {
-            agentId: payload.agentId,
-            sessionId: payload.sessionId,
-            conversationId: payload.conversationId,
-            channelId: payload.channelId,
-            turnId: payload.turnId,
-            createdAt: DateTime.formatIso(payload.createdAt)
-          }
-        })
-        const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
-        yield* checkpointPort.create({
-          checkpointId: newCheckpointId,
+    if (invokeToolReplay === undefined) {
+      const policy = yield* Activity.make({
+        name: "EvaluatePolicy",
+        success: PolicyDecisionSchema,
+        execute: governancePort.evaluatePolicy({
           agentId: payload.agentId as AgentId,
           sessionId: payload.sessionId as SessionId,
-          channelId: payload.channelId as ChannelId,
-          turnId: payload.turnId,
-          action: "ReadMemory",
-          policyId: policy.policyId as PolicyId | null,
-          reason: policy.reason,
-          payloadJson: checkpointPayload,
-          payloadHash: yield* makePayloadHash("ReadMemory", "", ""),
-          status: "Pending",
-          requestedAt: payload.createdAt,
-          decidedAt: null,
-          decidedBy: null,
-          consumedAt: null,
-          consumedBy: null,
-          expiresAt: null
+          action: "ReadMemory"
         })
+      })
+
+      if (policy.decision === "Deny") {
         yield* writeAuditEntry(
           governancePort,
           payload,
-          "RequireApproval",
-          "turn_processing_checkpoint_required"
-        )
-        return {
-          turnId: payload.turnId,
-          accepted: false,
-          auditReasonCode: "turn_processing_checkpoint_required",
-          assistantContent: "",
-          assistantContentBlocks: [],
-          iterationsUsed: 0,
-          toolCallsTotal: 0,
-          iterationStats: [],
-          modelFinishReason: null,
-          modelUsageJson: null,
-          checkpointId: newCheckpointId,
-          checkpointAction: "ReadMemory",
-          checkpointReason: policy.reason
-        } satisfies ProcessTurnResult
-      }
-    }
-
-    yield* Activity.make({
-      name: "CheckTokenBudget",
-      error: TokenBudgetExceeded,
-      execute: agentStatePort.consumeTokenBudget(
-        payload.agentId as AgentId,
-        payload.inputTokens,
-        payload.createdAt
-      )
-    }).asEffect().pipe(
-      Effect.catchTag("TokenBudgetExceeded", (error) =>
-        writeAuditEntry(
-          governancePort,
-          payload,
           "Deny",
-          "turn_processing_token_budget_exceeded"
-        ).pipe(
-          Effect.andThen(Effect.fail(error))
-        ))
-    )
-
-    yield* Activity.make({
-      name: "PersistUserTurn",
-      error: PersistTurnError,
-      execute: Effect.gen(function*() {
-        yield* Activity.idempotencyKey("PersistUserTurn")
-        yield* sessionTurnPort.updateContextWindow(
-          payload.sessionId as SessionId,
-          payload.inputTokens
+          "turn_processing_policy_denied"
         )
-        yield* sessionTurnPort.appendTurn(makeUserTurn(payload))
-      })
-    }).asEffect()
-
-    // ContextPressure proactive detection (non-fatal, inline)
-    yield* Effect.gen(function*() {
-      const sessionState = yield* sessionTurnPort.getSession(payload.sessionId as SessionId)
-      if (sessionState === null) return
-
-      const contextPressureSubs = yield* subroutineCatalog.getByTrigger(
-        payload.agentId,
-        "ContextPressure"
-      )
-
-      const currentTokens = sessionState.tokensUsed
-      const previousTokens = Math.max(currentTokens - payload.inputTokens, 0)
-
-      for (const sub of contextPressureSubs) {
-        if (sub.config.trigger.type !== "ContextPressure") continue
-
-        const threshold = sessionState.tokenCapacity - sub.config.trigger.reserveTokens
-        const crossed = previousTokens < threshold && currentTokens >= threshold
-        if (!crossed) continue
-
-        yield* subroutineControlPlane.enqueue({
-          agentId: payload.agentId as AgentId,
-          sessionId: payload.sessionId as SessionId,
-          conversationId: payload.conversationId as ConversationId,
-          subroutineId: sub.config.id,
-          turnId: payload.turnId as TurnId,
-          triggerType: "ContextPressure",
-          triggerReason:
-            `Context pressure crossed: tokensUsed=${currentTokens}, threshold=${threshold}, reserve=${sub.config.trigger.reserveTokens}`,
-          enqueuedAt: payload.createdAt
+        return yield* new TurnPolicyDenied({
+          turnId: payload.turnId,
+          reason: policy.reason
         })
       }
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.log("ContextPressure dispatch failed", {
-          turnId: payload.turnId,
-          sessionId: payload.sessionId,
-          cause
-        }).pipe(Effect.annotateLogs("level", "error"))
+
+      if (policy.decision === "RequireApproval") {
+        if (payload.checkpointId !== undefined) {
+          // Replay path: validate approved checkpoint
+          yield* validateReadMemoryCheckpoint({
+            checkpointPort,
+            checkpointId: payload.checkpointId as CheckpointId,
+            expectedTurnContext: {
+              agentId: payload.agentId,
+              sessionId: payload.sessionId,
+              conversationId: payload.conversationId,
+              channelId: payload.channelId
+            },
+            expectedContent: payload.content,
+            expectedContentBlocks: payload.contentBlocks
+          }).pipe(
+            Effect.mapError((failure) =>
+              new TurnPolicyDenied({
+                turnId: payload.turnId,
+                reason: toCheckpointFailureReason(failure)
+              })
+            )
+          )
+          // Checkpoint valid — bypass the gate and continue processing.
+        } else {
+          // First run: create a Pending checkpoint and return non-accepted result.
+          const replayPayload = {
+            replayPayloadVersion: CHECKPOINT_REPLAY_PAYLOAD_VERSION,
+            kind: "ReadMemory",
+            content: payload.content,
+            contentBlocks: payload.contentBlocks,
+            turnContext: {
+              agentId: payload.agentId,
+              sessionId: payload.sessionId,
+              conversationId: payload.conversationId,
+              channelId: payload.channelId,
+              turnId: payload.turnId,
+              createdAt: DateTime.formatIso(payload.createdAt)
+            }
+          } as const
+          const checkpointPayload = Schema.encodeSync(Schema.UnknownFromJsonString)(replayPayload)
+          const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
+          yield* checkpointPort.create({
+            checkpointId: newCheckpointId,
+            agentId: payload.agentId as AgentId,
+            sessionId: payload.sessionId as SessionId,
+            channelId: payload.channelId as ChannelId,
+            turnId: payload.turnId,
+            action: "ReadMemory",
+            policyId: policy.policyId as PolicyId | null,
+            reason: policy.reason,
+            payloadJson: checkpointPayload,
+            payloadHash: yield* makeCheckpointPayloadHash("ReadMemory", replayPayload),
+            status: "Pending",
+            requestedAt: payload.createdAt,
+            decidedAt: null,
+            decidedBy: null,
+            consumedAt: null,
+            consumedBy: null,
+            expiresAt: null
+          })
+          yield* writeAuditEntry(
+            governancePort,
+            payload,
+            "RequireApproval",
+            "turn_processing_checkpoint_required"
+          )
+          return {
+            turnId: payload.turnId,
+            accepted: false,
+            auditReasonCode: "turn_processing_checkpoint_required",
+            assistantContent: "",
+            assistantContentBlocks: [],
+            iterationsUsed: 0,
+            toolCallsTotal: 0,
+            iterationStats: [],
+            modelFinishReason: null,
+            modelUsageJson: null,
+            checkpointId: newCheckpointId,
+            checkpointAction: "ReadMemory",
+            checkpointReason: policy.reason
+          } satisfies ProcessTurnResult
+        }
+      }
+
+      yield* Activity.make({
+        name: "CheckTokenBudget",
+        error: TokenBudgetExceeded,
+        execute: agentStatePort.consumeTokenBudget(
+          payload.agentId as AgentId,
+          payload.inputTokens,
+          payload.createdAt
+        )
+      }).asEffect().pipe(
+        Effect.catchTag("TokenBudgetExceeded", (error) =>
+          writeAuditEntry(
+            governancePort,
+            payload,
+            "Deny",
+            "turn_processing_token_budget_exceeded"
+          ).pipe(
+            Effect.andThen(Effect.fail(error))
+          ))
       )
-    )
+
+      yield* Activity.make({
+        name: "PersistUserTurn",
+        error: PersistTurnError,
+        execute: Effect.gen(function*() {
+          yield* Activity.idempotencyKey("PersistUserTurn")
+          yield* sessionTurnPort.updateContextWindow(
+            payload.sessionId as SessionId,
+            payload.inputTokens
+          )
+          yield* sessionTurnPort.appendTurn(makeUserTurn(payload))
+        })
+      }).asEffect()
+
+      // ContextPressure proactive detection (non-fatal, inline)
+      yield* Effect.gen(function*() {
+        const sessionState = yield* sessionTurnPort.getSession(payload.sessionId as SessionId)
+        if (sessionState === null) return
+
+        const contextPressureSubs = yield* subroutineCatalog.getByTrigger(
+          payload.agentId,
+          "ContextPressure"
+        )
+
+        const currentTokens = sessionState.tokensUsed
+        const previousTokens = Math.max(currentTokens - payload.inputTokens, 0)
+
+        for (const sub of contextPressureSubs) {
+          if (sub.config.trigger.type !== "ContextPressure") continue
+
+          const threshold = sessionState.tokenCapacity - sub.config.trigger.reserveTokens
+          const crossed = previousTokens < threshold && currentTokens >= threshold
+          if (!crossed) continue
+
+          yield* subroutineControlPlane.enqueue({
+            agentId: payload.agentId as AgentId,
+            sessionId: payload.sessionId as SessionId,
+            conversationId: payload.conversationId as ConversationId,
+            subroutineId: sub.config.id,
+            turnId: payload.turnId as TurnId,
+            triggerType: "ContextPressure",
+            triggerReason:
+              `Context pressure crossed: tokensUsed=${currentTokens}, threshold=${threshold}, reserve=${sub.config.trigger.reserveTokens}`,
+            enqueuedAt: payload.createdAt
+          })
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.log("ContextPressure dispatch failed", {
+            turnId: payload.turnId,
+            sessionId: payload.sessionId,
+            cause
+          }).pipe(Effect.annotateLogs("level", "error"))
+        )
+      )
+    }
+
+    const replayToolCallId = `toolcall:${payload.turnId}:replay`
+    const replayPrefixContentBlocks =
+      invokeToolReplay === undefined
+        ? []
+        : toInvokeToolReplayContentBlocks(replayToolCallId, invokeToolReplay)
 
     const maxToolIterations = yield* agentStatePort.get(payload.agentId as AgentId).pipe(
       Effect.map((state) => Math.min(Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1), MAX_TOOL_ITERATIONS_CAP))
@@ -451,7 +557,35 @@ export const layer = TurnProcessingWorkflow.toLayer(
       const withSystem = Prompt.setSystem(currentHistory, baseSystemPrompt)
       yield* Ref.set(chat.history, withSystem)
 
-      const userPrompt = toPromptText(payload.content, payload.contentBlocks)
+      if (invokeToolReplay !== undefined) {
+        if (invokeToolReplay.isError) {
+          return yield* new TurnModelFailure({
+            turnId: payload.turnId,
+            reason: `checkpoint_tool_replay_failed:${invokeToolReplay.toolName}`
+          })
+        }
+
+        const replayInput = parseReplayInputJson(invokeToolReplay.inputJson)
+        if (Option.isNone(replayInput)) {
+          return yield* new TurnModelFailure({
+            turnId: payload.turnId,
+            reason: "checkpoint_payload_invalid_invoke_tool_input_json"
+          })
+        }
+
+        const replayOutput = parseReplayOutputJson(invokeToolReplay.outputJson)
+        yield* appendInvokeToolReplayToHistory({
+          chat,
+          toolCallId: replayToolCallId,
+          toolName: invokeToolReplay.toolName,
+          input: replayInput.value,
+          output: replayOutput
+        })
+      }
+
+      const initialPrompt = invokeToolReplay === undefined
+        ? toPromptText(payload.content, payload.contentBlocks)
+        : INVOKE_TOOL_REPLAY_CONTINUATION_PROMPT
 
       const loopResultOption = yield* processWithToolLoop({
         chat,
@@ -467,15 +601,15 @@ export const layer = TurnProcessingWorkflow.toLayer(
           now: payload.createdAt,
           channelId: payload.channelId,
           userId: payload.userId,
-          ...(payload.checkpointId !== undefined
+          ...(payload.checkpointId !== undefined && invokeToolReplay === undefined
             ? {
               checkpointId: payload.checkpointId,
               checkpointAction: "ReadMemory" as const
             }
             : {})
         },
-        rawUserContent: payload.content,
-        userPrompt,
+        rawUserContent: invokeToolReplay === undefined ? payload.content : "",
+        initialPrompt,
         maxIterations: maxToolIterations,
         checkpointSignalsRef
       }).pipe(
@@ -548,7 +682,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
         accepted: false,
         auditReasonCode: "turn_processing_checkpoint_required",
         assistantContent: "",
-        assistantContentBlocks: [],
+        assistantContentBlocks: replayPrefixContentBlocks,
         iterationsUsed: 0,
         toolCallsTotal: 0,
         iterationStats: [],
@@ -564,7 +698,11 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
     const assistantResult = yield* Effect.gen(function*() {
       const assistantContent = modelResult.finalResponse.text
-      const assistantContentBlocks = yield* encodePartsToContentBlocks(modelResult.allContentParts)
+      const generatedAssistantContentBlocks = yield* encodePartsToContentBlocks(modelResult.allContentParts)
+      const assistantContentBlocks = [
+        ...replayPrefixContentBlocks,
+        ...generatedAssistantContentBlocks
+      ]
       const modelUsageJson = yield* encodeUsageToJson(modelResult.usage)
       return {
         assistantContent,
@@ -594,24 +732,43 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     )
 
+    const invariantViolation = validateToolBlockPairing(assistantResult.assistantContentBlocks)
+    if (Option.isSome(invariantViolation)) {
+      yield* writeAuditEntry(
+        governancePort,
+        payload,
+        "Deny",
+        "turn_processing_model_error"
+      )
+      return yield* new TurnModelFailure({
+        turnId: payload.turnId,
+        reason: `transcript_invariant_violation:${invariantViolation.value}`
+      })
+    }
+
     const modelFinishReason = encodeFinishReason(modelResult.finalResponse.finishReason)
 
-    yield* Activity.make({
-      name: "PersistAssistantTurn",
-      execute: sessionTurnPort.appendTurn(
-        makeAssistantTurn(payload, {
-          assistantContent: assistantResult.assistantContent,
-          assistantContentBlocks: assistantResult.assistantContentBlocks,
-          modelFinishReason,
-          modelUsageJson: assistantResult.modelUsageJson
-        })
-      )
-    }).asEffect()
+    if (invokeToolReplay !== undefined) {
+      yield* Activity.make({
+        name: "PersistReplayToolTurn",
+        execute: sessionTurnPort.appendTurn(
+          makeReplayToolTurn(payload, replayPrefixContentBlocks)
+        )
+      }).asEffect()
+    }
 
     // 7b: Tool-loop signal drain — check if any tool required approval during the loop
     const checkpointSignals = yield* Ref.get(checkpointSignalsRef)
     if (checkpointSignals.length > 0) {
       const firstSignal = checkpointSignals[0]
+      yield* Effect.logInfo({
+        event: "checkpoint_late_signal_short_circuit",
+        turnId: payload.turnId,
+        checkpointId: firstSignal.checkpointId,
+        action: firstSignal.action,
+        iterationsUsed: assistantResult.iterationsUsed,
+        toolCallsTotal: assistantResult.toolCallsTotal
+      })
       yield* writeAuditEntry(
         governancePort,
         payload,
@@ -622,8 +779,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
         turnId: payload.turnId,
         accepted: false,
         auditReasonCode: "turn_processing_checkpoint_required",
-        assistantContent: assistantResult.assistantContent,
-        assistantContentBlocks: assistantResult.assistantContentBlocks,
+        assistantContent: "",
+        assistantContentBlocks: [],
         iterationsUsed: assistantResult.iterationsUsed,
         toolCallsTotal: assistantResult.toolCallsTotal,
         iterationStats: assistantResult.iterationStats,
@@ -634,6 +791,20 @@ export const layer = TurnProcessingWorkflow.toLayer(
         checkpointReason: firstSignal.reason
       } satisfies ProcessTurnResult
     }
+
+    yield* Activity.make({
+      name: "PersistAssistantTurn",
+      execute: sessionTurnPort.appendTurn(
+        makeAssistantTurn(payload, {
+          assistantContent: assistantResult.assistantContent,
+          assistantContentBlocks: invokeToolReplay === undefined
+            ? assistantResult.assistantContentBlocks
+            : assistantResult.assistantContentBlocks.slice(replayPrefixContentBlocks.length),
+          modelFinishReason,
+          modelUsageJson: assistantResult.modelUsageJson
+        })
+      )
+    }).asEffect()
 
     yield* writeAuditEntry(
       governancePort,
@@ -653,17 +824,28 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
     // Project transcript for accepted turn — user + assistant (fire-and-forget)
     yield* Effect.all([
-      transcriptProjector.appendTurn(
-        payload.agentId as AgentId,
-        payload.sessionId as SessionId,
-        makeUserTurn(payload)
-      ),
+      ...(invokeToolReplay === undefined
+        ? [transcriptProjector.appendTurn(
+            payload.agentId as AgentId,
+            payload.sessionId as SessionId,
+            makeUserTurn(payload)
+          )]
+        : []),
+      ...(invokeToolReplay !== undefined
+        ? [transcriptProjector.appendTurn(
+            payload.agentId as AgentId,
+            payload.sessionId as SessionId,
+            makeReplayToolTurn(payload, replayPrefixContentBlocks)
+          )]
+        : []),
       transcriptProjector.appendTurn(
         payload.agentId as AgentId,
         payload.sessionId as SessionId,
         makeAssistantTurn(payload, {
           assistantContent: assistantResult.assistantContent,
-          assistantContentBlocks: assistantResult.assistantContentBlocks,
+          assistantContentBlocks: invokeToolReplay === undefined
+            ? assistantResult.assistantContentBlocks
+            : assistantResult.assistantContentBlocks.slice(replayPrefixContentBlocks.length),
           modelFinishReason,
           modelUsageJson: assistantResult.modelUsageJson
         })
@@ -684,6 +866,135 @@ export const layer = TurnProcessingWorkflow.toLayer(
     } as const
   })
 )
+
+const toInvokeToolReplayContentBlocks = (
+  toolCallId: string,
+  replay: InvokeToolReplayExecution
+): ReadonlyArray<ContentBlock> => [
+  {
+    contentBlockType: "ToolUseBlock",
+    toolCallId,
+    toolName: replay.toolName,
+    inputJson: replay.inputJson
+  },
+  {
+    contentBlockType: "ToolResultBlock",
+    toolCallId,
+    toolName: replay.toolName,
+    outputJson: replay.outputJson,
+    isError: replay.isError
+  }
+]
+
+const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const parseReplayInputJson = (
+  inputJson: string
+): Option.Option<Record<string, unknown>> => {
+  try {
+    const parsed = JSON.parse(inputJson)
+    return isJsonRecord(parsed)
+      ? Option.some(parsed)
+      : Option.none()
+  } catch {
+    return Option.none()
+  }
+}
+
+const parseReplayOutputJson = (outputJson: string): unknown => {
+  try {
+    return JSON.parse(outputJson)
+  } catch {
+    return outputJson
+  }
+}
+
+const validateToolBlockPairing = (
+  contentBlocks: ReadonlyArray<ContentBlock>
+): Option.Option<string> => {
+  const toolUses = new Map<string, string>()
+  const toolResults = new Map<string, string>()
+
+  for (const block of contentBlocks) {
+    if (block.contentBlockType === "ToolUseBlock") {
+      if (toolUses.has(block.toolCallId)) {
+        return Option.some(`duplicate_tool_use:${block.toolCallId}`)
+      }
+      toolUses.set(block.toolCallId, block.toolName)
+      continue
+    }
+
+    if (block.contentBlockType === "ToolResultBlock") {
+      if (toolResults.has(block.toolCallId)) {
+        return Option.some(`duplicate_tool_result:${block.toolCallId}`)
+      }
+      toolResults.set(block.toolCallId, block.toolName)
+      continue
+    }
+  }
+
+  for (const [toolCallId, toolName] of toolUses) {
+    if (!toolResults.has(toolCallId)) {
+      return Option.some(`missing_tool_result:${toolName}:${toolCallId}`)
+    }
+  }
+
+  for (const [toolCallId, toolName] of toolResults) {
+    if (!toolUses.has(toolCallId)) {
+      return Option.some(`orphan_tool_result:${toolName}:${toolCallId}`)
+    }
+  }
+
+  return Option.none()
+}
+
+const appendInvokeToolReplayToHistory = (params: {
+  readonly chat: Chat.Persisted
+  readonly toolCallId: string
+  readonly toolName: string
+  readonly input: Record<string, unknown>
+  readonly output: unknown
+}) =>
+  Ref.update(params.chat.history, (history) => {
+    const alreadyInjected = history.content.some(
+      (message) =>
+        message.role === "tool"
+        && message.content.some(
+          (part) => part.type === "tool-result" && part.id === params.toolCallId
+        )
+    )
+
+    if (alreadyInjected) {
+      return history
+    }
+
+    return Prompt.concat(
+      history,
+      Prompt.fromMessages([
+        Prompt.assistantMessage({
+          content: [
+            Prompt.makePart("tool-call", {
+              id: params.toolCallId,
+              name: params.toolName,
+              params: params.input,
+              providerExecuted: false
+            })
+          ]
+        }),
+        Prompt.toolMessage({
+          content: [
+            Prompt.makePart("tool-result", {
+              id: params.toolCallId,
+              name: params.toolName,
+              isFailure: false,
+              result: params.output
+            })
+          ]
+        })
+      ])
+    )
+  })
 
 const processWithToolLoop = (params: {
   readonly chat: Chat.Persisted
@@ -707,7 +1018,7 @@ const processWithToolLoop = (params: {
     readonly userId?: string
   }
   readonly rawUserContent: string
-  readonly userPrompt: string
+  readonly initialPrompt: Prompt.RawInput
   readonly maxIterations: number
   readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
 }): Effect.Effect<ToolLoopResult, unknown, never> =>
@@ -721,13 +1032,23 @@ const processWithToolLoop = (params: {
     const currentIteration = iteration + 1
 
     return Effect.gen(function*() {
+      if (params.resolvedProvider === "anthropic") {
+        yield* Ref.update(params.chat.history, sanitizePromptForAnthropic)
+      }
+
+      const promptForIteration: Prompt.RawInput = iteration === 0
+        ? (params.resolvedProvider === "anthropic"
+            ? sanitizeInitialPromptForAnthropic(params.initialPrompt)
+            : params.initialPrompt)
+        : Prompt.empty
+
       const toolkitBundle = yield* params.toolRegistry.makeToolkit(
         { ...params.context, iteration },
         params.checkpointSignalsRef
       )
 
       const generateTextEffect = params.chat.generateText({
-        prompt: iteration === 0 ? params.userPrompt : Prompt.empty,
+        prompt: promptForIteration,
         toolkit: toolkitBundle.toolkit,
         ...(iteration === 0
           ? inferToolChoice(params.rawUserContent)
@@ -835,6 +1156,27 @@ export const makeUserTurn = (payload: ProcessTurnPayload): TurnRecord => ({
       : [{ contentBlockType: "TextBlock" as const, text: payload.content }]
   },
   modelFinishReason: null,
+  modelUsageJson: null,
+  createdAt: payload.createdAt
+})
+
+export const makeReplayToolTurn = (
+  payload: ProcessTurnPayload,
+  replayContentBlocks: ReadonlyArray<ContentBlock>
+): TurnRecord => ({
+  turnId: (`${payload.turnId}:replay-tool`) as TurnId,
+  sessionId: payload.sessionId as SessionId,
+  conversationId: payload.conversationId as ConversationId,
+  turnIndex: 0,
+  participantRole: "AssistantRole" as const,
+  participantAgentId: payload.agentId as AgentId,
+  message: {
+    messageId: (`message:${payload.turnId}:replay-tool`) as MessageId,
+    role: "AssistantRole" as const,
+    content: "",
+    contentBlocks: replayContentBlocks
+  },
+  modelFinishReason: "tool-calls",
   modelUsageJson: null,
   createdAt: payload.createdAt
 })

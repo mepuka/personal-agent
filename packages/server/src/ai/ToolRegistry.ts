@@ -15,13 +15,25 @@ import type {
 } from "@template/domain/ids"
 import { toMemoryItemIds, type SubroutineToolScope } from "@template/domain/memory"
 import { MemoryTier } from "@template/domain/status"
-import { InvokeToolReplayPayload, type Instant } from "@template/domain/ports"
+import {
+  CHECKPOINT_REPLAY_PAYLOAD_VERSION,
+  type CheckpointReplayPayloadVersion,
+  type Instant
+} from "@template/domain/ports"
 import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
 import { DateTime, Effect, Layer, Match, Ref, Schema, ServiceMap, Stream } from "effect"
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
 import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import {
+  canonicalJsonStringify,
+  makeCheckpointPayloadHash
+} from "../checkpoints/ReplayHash.js"
+import {
+  toCheckpointToolFailure,
+  validateInvokeToolCheckpoint
+} from "../checkpoints/ReplayCheckpointValidator.js"
 import type { CommandInvocationContext } from "../tools/command/CommandTypes.js"
 import { ToolExecution } from "../tools/ToolExecution.js"
 
@@ -332,6 +344,7 @@ export interface ApprovedToolReplayResult {
   readonly turnId: TurnId
   readonly sessionId: SessionId
   readonly createdAt: Instant
+  readonly replayPayloadVersion: CheckpointReplayPayloadVersion
   readonly toolName: string
   readonly inputJson: string
   readonly outputJson: string
@@ -566,25 +579,27 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
 
           // --- Approved bypass path ---
           if (context.checkpointId !== undefined && context.checkpointAction === "InvokeTool") {
-            const checkpoint = yield* checkpointPort.get(context.checkpointId as CheckpointId).pipe(
-              Effect.catchCause(() =>
-                Effect.succeed(null)
-              )
-            )
+            const validatedCheckpoint = yield* validateInvokeToolCheckpoint({
+              checkpointPort,
+              checkpointId: context.checkpointId as CheckpointId,
+              expectedTurnContext: {
+                agentId: context.agentId,
+                sessionId: context.sessionId,
+                conversationId: context.conversationId,
+                channelId: context.channelId
+              },
+              expectedToolName: toolName as string,
+              expectedInputJson: inputJson
+            }).pipe(Effect.mapError(toCheckpointToolFailure))
 
-            if (checkpoint === null || checkpoint.status !== "Approved") {
-              return yield* Effect.fail<ToolFailure>({
-                errorCode: "CheckpointNotApproved",
-                message: `checkpoint ${context.checkpointId} is not approved (status: ${checkpoint?.status ?? "not found"})`
-              })
-            }
-
-            const payloadHash = yield* makePayloadHash("InvokeTool", toolName, inputJson)
-
-            if (payloadHash !== checkpoint.payloadHash) {
+            // Local defensive assert to keep bypass path invariant explicit at call site.
+            if (
+              validatedCheckpoint.payload.toolName !== (toolName as string)
+              || validatedCheckpoint.payload.inputJson !== inputJson
+            ) {
               return yield* Effect.fail<ToolFailure>({
                 errorCode: "CheckpointPayloadMismatch",
-                message: `payload hash mismatch for checkpoint ${context.checkpointId}`
+                message: `checkpoint ${context.checkpointId} payload does not match replay tool input`
               })
             }
 
@@ -600,7 +615,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   outputJson: safeJsonStringify(r),
                   decision: "Allow",
                   complianceStatus: "Compliant",
-                  policyId: checkpoint.policyId ?? POLICY_SYSTEM_ERROR,
+                  policyId: validatedCheckpoint.checkpoint.policyId ?? POLICY_SYSTEM_ERROR,
                   toolDefinitionId: null,
                   reason: `checkpoint_approved:${toolName}`
                 })
@@ -656,9 +671,9 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             ),
             Match.when("RequireApproval", () =>
               Effect.gen(function*() {
-                const payloadHash = yield* makePayloadHash("InvokeTool", toolName, inputJson)
                 const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
-                const replayPayload = safeJsonStringify({
+                const replayPayload = {
+                  replayPayloadVersion: CHECKPOINT_REPLAY_PAYLOAD_VERSION,
                   kind: "InvokeTool",
                   toolName: toolName as string,
                   inputJson,
@@ -670,7 +685,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                     turnId: context.turnId,
                     createdAt: DateTime.formatIso(context.now)
                   }
-                })
+                } as const
+                const payloadHash = yield* makeCheckpointPayloadHash(
+                  "InvokeTool",
+                  replayPayload
+                )
 
                 yield* checkpointPort.create({
                   checkpointId: newCheckpointId,
@@ -681,7 +700,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   action: "InvokeTool",
                   policyId: policy.policyId,
                   reason: policy.reason,
-                  payloadJson: replayPayload,
+                  payloadJson: safeJsonStringify(replayPayload),
                   payloadHash,
                   status: "Pending",
                   requestedAt: context.now,
@@ -1163,9 +1182,6 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           }
         })
 
-      const decodeCheckpointPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
-      const decodeInvokeToolReplayPayload = Schema.decodeUnknownOption(InvokeToolReplayPayload)
-
       const executeApprovedCheckpointTool = (params: {
         readonly checkpointId: CheckpointId
         readonly payloadJson: string
@@ -1177,46 +1193,47 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         readonly now: Instant
       }) =>
         Effect.gen(function*() {
-          const parsedPayload = decodeCheckpointPayloadJson(params.payloadJson)
-          if (parsedPayload._tag === "None") {
-            return {
-              turnId: (`turn:replay:${crypto.randomUUID()}`) as TurnId,
-              sessionId: params.sessionId,
-              createdAt: params.now,
-              toolName: "unknown",
-              inputJson: "{}",
-              outputJson: safeJsonStringify({
-                errorCode: "CheckpointPayloadInvalid",
-                message: "checkpoint payload is not valid JSON"
-              }),
-              isError: true
-            } satisfies ApprovedToolReplayResult
-          }
-
-          const decoded = decodeInvokeToolReplayPayload(parsedPayload.value)
-          if (decoded._tag === "None") {
-            return {
-              turnId: (`turn:replay:${crypto.randomUUID()}`) as TurnId,
-              sessionId: params.sessionId,
-              createdAt: params.now,
-              toolName: "unknown",
-              inputJson: "{}",
-              outputJson: safeJsonStringify({
-                errorCode: "CheckpointPayloadInvalid",
-                message: "checkpoint payload is not an InvokeTool replay payload"
-              }),
-              isError: true
-            } satisfies ApprovedToolReplayResult
-          }
-
-          const replayPayload = decoded.value
           const replayTurnId = (`turn:replay:${crypto.randomUUID()}`) as TurnId
+          const toReplayFailure = (failure: ToolFailure): ApprovedToolReplayResult => ({
+            turnId: replayTurnId,
+            sessionId: params.sessionId,
+            createdAt: params.now,
+            replayPayloadVersion: CHECKPOINT_REPLAY_PAYLOAD_VERSION,
+            toolName: "unknown",
+            inputJson: "{}",
+            outputJson: safeJsonStringify(failure),
+            isError: true
+          })
+
+          const validatedCheckpoint = yield* validateInvokeToolCheckpoint({
+            checkpointPort,
+            checkpointId: params.checkpointId,
+            expectedTurnContext: {
+              agentId: params.agentId,
+              sessionId: params.sessionId,
+              conversationId: params.conversationId,
+              channelId: params.channelId
+            }
+          }).pipe(
+            Effect.mapError(toCheckpointToolFailure),
+            Effect.map((result) => ({ ok: true as const, result })),
+            Effect.catch((failure) =>
+              Effect.succeed({ ok: false as const, failure })
+            )
+          )
+
+          if (!validatedCheckpoint.ok) {
+            return toReplayFailure(validatedCheckpoint.failure)
+          }
+
+          const replayPayload = validatedCheckpoint.result.payload
           const parsedInput = safeJsonParse(replayPayload.inputJson)
           if (!isJsonRecord(parsedInput)) {
             return {
               turnId: replayTurnId,
               sessionId: params.sessionId,
               createdAt: params.now,
+              replayPayloadVersion: replayPayload.replayPayloadVersion,
               toolName: replayPayload.toolName,
               inputJson: replayPayload.inputJson,
               outputJson: safeJsonStringify({
@@ -1268,6 +1285,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             turnId: replayTurnId,
             sessionId: params.sessionId,
             createdAt: params.now,
+            replayPayloadVersion: replayPayload.replayPayloadVersion,
             toolName: replayPayload.toolName,
             inputJson: replayPayload.inputJson,
             outputJson: execution.outputJson,
@@ -1301,26 +1319,6 @@ const safeJsonParse = (value: string): unknown => {
   }
 }
 
-const canonicalJsonStringify = (value: unknown): string => {
-  const canonicalize = (input: unknown): unknown => {
-    if (Array.isArray(input)) {
-      return input.map(canonicalize)
-    }
-    if (input !== null && typeof input === "object") {
-      const objectInput = input as Record<string, unknown>
-      return Object.keys(objectInput)
-        .sort((a, b) => a.localeCompare(b))
-        .reduce<Record<string, unknown>>((acc, key) => {
-          acc[key] = canonicalize(objectInput[key])
-          return acc
-        }, {})
-    }
-    return input
-  }
-
-  return safeJsonStringify(canonicalize(value))
-}
-
 const makeIdempotencyKey = (
   turnId: TurnId,
   iteration: number,
@@ -1336,23 +1334,6 @@ const makeIdempotencyKey = (
     Effect.map((buffer) => {
       const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
       return `tool-idem:${hex}`
-    })
-  )
-
-const makePayloadHash = (
-  action: string,
-  toolName: ToolName,
-  canonicalInputJson: string
-): Effect.Effect<string> =>
-  Effect.promise(() =>
-    crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`${action}:${toolName}:${canonicalInputJson}`)
-    )
-  ).pipe(
-    Effect.map((buffer) => {
-      const hex = Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
-      return hex
     })
   )
 

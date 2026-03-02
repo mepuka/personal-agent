@@ -108,6 +108,16 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
           Effect.orDie
         )
 
+      const deleteByChannel: CheckpointPort["deleteByChannel"] = (channelId) =>
+        sql`
+          DELETE FROM checkpoints
+          WHERE channel_id = ${channelId}
+        `.unprepared.pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
       const get: CheckpointPort["get"] = (checkpointId) =>
         findCheckpointById({ checkpointId }).pipe(
           Effect.flatMap(
@@ -144,96 +154,115 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
           Effect.orDie
         )
 
+      const decidePending: CheckpointPort["decidePending"] = (
+        checkpointId,
+        decision,
+        decidedBy,
+        decidedAt
+      ) =>
+        Effect.gen(function*() {
+          const atStr = encodeSqlInstant(decidedAt)
+          const updatedRows = yield* sql`
+            UPDATE checkpoints
+            SET status = ${decision},
+                decided_at = ${atStr},
+                decided_by = ${decidedBy}
+            WHERE checkpoint_id = ${checkpointId}
+              AND status = 'Pending'
+              AND (expires_at IS NULL OR expires_at > ${atStr})
+            RETURNING checkpoint_id
+          `.withoutTransform.pipe(Effect.orDie)
+
+          if (updatedRows.length > 0) {
+            return
+          }
+
+          const after = yield* get(checkpointId)
+          if (after === null) {
+            return yield* new CheckpointNotFound({ checkpointId })
+          }
+          if (after.status === "Pending") {
+            if (after.expiresAt !== null && DateTime.isLessThanOrEqualTo(after.expiresAt, decidedAt)) {
+              yield* sql`
+                UPDATE checkpoints
+                SET status = 'Expired'
+                WHERE checkpoint_id = ${checkpointId}
+                  AND status = 'Pending'
+              `.unprepared.pipe(Effect.orDie)
+              return yield* new CheckpointExpired({ checkpointId })
+            }
+            // Lost race to another transition that has not been observed yet.
+            return yield* new CheckpointAlreadyDecided({
+              checkpointId,
+              currentStatus: "Pending"
+            })
+          }
+          if (after.status === "Expired") {
+            return yield* new CheckpointExpired({ checkpointId })
+          }
+          return yield* new CheckpointAlreadyDecided({
+            checkpointId,
+            currentStatus: after.status
+          })
+        }).pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError)
+        )
+
+      const consumeApproved: CheckpointPort["consumeApproved"] = (
+        checkpointId,
+        consumedBy,
+        consumedAt
+      ) =>
+        Effect.gen(function*() {
+          const atStr = encodeSqlInstant(consumedAt)
+          const updatedRows = yield* sql`
+            UPDATE checkpoints
+            SET status = 'Consumed',
+                consumed_at = ${atStr},
+                consumed_by = ${consumedBy}
+            WHERE checkpoint_id = ${checkpointId}
+              AND status = 'Approved'
+            RETURNING checkpoint_id
+          `.withoutTransform.pipe(Effect.orDie)
+
+          if (updatedRows.length > 0) {
+            return
+          }
+
+          const after = yield* get(checkpointId)
+          if (after === null) {
+            return yield* new CheckpointNotFound({ checkpointId })
+          }
+          if (after.status === "Expired") {
+            return yield* new CheckpointExpired({ checkpointId })
+          }
+          return yield* new CheckpointAlreadyDecided({
+            checkpointId,
+            currentStatus: after.status
+          })
+        }).pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError)
+        )
+
       const transition: CheckpointPort["transition"] = (
         checkpointId,
         toStatus,
         decidedBy,
         decidedAt
-      ) =>
-        Effect.gen(function*() {
-          const checkpoint = yield* get(checkpointId)
-          if (checkpoint === null) {
-            return yield* new CheckpointNotFound({ checkpointId })
-          }
-
-          // Check valid transitions
-          if (toStatus === "Consumed") {
-            // Approved -> Consumed
-            if (checkpoint.status !== "Approved") {
-              return yield* new CheckpointAlreadyDecided({
-                checkpointId,
-                currentStatus: checkpoint.status
-              })
-            }
-          } else {
-            // Pending -> Approved|Rejected|Deferred
-            // Check if already expired (lazily marked by get())
-            if (checkpoint.status === "Expired") {
-              return yield* new CheckpointExpired({ checkpointId })
-            }
-            if (checkpoint.status !== "Pending") {
-              return yield* new CheckpointAlreadyDecided({
-                checkpointId,
-                currentStatus: checkpoint.status
-              })
-            }
-
-            // Check expiry for approval attempts
-            if (
-              checkpoint.expiresAt !== null &&
-              (toStatus === "Approved" || toStatus === "Rejected" || toStatus === "Deferred")
-            ) {
-              const now = yield* DateTime.now
-              if (DateTime.isGreaterThan(now, checkpoint.expiresAt)) {
-                // Mark as expired in DB
-                yield* sql`
-                  UPDATE checkpoints
-                  SET status = 'Expired'
-                  WHERE checkpoint_id = ${checkpointId}
-                    AND status = 'Pending'
-                `.unprepared.pipe(Effect.orDie)
-                return yield* new CheckpointExpired({ checkpointId })
-              }
-            }
-          }
-
-          // CAS update — verify the row was actually modified
-          const fromStatus = toStatus === "Consumed" ? "Approved" : "Pending"
-          const atStr = encodeSqlInstant(decidedAt)
-
-          if (toStatus === "Consumed") {
-            // Consumption metadata is distinct from decision metadata.
-            yield* sql`
-              UPDATE checkpoints
-              SET status = ${toStatus},
-                  consumed_at = ${atStr},
-                  consumed_by = ${decidedBy}
-              WHERE checkpoint_id = ${checkpointId}
-                AND status = ${fromStatus}
-            `.unprepared.pipe(Effect.orDie)
-          } else {
-            yield* sql`
-              UPDATE checkpoints
-              SET status = ${toStatus},
-                  decided_at = ${atStr},
-                  decided_by = ${decidedBy}
-              WHERE checkpoint_id = ${checkpointId}
-                AND status = ${fromStatus}
-            `.unprepared.pipe(Effect.orDie)
-          }
-
-          // Verify CAS succeeded (another process may have transitioned first)
-          const after = yield* get(checkpointId)
-          if (after === null || after.status !== toStatus) {
-            return yield* new CheckpointAlreadyDecided({
-              checkpointId,
-              currentStatus: after?.status ?? "unknown"
-            })
-          }
-        }).pipe(
-          Effect.asVoid,
-          Effect.tapDefect(Effect.logError)
-        )
+      ) => {
+        switch (toStatus) {
+          case "Approved":
+          case "Rejected":
+          case "Deferred":
+            return decidePending(checkpointId, toStatus, decidedBy, decidedAt)
+          case "Consumed":
+            return consumeApproved(checkpointId, decidedBy, decidedAt)
+          default:
+            return Effect.die(new Error(`unsupported_checkpoint_transition:${toStatus}`))
+        }
+      }
 
       const listPending: CheckpointPort["listPending"] = (agentId) =>
         Effect.gen(function*() {
@@ -274,6 +303,9 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
       return {
         create,
         get,
+        deleteByChannel,
+        decidePending,
+        consumeApproved,
         transition,
         listPending
       } as const
