@@ -1,6 +1,11 @@
 import { RegistryContext } from "@effect/atom-react"
 import type { ChatClient } from "@template/client/ChatClient"
 import type { TurnStreamEvent } from "@template/domain/events"
+import {
+  toTurnFailureCodeFromUnknown,
+  toTurnFailureDisplayMessage,
+  toTurnFailureMessageFromUnknown
+} from "@template/domain/turnFailure"
 import type { ServiceMap } from "effect"
 import { Effect, Stream } from "effect"
 import type * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
@@ -16,6 +21,8 @@ import {
 import type { ChatMessage, ToolEvent } from "../types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
+
+const toFailureDisplayMessage = toTurnFailureDisplayMessage
 
 export function useSendMessage(client: ChatClientShape) {
   const registry: AtomRegistry.AtomRegistry = React.useContext(RegistryContext)
@@ -47,12 +54,18 @@ export function useSendMessage(client: ChatClientShape) {
         Effect.scoped,
         Effect.catch((error) =>
           Effect.sync(() => {
+            const message = toTurnFailureMessageFromUnknown(error, "Turn processing failed unexpectedly")
+            const errorCode = toTurnFailureCodeFromUnknown(error, message)
             registry.update(messagesAtom, (msgs) => {
               const last = msgs[msgs.length - 1]
               if (last && last.status === "streaming") {
                 return [
                   ...msgs.slice(0, -1),
-                  { ...last, status: "failed" as const, errorMessage: String(error) }
+                  {
+                    ...last,
+                    status: "failed" as const,
+                    errorMessage: toFailureDisplayMessage(errorCode, message)
+                  }
                 ]
               }
               return msgs
@@ -159,10 +172,19 @@ export function dispatchEvent(
         const last = msgs[msgs.length - 1]!
         return [
           ...msgs.slice(0, -1),
-          { ...last, status: "failed" as const, errorMessage: `${event.errorCode}: ${event.message}` }
+          {
+            ...last,
+            status: "failed" as const,
+            errorMessage: toFailureDisplayMessage(event.errorCode, event.message)
+          }
         ]
       })
       break
     }
   }
+}
+
+/** @internal — exported for testing */
+export const _test = {
+  toFailureDisplayMessage
 }

@@ -82,6 +82,7 @@ export const TurnFailureCode = Schema.Literals([
   "checkpoint_payload_mismatch",
   "checkpoint_not_approved",
   "checkpoint_payload_invalid",
+  "checkpoint_transition_failed",
   "policy_denied",
   "tool_quota_exceeded",
   "tool_timeout",

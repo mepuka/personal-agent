@@ -55,6 +55,7 @@ const DecideCheckpointRequest = Schema.Struct({
   decidedBy: Schema.String
 })
 const decodeDecideCheckpointRequest = Schema.decodeUnknownOption(DecideCheckpointRequest)
+const decodeJsonBody = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -121,18 +122,34 @@ const decideCheckpoint = HttpRouter.add(
         return yield* badRequest("Missing checkpointId")
       }
 
-      const rawBody = yield* request.json
-      const decoded = decodeDecideCheckpointRequest(rawBody)
+      const rawBodyText = yield* request.text.pipe(
+        Effect.catchCause(() => Effect.succeed("__READ_FAILED__"))
+      )
+      if (rawBodyText === "__READ_FAILED__" || rawBodyText.length === 0) {
+        return yield* badRequest("Invalid JSON payload")
+      }
+
+      const rawBody = decodeJsonBody(rawBodyText)
+      if (rawBody._tag === "None") {
+        return yield* badRequest("Invalid JSON payload")
+      }
+
+      const decoded = decodeDecideCheckpointRequest(rawBody.value)
       if (decoded._tag === "None") {
         return yield* badRequest(
           "Invalid payload: decision must be Approved|Rejected|Deferred, decidedBy required"
         )
       }
 
+      const decidedBy = decoded.value.decidedBy.trim()
+      if (decidedBy.length === 0) {
+        return yield* badRequest("Invalid payload: decidedBy must be a non-empty string")
+      }
+
       const result = yield* channelCore.decideCheckpoint({
         checkpointId,
         decision: decoded.value.decision,
-        decidedBy: decoded.value.decidedBy
+        decidedBy
       })
 
       if (result.kind === "ack") {

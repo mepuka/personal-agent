@@ -1,4 +1,8 @@
-import { TurnStreamEvent } from "@template/domain/events"
+import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
+import {
+  classifyTurnFailureText,
+  toTurnFailureMessageFromUnknown
+} from "@template/domain/turnFailure"
 import { Config, Effect, Layer, ServiceMap, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpClient from "effect/unstable/http/HttpClient"
@@ -7,6 +11,27 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 export type DecideCheckpointResult =
   | { readonly kind: "ack" }
   | { readonly kind: "stream"; readonly stream: Stream.Stream<TurnStreamEvent, unknown> }
+
+export class CheckpointDecisionError extends Error {
+  readonly _tag = "CheckpointDecisionError"
+
+  constructor(args: {
+    readonly status: number
+    readonly message: string
+    readonly errorCode: TurnFailureCode | null
+    readonly body: unknown
+  }) {
+    super(args.message)
+    this.name = "CheckpointDecisionError"
+    this.status = args.status
+    this.errorCode = args.errorCode
+    this.body = args.body
+  }
+
+  readonly status: number
+  readonly errorCode: TurnFailureCode | null
+  readonly body: unknown
+}
 
 export interface ChannelSummary {
   readonly channelId: string
@@ -25,7 +50,8 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       Config.withDefault(() => "http://localhost:3000")
     )
 
-    const httpClient = (yield* HttpClient.HttpClient).pipe(
+    const rawHttpClient = yield* HttpClient.HttpClient
+    const httpClient = rawHttpClient.pipe(
       HttpClient.filterStatusOk
     )
 
@@ -73,17 +99,27 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       )
     }
 
+    const deleteChannel = (channelId: string) =>
+      httpClient.execute(
+        HttpClientRequest.delete(`${baseUrl}/channels/${channelId}`)
+      ).pipe(
+        Effect.asVoid,
+        Effect.scoped
+      )
+
     const decideCheckpoint = (
       checkpointId: string,
       decision: "Approved" | "Rejected" | "Deferred"
     ) =>
-      HttpClientRequest.bodyJsonUnsafe(
-        HttpClientRequest.post(`${baseUrl}/checkpoints/${checkpointId}/decide`),
-        { decision, decidedBy: "user:cli:local" }
-      ).pipe(
-        (request) => httpClient.execute(request),
-        Effect.map((response) => {
-          const contentType = response.headers["content-type"] ?? ""
+      Effect.gen(function*() {
+        const request = HttpClientRequest.bodyJsonUnsafe(
+          HttpClientRequest.post(`${baseUrl}/checkpoints/${checkpointId}/decide`),
+          { decision, decidedBy: "user:cli:local" }
+        )
+
+        const response = yield* rawHttpClient.execute(request)
+        const contentType = response.headers["content-type"] ?? ""
+        if (response.status >= 200 && response.status < 300) {
           if (contentType.includes("text/event-stream")) {
             const stream = response.stream.pipe(
               Stream.decodeText(),
@@ -93,8 +129,27 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
             return { kind: "stream" as const, stream }
           }
           return { kind: "ack" as const }
-        })
-      )
+        }
+
+        const body = yield* response.json.pipe(
+          Effect.catchCause(() =>
+            response.text.pipe(
+              Effect.map((text) => ({ message: text })),
+              Effect.catchCause(() => Effect.succeed({}))
+            )
+          )
+        )
+        const message = toCheckpointDecisionErrorMessage(response.status, body)
+        const errorCode = toCheckpointDecisionErrorCode(body)
+        return yield* Effect.fail(
+          new CheckpointDecisionError({
+            status: response.status,
+            message,
+            errorCode,
+            body
+          })
+        )
+      })
 
     const health = httpClient.execute(
       HttpClientRequest.get(`${baseUrl}/health`)
@@ -104,8 +159,46 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       Effect.scoped
     )
 
-    return { initialize, sendMessage, decideCheckpoint, getHistory, listChannels, health } as const
+    return { initialize, sendMessage, decideCheckpoint, getHistory, listChannels, deleteChannel, health } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)
+}
+
+const getStringField = (value: unknown, key: string): string => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ""
+  }
+  const field = (value as Record<string, unknown>)[key]
+  return typeof field === "string" ? field : ""
+}
+
+const toCheckpointDecisionErrorCode = (body: unknown): TurnFailureCode | null => {
+  const explicit = getStringField(body, "errorCode")
+  if (explicit.length > 0) {
+    return classifyTurnFailureText(explicit)
+  }
+
+  const reason = getStringField(body, "reason")
+  if (reason.length > 0) {
+    return classifyTurnFailureText(reason)
+  }
+
+  return null
+}
+
+const toCheckpointDecisionErrorMessage = (status: number, body: unknown): string => {
+  const message = toTurnFailureMessageFromUnknown(body, "")
+  if (message.length > 0) {
+    return message
+  }
+  const error = getStringField(body, "error")
+  if (error.length > 0) {
+    const currentStatus = getStringField(body, "currentStatus")
+    if (currentStatus.length > 0) {
+      return `${error}:${currentStatus}`
+    }
+    return error
+  }
+  return `checkpoint_decision_failed_status_${status}`
 }
