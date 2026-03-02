@@ -11,6 +11,7 @@ import type {
 import type { GovernanceAction, PermissionMode, PolicySelector } from "@template/domain/status"
 import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
+import { TOOL_CATALOG } from "./ai/ToolCatalog.js"
 
 const InstantFromSqlString = Schema.DateTimeUtcFromString
 const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
@@ -75,6 +76,9 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
+
+      // ── Hardened built-in tool catalog sync ──────────────────────────
+      yield* syncBuiltInToolCatalog(sql)
 
       const getAgentPermissionMode = (agentId: AgentId) =>
         sql`
@@ -625,6 +629,78 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
 ) {
   static layer = Layer.effect(this, this.make)
 }
+
+const syncBuiltInToolCatalog = (sql: SqlClient.SqlClient) =>
+  Effect.gen(function*() {
+    // 1. Preflight drift checks — reject startup on name/id mismatches
+    const existingRows = yield* sql`
+      SELECT tool_definition_id, tool_name
+      FROM tool_definitions
+      WHERE source_kind = 'BuiltIn'
+    `.unprepared
+
+    const existingByName = new Map<string, string>()
+    const existingById = new Map<string, string>()
+    for (const row of existingRows) {
+      existingByName.set(row.tool_name as string, row.tool_definition_id as string)
+      existingById.set(row.tool_definition_id as string, row.tool_name as string)
+    }
+
+    for (const entry of TOOL_CATALOG) {
+      const dbIdForName = existingByName.get(entry.name)
+      if (dbIdForName !== undefined && dbIdForName !== entry.definitionId) {
+        return yield* Effect.die(
+          new Error(
+            `ToolCatalog drift: tool_name="${entry.name}" exists in DB with tool_definition_id="${dbIdForName}" `
+            + `but catalog expects "${entry.definitionId}". `
+            + `Repair the DB row or update the catalog entry before restarting.`
+          )
+        )
+      }
+
+      const dbNameForId = existingById.get(entry.definitionId)
+      if (dbNameForId !== undefined && dbNameForId !== entry.name) {
+        return yield* Effect.die(
+          new Error(
+            `ToolCatalog drift: tool_definition_id="${entry.definitionId}" exists in DB with tool_name="${dbNameForId}" `
+            + `but catalog expects "${entry.name}". `
+            + `Repair the DB row or update the catalog entry before restarting.`
+          )
+        )
+      }
+    }
+
+    // 2. Atomic converge transaction — upsert all catalog entries
+    const now = encodeSqlInstant(yield* DateTime.now)
+    yield* sql.withTransaction(
+      Effect.gen(function*() {
+        for (const entry of TOOL_CATALOG) {
+          yield* sql`
+            INSERT INTO tool_definitions (
+              tool_definition_id,
+              tool_name,
+              source_kind,
+              integration_id,
+              is_safe_standard,
+              created_at
+            ) VALUES (
+              ${entry.definitionId},
+              ${entry.name},
+              ${"BuiltIn"},
+              ${null},
+              ${entry.isSafeStandard ? 1 : 0},
+              ${now}
+            )
+            ON CONFLICT(tool_definition_id) DO UPDATE SET
+              tool_name = excluded.tool_name,
+              source_kind = 'BuiltIn',
+              integration_id = NULL,
+              is_safe_standard = excluded.is_safe_standard
+          `.unprepared
+        }
+      })
+    )
+  })
 
 const decodeToolInvocationRow = (row: ToolInvocationListRow): ToolInvocationRecord => ({
   toolInvocationId: row.tool_invocation_id as ToolInvocationRecord["toolInvocationId"],

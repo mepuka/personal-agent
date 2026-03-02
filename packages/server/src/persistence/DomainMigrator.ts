@@ -358,6 +358,8 @@ const loader = SqliteMigrator.fromRecord({
       ON permission_policies (action, permission_mode, active, precedence)
     `.unprepared
 
+    // Legacy bootstrap seed. Runtime sync from ToolCatalog is authoritative for built-in tool definitions.
+    // Do not add new built-in tools via migrations; update ToolCatalog and sync tests instead.
     yield* sql`
       INSERT OR IGNORE INTO tool_definitions (
         tool_definition_id,
@@ -511,6 +513,8 @@ const loader = SqliteMigrator.fromRecord({
     const sql = yield* SqlClient.SqlClient
     const now = new Date().toISOString()
 
+    // Legacy bootstrap seed. Runtime sync from ToolCatalog is authoritative for built-in tool definitions.
+    // Do not add new built-in tools via migrations; update ToolCatalog and sync tests instead.
     yield* sql`
       INSERT OR IGNORE INTO tool_definitions (
         tool_definition_id,
@@ -639,7 +643,8 @@ const loader = SqliteMigrator.fromRecord({
     const sql = yield* SqlClient.SqlClient
     const now = new Date().toISOString()
 
-    // Tool definitions for file/shell/notification test tools
+    // Legacy bootstrap seed. Runtime sync from ToolCatalog is authoritative for built-in tool definitions.
+    // Do not add new built-in tools via migrations; update ToolCatalog and sync tests instead.
     yield* sql`
       INSERT OR IGNORE INTO tool_definitions (
         tool_definition_id,

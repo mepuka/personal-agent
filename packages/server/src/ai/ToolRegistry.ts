@@ -25,6 +25,11 @@ import { DateTime, Effect, Layer, Match, Ref, Schema, ServiceMap, Stream } from 
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
+import {
+  ALWAYS_ALLOWED_TOOLS,
+  computeAllowedTools,
+  TOOL_CATALOG_BY_NAME
+} from "./ToolCatalog.js"
 import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
 import {
   canonicalJsonStringify,
@@ -58,29 +63,6 @@ const TOOL_NAMES = {
   send_notification: ToolName.makeUnsafe("send_notification")
 } as const
 
-const TOOL_SCOPE_MAP: Record<keyof SubroutineToolScope, ReadonlyArray<string>> = {
-  fileRead: ["file_read", "file_ls", "file_find", "file_grep"],
-  fileWrite: ["file_write", "file_edit"],
-  shell: ["shell_execute"],
-  memoryRead: ["retrieve_memories"],
-  memoryWrite: ["store_memory", "forget_memories"],
-  notification: ["send_notification"]
-}
-
-const ALWAYS_ALLOWED_TOOLS = new Set(["time_now", "math_calculate", "echo_text"])
-
-const computeAllowedTools = (scope: SubroutineToolScope): Set<string> => {
-  const allowed = new Set(ALWAYS_ALLOWED_TOOLS)
-  for (const [scopeKey, toolNames] of Object.entries(TOOL_SCOPE_MAP)) {
-    if (scope[scopeKey as keyof SubroutineToolScope]) {
-      for (const name of toolNames) {
-        allowed.add(name)
-      }
-    }
-  }
-  return allowed
-}
-
 const ToolFailure = Schema.Struct({
   errorCode: Schema.String,
   message: Schema.String
@@ -91,6 +73,7 @@ export interface CheckpointSignal {
   readonly checkpointId: string
   readonly action: string
   readonly toolName: string
+  readonly inputJson: string
   readonly reason: string
 }
 
@@ -381,6 +364,25 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
       const checkpointPort = yield* CheckpointPortTag
       const agentConfig = yield* AgentConfig
       const toolExecution = yield* ToolExecution
+
+      // ── Startup invariant: toolkit tool names must match ToolCatalog ──
+      const toolkitNames = new Set(Object.keys(TOOL_NAMES))
+      const catalogNames = new Set(TOOL_CATALOG_BY_NAME.keys())
+      const missingFromCatalog = [...toolkitNames].filter((n) => !catalogNames.has(n))
+      const missingFromToolkit = [...catalogNames].filter((n) => !toolkitNames.has(n))
+      if (missingFromCatalog.length > 0 || missingFromToolkit.length > 0) {
+        yield* Effect.die(
+          new Error(
+            `ToolRegistry/ToolCatalog name parity mismatch. `
+            + (missingFromCatalog.length > 0
+              ? `In toolkit but not catalog: [${missingFromCatalog.join(", ")}]. `
+              : "")
+            + (missingFromToolkit.length > 0
+              ? `In catalog but not toolkit: [${missingFromToolkit.join(", ")}].`
+              : "")
+          )
+        )
+      }
 
       const persistInvocation = (params: {
         readonly context: ToolExecutionContext
@@ -718,6 +720,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       checkpointId: newCheckpointId,
                       action: "InvokeTool",
                       toolName: toolName as string,
+                      inputJson,
                       reason: policy.reason
                     }
                   ])

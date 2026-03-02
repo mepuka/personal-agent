@@ -23,4 +23,12 @@ describe("TurnFailureMapping", () => {
     )
     expect(code).toBe("checkpoint_transition_failed")
   })
+
+  it("maps unknown_tool_definition to unknown_tool_definition", () => {
+    const code = toTurnFailureCode(
+      { reason: "unknown_tool_definition" },
+      "fallback"
+    )
+    expect(code).toBe("unknown_tool_definition")
+  })
 })

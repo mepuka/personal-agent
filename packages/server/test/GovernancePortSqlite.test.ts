@@ -151,6 +151,146 @@ describe("evaluatePolicy — test tools in Standard mode", () => {
   })
 })
 
+describe("syncBuiltInToolCatalog", () => {
+  it.effect("creates all 14 built-in tool definitions on startup", () => {
+    const dbPath = testDatabasePath("sync-creates")
+    const layer = makeGovernanceLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sqlClient = yield* SqlClient.SqlClient
+      const rows = yield* sqlClient`
+        SELECT tool_definition_id, tool_name, source_kind, is_safe_standard
+        FROM tool_definitions
+        WHERE source_kind = 'BuiltIn'
+        ORDER BY tool_name ASC
+      `.unprepared
+
+      expect(rows).toHaveLength(14)
+
+      // Spot-check safe standards
+      const timeNow = rows.find((r) => r.tool_name === "time_now")
+      expect(timeNow?.tool_definition_id).toBe("tooldef:time_now:v1")
+      expect(timeNow?.is_safe_standard).toBe(1)
+
+      const shellExec = rows.find((r) => r.tool_name === "shell_execute")
+      expect(shellExec?.tool_definition_id).toBe("tooldef:shell_execute:v1")
+      expect(shellExec?.is_safe_standard).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("sync is idempotent across restart", () => {
+    const dbPath = testDatabasePath("sync-idempotent")
+    const firstLayer = makeGovernanceLayer(dbPath)
+    const secondLayer = makeGovernanceLayer(dbPath)
+
+    return Effect.gen(function*() {
+      // First startup
+      const countAfterFirst = yield* Effect.gen(function*() {
+        const sqlClient = yield* SqlClient.SqlClient
+        const rows = yield* sqlClient`
+          SELECT COUNT(*) AS cnt FROM tool_definitions WHERE source_kind = 'BuiltIn'
+        `.unprepared
+        return Number(rows[0]?.cnt ?? 0)
+      }).pipe(Effect.provide(firstLayer))
+
+      // Second startup (same DB)
+      const countAfterSecond = yield* Effect.gen(function*() {
+        const sqlClient = yield* SqlClient.SqlClient
+        const rows = yield* sqlClient`
+          SELECT COUNT(*) AS cnt FROM tool_definitions WHERE source_kind = 'BuiltIn'
+        `.unprepared
+        return Number(rows[0]?.cnt ?? 0)
+      }).pipe(Effect.provide(secondLayer))
+
+      expect(countAfterFirst).toBe(14)
+      expect(countAfterSecond).toBe(14)
+    }).pipe(
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("drift check fails when same tool_name has wrong ID", () => {
+    const dbPath = testDatabasePath("sync-drift-name")
+
+    return Effect.gen(function*() {
+      // First: create a valid DB via migrations only (no GovernancePortSqlite startup yet)
+      const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+      const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+      const infraLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+
+      // Insert a row with mismatched ID for time_now
+      yield* Effect.gen(function*() {
+        const sqlClient = yield* SqlClient.SqlClient
+        yield* sqlClient`
+          INSERT OR REPLACE INTO tool_definitions (
+            tool_definition_id, tool_name, source_kind, integration_id, is_safe_standard, created_at
+          ) VALUES ('tooldef:time_now:WRONG', 'time_now', 'BuiltIn', NULL, 1, '2026-01-01T00:00:00.000Z')
+        `.unprepared
+      }).pipe(Effect.provide(infraLayer))
+
+      // Now try to construct GovernancePortSqlite — should die
+      const governanceLayer = Layer.mergeAll(
+        infraLayer,
+        GovernancePortSqlite.layer.pipe(Layer.provide(infraLayer))
+      )
+
+      const exit = yield* Effect.gen(function*() {
+        yield* GovernancePortSqlite
+      }).pipe(
+        Effect.provide(governanceLayer),
+        Effect.exit
+      )
+
+      expect(exit._tag).toBe("Failure")
+    }).pipe(
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("drift check fails when same ID has wrong tool_name", () => {
+    const dbPath = testDatabasePath("sync-drift-id")
+
+    return Effect.gen(function*() {
+      const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+      const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+      const infraLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+
+      // Insert a row with correct ID but wrong name
+      yield* Effect.gen(function*() {
+        const sqlClient = yield* SqlClient.SqlClient
+        // First delete the existing time_now row seeded by migration
+        yield* sqlClient`
+          DELETE FROM tool_definitions WHERE tool_name = 'time_now'
+        `.unprepared
+        yield* sqlClient`
+          INSERT INTO tool_definitions (
+            tool_definition_id, tool_name, source_kind, integration_id, is_safe_standard, created_at
+          ) VALUES ('tooldef:time_now:v1', 'wrong_name', 'BuiltIn', NULL, 1, '2026-01-01T00:00:00.000Z')
+        `.unprepared
+      }).pipe(Effect.provide(infraLayer))
+
+      const governanceLayer = Layer.mergeAll(
+        infraLayer,
+        GovernancePortSqlite.layer.pipe(Layer.provide(infraLayer))
+      )
+
+      const exit = yield* Effect.gen(function*() {
+        yield* GovernancePortSqlite
+      }).pipe(
+        Effect.provide(governanceLayer),
+        Effect.exit
+      )
+
+      expect(exit._tag).toBe("Failure")
+    }).pipe(
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+})
+
 const makeGovernanceLayer = (dbPath: string) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(

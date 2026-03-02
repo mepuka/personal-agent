@@ -46,6 +46,9 @@ export const classifyTurnFailureText = (reason: string): TurnFailureCode => {
   if (text.includes("session_entity_")) {
     return "session_entity_error"
   }
+  if (text.includes("unknown_tool_definition")) {
+    return "unknown_tool_definition"
+  }
   if (text.includes("policydenied") || text.includes("policy_denied") || text.includes("memoryaccessdenied")) {
     return "policy_denied"
   }
@@ -121,6 +124,8 @@ export const toTurnFailureDisplayMessage = (
       return "checkpoint_payload_invalid: Checkpoint payload is invalid or stale. Request a new approval."
     case "checkpoint_transition_failed":
       return "checkpoint_transition_failed: Checkpoint replay could not be finalized. Retry approval or refresh state."
+    case "unknown_tool_definition":
+      return "unknown_tool_definition: Tool is not registered in the governance catalog. Check ToolCatalog or run startup sync."
     default:
       return `${errorCode}: ${message}`
   }
