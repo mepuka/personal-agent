@@ -47,6 +47,10 @@ import {
   type TriggerContext
 } from "../src/memory/SubroutineControlPlane.js"
 import {
+  TranscriptProjector,
+  type TranscriptProjectorService
+} from "../src/memory/TranscriptProjector.js"
+import {
   layer as TurnProcessingWorkflowLayer,
   type ProcessTurnPayload,
   TurnModelFailure,
@@ -611,6 +615,93 @@ describe("TurnProcessingWorkflow e2e", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("accepted turn calls appendTurn with correct IDs and turn", () => {
+    const dbPath = testDatabasePath("turn-transcript-append")
+    const capturedAppends: Array<{ agentId: string; sessionId: string; turn: unknown }> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, undefined, undefined, capturedAppends)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:transcript" as AgentId,
+        tokenBudget: 200,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:transcript" as SessionId,
+        conversationId: "conversation:transcript" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:transcript" as TurnId,
+        agentId: "agent:transcript" as AgentId,
+        sessionId: "session:transcript" as SessionId,
+        conversationId: "conversation:transcript" as ConversationId,
+        createdAt: now,
+        inputTokens: 25,
+        content: "trigger transcript"
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(capturedAppends).toHaveLength(1)
+      expect(capturedAppends[0].agentId).toBe("agent:transcript")
+      expect(capturedAppends[0].sessionId).toBe("session:transcript")
+      expect(capturedAppends[0].turn).toBeDefined()
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("denied turn does NOT call appendTurn", () => {
+    const dbPath = testDatabasePath("turn-transcript-deny")
+    const capturedAppends: Array<{ agentId: string; sessionId: string; turn: unknown }> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Deny", undefined, undefined, undefined, capturedAppends)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:deny-transcript" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:deny-transcript" as SessionId,
+        conversationId: "conversation:deny-transcript" as ConversationId,
+        tokenCapacity: 200,
+        tokensUsed: 0
+      }))
+
+      yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:deny-transcript" as TurnId,
+        agentId: "agent:deny-transcript" as AgentId,
+        sessionId: "session:deny-transcript" as SessionId,
+        conversationId: "conversation:deny-transcript" as ConversationId,
+        createdAt: now,
+        inputTokens: 20,
+        content: "should not append transcript"
+      })).pipe(
+        Effect.flip
+      )
+
+      expect(capturedAppends).toHaveLength(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeTurnProcessingLayer = (
@@ -621,7 +712,8 @@ const makeTurnProcessingLayer = (
     readonly finishReasons?: ReadonlyArray<Response.FinishReason>
     readonly failWithErrorMessage?: string
   },
-  capturedDispatches?: Array<{ triggerType: string; context: TriggerContext }>
+  capturedDispatches?: Array<{ triggerType: string; context: TriggerContext }>,
+  capturedTranscriptAppends?: Array<{ agentId: string; sessionId: string; turn: unknown }>
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -790,6 +882,18 @@ const makeTurnProcessingLayer = (
     mockControlPlane as any
   )
 
+  const mockTranscriptProjector: TranscriptProjectorService = {
+    appendTurn: (agentId, sessionId, turn) =>
+      Effect.sync(() => {
+        capturedTranscriptAppends?.push({ agentId, sessionId, turn })
+      }),
+    projectSession: () => Effect.void
+  }
+  const transcriptProjectorLayer = Layer.succeed(
+    TranscriptProjector,
+    mockTranscriptProjector as any
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -800,7 +904,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(checkpointPortTagLayer),
-    Layer.provide(subroutineControlPlaneLayer)
+    Layer.provide(subroutineControlPlaneLayer),
+    Layer.provide(transcriptProjectorLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

@@ -30,6 +30,7 @@ import { ToolExecution } from "../src/tools/ToolExecution.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { SubroutineRunner, buildTriggerPrompt, type SubroutineContext } from "../src/memory/SubroutineRunner.js"
+import { TraceWriter } from "../src/memory/TraceWriter.js"
 import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
 
 // ---------------------------------------------------------------------------
@@ -296,12 +297,17 @@ const makeTestLayer = (
     })
   )
 
+  const traceWriterLayer = Layer.succeed(TraceWriter, {
+    writeRunTrace: () => Effect.void
+  } as any)
+
   const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(mockAgentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(governanceTagLayer)
+    Layer.provide(governanceTagLayer),
+    Layer.provide(traceWriterLayer)
   )
 
   return Layer.mergeAll(

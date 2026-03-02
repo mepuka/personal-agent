@@ -45,6 +45,7 @@ import {
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
 import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
+import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 import {
   AgentStatePortTag,
   CheckpointPortTag,
@@ -237,6 +238,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const modelRegistry = yield* ModelRegistry
     const checkpointPort = yield* CheckpointPortTag
     const subroutineControlPlane = yield* SubroutineControlPlane
+    const transcriptProjector = yield* TranscriptProjector
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -604,6 +606,18 @@ export const layer = TurnProcessingWorkflow.toLayer(
       turnId: payload.turnId as TurnId,
       now: payload.createdAt
     }).pipe(Effect.ignore)
+
+    // Project transcript for accepted turn (fire-and-forget)
+    yield* transcriptProjector.appendTurn(
+      payload.agentId as AgentId,
+      payload.sessionId as SessionId,
+      makeAssistantTurn(payload, {
+        assistantContent: assistantResult.assistantContent,
+        assistantContentBlocks: assistantResult.assistantContentBlocks,
+        modelFinishReason,
+        modelUsageJson: assistantResult.modelUsageJson
+      })
+    ).pipe(Effect.ignore)
 
     return {
       turnId: payload.turnId,

@@ -41,6 +41,7 @@ import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag,
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
+import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
 import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
 const TEST_SYSTEM_PROMPT = "You are a test bot. Always respond with 'Hello from test bot!'"
@@ -364,6 +365,14 @@ const makeChatFlowLayer = (
     } as any
   )
 
+  const transcriptProjectorLayer = Layer.succeed(
+    TranscriptProjector,
+    {
+      appendTurn: () => Effect.void,
+      projectSession: () => Effect.void
+    } as any
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -374,7 +383,8 @@ const makeChatFlowLayer = (
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(checkpointPortTagLayer),
-    Layer.provide(subroutineControlPlaneLayer)
+    Layer.provide(subroutineControlPlaneLayer),
+    Layer.provide(transcriptProjectorLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

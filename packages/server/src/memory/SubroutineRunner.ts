@@ -24,6 +24,7 @@ import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
 import { GovernancePortTag } from "../PortTags.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
+import { TraceWriter } from "./TraceWriter.js"
 import {
   toProviderConfigOverride,
   zeroUsage,
@@ -87,6 +88,7 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
       const agentConfig = yield* AgentConfig
       const modelRegistry = yield* ModelRegistry
       const governancePort = yield* GovernancePortTag
+      const traceWriter = yield* TraceWriter
 
       const execute: SubroutineRunnerService["execute"] = (subroutine, context) =>
         Effect.gen(function*() {
@@ -167,6 +169,23 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
             "memory_subroutine_completed"
           )
 
+          // Trace: write structured run trace (fire-and-forget)
+          yield* traceWriter.writeRunTrace({
+            subroutine,
+            context,
+            contentParts: loopResult.allContentParts,
+            result: {
+              subroutineId: subroutine.config.id,
+              runId: context.runId,
+              success: true,
+              iterationsUsed: loopResult.iterationsUsed,
+              toolCallsTotal: loopResult.toolCallsTotal,
+              assistantContent,
+              modelUsageJson
+            },
+            usage: loopResult.usage
+          }).pipe(Effect.ignore)
+
           return {
             subroutineId: subroutine.config.id,
             runId: context.runId,
@@ -193,6 +212,24 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
                   && typeof (error as { message?: unknown }).message === "string"
                   ? (error as { message: string }).message
                   : String(error)
+
+              // Trace: write structured run trace for failure (fire-and-forget)
+              yield* traceWriter.writeRunTrace({
+                subroutine,
+                context,
+                contentParts: [],
+                result: {
+                  subroutineId: subroutine.config.id,
+                  runId: context.runId,
+                  success: false,
+                  iterationsUsed: 0,
+                  toolCallsTotal: 0,
+                  assistantContent: "",
+                  modelUsageJson: null,
+                  errorMessage: reason
+                },
+                usage: null
+              }).pipe(Effect.ignore)
 
               return {
                 subroutineId: subroutine.config.id,

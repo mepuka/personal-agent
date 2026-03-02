@@ -30,6 +30,8 @@ import { ToolExecution } from "./tools/ToolExecution.js"
 import { SubroutineCatalog } from "./memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "./memory/SubroutineControlPlane.js"
 import { SubroutineRunner } from "./memory/SubroutineRunner.js"
+import { TraceWriter } from "./memory/TraceWriter.js"
+import { TranscriptProjector } from "./memory/TranscriptProjector.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
@@ -272,13 +274,20 @@ const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
   Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer))
 )
 
+const memoryFileServicesLayer = Layer.mergeAll(BunServices.layer, agentConfigLayer)
+
+const traceWriterLayer = TraceWriter.layer.pipe(
+  Layer.provide(memoryFileServicesLayer)
+)
+
 const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
   Layer.provide(Layer.mergeAll(
     toolRegistryLayer,
     chatPersistenceLayer,
     agentConfigLayer,
     modelRegistryLayer,
-    governancePortTagLayer
+    governancePortTagLayer,
+    traceWriterLayer
   ))
 )
 
@@ -312,6 +321,10 @@ const schedulerTickLayer = SchedulerTickService.layer.pipe(
   Layer.provide(schedulerDispatchLayer)
 )
 
+const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
+  Layer.provide(memoryFileServicesLayer)
+)
+
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(Layer.mergeAll(
     workflowEngineLayer,
@@ -323,7 +336,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     agentConfigLayer,
     modelRegistryLayer,
     checkpointPortTagLayer,
-    subroutineControlPlaneLayer
+    subroutineControlPlaneLayer,
+    transcriptProjectorLayer
   ))
 )
 
