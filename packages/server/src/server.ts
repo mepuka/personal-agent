@@ -163,9 +163,11 @@ const clusterLayer = SingleRunner.layer().pipe(
 )
 
 const schedulerCommandLayer = SchedulerCommandLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(schedulerRuntimeLayer),
-  Layer.provide(governancePortTagLayer)
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    schedulerRuntimeLayer,
+    governancePortTagLayer
+  ))
 )
 
 const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
@@ -185,10 +187,12 @@ const agentEntityLayer = AgentEntityLayer.pipe(
 )
 
 const memoryEntityLayer = MemoryEntityLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(memoryPortTagLayer),
-  Layer.provide(memoryPortSqliteLayer),
-  Layer.provide(governancePortTagLayer)
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    memoryPortTagLayer,
+    memoryPortSqliteLayer,
+    governancePortTagLayer
+  ))
 )
 
 const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
@@ -219,9 +223,11 @@ const commandBackendLayer = CommandBackendLocalLayer.pipe(
 )
 
 const commandRuntimeLayer = CommandRuntime.layer.pipe(
-  Layer.provide(commandHooksLayer),
-  Layer.provide(commandBackendLayer),
-  Layer.provide(BunServices.layer)
+  Layer.provide(Layer.mergeAll(
+    commandHooksLayer,
+    commandBackendLayer,
+    BunServices.layer
+  ))
 )
 
 const fileHooksLayer = FileHooksDefaultLayer
@@ -233,27 +239,33 @@ const filePathPolicyLayer = FilePathPolicy.layer.pipe(
 const fileReadTrackerLayer = FileReadTracker.layer
 
 const fileRuntimeLayer = FileRuntime.layer.pipe(
-  Layer.provide(fileHooksLayer),
-  Layer.provide(fileReadTrackerLayer),
-  Layer.provide(filePathPolicyLayer),
-  Layer.provide(BunServices.layer)
+  Layer.provide(Layer.mergeAll(
+    fileHooksLayer,
+    fileReadTrackerLayer,
+    filePathPolicyLayer,
+    BunServices.layer
+  ))
 )
 
 const toolExecutionLayer = ToolExecution.layer.pipe(
-  Layer.provide(fileRuntimeLayer),
-  Layer.provide(filePathPolicyLayer),
-  Layer.provide(cliRuntimeLayer),
-  Layer.provide(commandRuntimeLayer),
-  Layer.provide(sqlInfrastructureLayer),
-  Layer.provide(BunServices.layer)
+  Layer.provide(Layer.mergeAll(
+    fileRuntimeLayer,
+    filePathPolicyLayer,
+    cliRuntimeLayer,
+    commandRuntimeLayer,
+    sqlInfrastructureLayer,
+    BunServices.layer
+  ))
 )
 
 const toolRegistryLayer = ToolRegistry.layer.pipe(
-  Layer.provide(toolExecutionLayer),
-  Layer.provide(governancePortTagLayer),
-  Layer.provide(memoryPortTagLayer),
-  Layer.provide(agentConfigLayer),
-  Layer.provide(checkpointPortTagLayer)
+  Layer.provide(Layer.mergeAll(
+    toolExecutionLayer,
+    governancePortTagLayer,
+    memoryPortTagLayer,
+    agentConfigLayer,
+    checkpointPortTagLayer
+  ))
 )
 
 const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
@@ -288,10 +300,12 @@ const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
 )
 
 const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(schedulerRuntimeLayer),
-  Layer.provide(schedulerCommandLayer),
-  Layer.provide(schedulerActionExecutorLayer)
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    schedulerRuntimeLayer,
+    schedulerCommandLayer,
+    schedulerActionExecutorLayer
+  ))
 )
 
 const schedulerTickLayer = SchedulerTickService.layer.pipe(
@@ -318,21 +332,25 @@ const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(
 )
 
 const sessionEntityLayer = SessionEntityLayer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(sessionTurnPortTagLayer),
-  Layer.provide(turnProcessingRuntimeLayer)
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    sessionTurnPortTagLayer,
+    turnProcessingRuntimeLayer
+  ))
 )
 
 const channelCoreLayer = ChannelCore.layer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(agentStatePortTagLayer),
-  Layer.provide(channelPortTagLayer),
-  Layer.provide(sessionTurnPortTagLayer),
-  Layer.provide(turnProcessingRuntimeLayer),
-  Layer.provide(sessionEntityLayer),
-  Layer.provide(agentConfigLayer),
-  Layer.provide(checkpointPortTagLayer),
-  Layer.provide(toolRegistryLayer)
+  Layer.provide(Layer.mergeAll(
+    clusterLayer,
+    agentStatePortTagLayer,
+    channelPortTagLayer,
+    sessionTurnPortTagLayer,
+    turnProcessingRuntimeLayer,
+    sessionEntityLayer,
+    agentConfigLayer,
+    checkpointPortTagLayer,
+    toolRegistryLayer
+  ))
 )
 
 const cliAdapterEntityLayer = Layer.unwrap(
@@ -342,9 +360,11 @@ const cliAdapterEntityLayer = Layer.unwrap(
       return Layer.empty
     }
     return CLIAdapterEntityLayer.pipe(
-      Layer.provide(clusterLayer),
-      Layer.provide(channelCoreLayer),
-      Layer.provide(channelPortTagLayer)
+      Layer.provide(Layer.mergeAll(
+        clusterLayer,
+        channelCoreLayer,
+        channelPortTagLayer
+      ))
     )
   }).pipe(Effect.provide(agentConfigLayer))
 )
@@ -356,9 +376,11 @@ const webChatAdapterEntityLayer = Layer.unwrap(
       return Layer.empty
     }
     return WebChatAdapterEntityLayer.pipe(
-      Layer.provide(clusterLayer),
-      Layer.provide(channelCoreLayer),
-      Layer.provide(channelPortTagLayer)
+      Layer.provide(Layer.mergeAll(
+        clusterLayer,
+        channelCoreLayer,
+        channelPortTagLayer
+      ))
     )
   }).pipe(Effect.provide(agentConfigLayer))
 )
@@ -370,9 +392,11 @@ const integrationEntityLayer = Layer.unwrap(
       return Layer.empty
     }
     return IntegrationEntityLayer.pipe(
-      Layer.provide(clusterLayer),
-      Layer.provide(integrationPortTagLayer),
-      Layer.provide(agentConfigLayer)
+      Layer.provide(Layer.mergeAll(
+        clusterLayer,
+        integrationPortTagLayer,
+        agentConfigLayer
+      ))
     )
   }).pipe(Effect.provide(agentConfigLayer))
 )
@@ -449,9 +473,11 @@ const cliRoutesLayer = Layer.unwrap(
 )
 
 const governanceRoutesLayer = GovernanceRoutesLayer.pipe(
-  Layer.provide(agentStatePortTagLayer),
-  Layer.provide(governancePortTagLayer),
-  Layer.provide(sessionTurnPortTagLayer)
+  Layer.provide(Layer.mergeAll(
+    agentStatePortTagLayer,
+    governancePortTagLayer,
+    sessionTurnPortTagLayer
+  ))
 )
 
 const HttpApiAndRoutesLive = Layer.mergeAll(
