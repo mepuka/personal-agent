@@ -23,6 +23,8 @@ import {
   type SchedulerExecutePayload
 } from "../src/scheduler/SchedulerCommandEntity.js"
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
+import { SubroutineCatalog } from "../src/memory/SubroutineCatalog.js"
+import { SubroutineRunner } from "../src/memory/SubroutineRunner.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
 
 describe("Scheduler command lane E2E", () => {
@@ -215,9 +217,30 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
     Layer.provide(governancePortTagLayer)
   )
 
+  const catalogLayer = Layer.succeed(SubroutineCatalog, {
+    getByTrigger: () => Effect.succeed([]),
+    getById: () => Effect.fail({ _tag: "SubroutineNotFound", subroutineId: "unknown" })
+  } as any)
+
+  const runnerLayer = Layer.succeed(SubroutineRunner, {
+    execute: () => Effect.succeed({
+      subroutineId: "unknown",
+      runId: "unknown",
+      success: false,
+      iterationsUsed: 0,
+      toolCallsTotal: 0,
+      assistantContent: "",
+      modelUsageJson: null
+    })
+  } as any)
+
   const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
-    Layer.provide(commandRuntimeLayer),
-    Layer.provide(governancePortTagLayer)
+    Layer.provide(Layer.mergeAll(
+      commandRuntimeLayer,
+      governancePortTagLayer,
+      catalogLayer,
+      runnerLayer
+    ))
   )
 
   const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(

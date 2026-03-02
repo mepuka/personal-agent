@@ -40,6 +40,7 @@ import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
+import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
 import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
 const TEST_SYSTEM_PROMPT = "You are a test bot. Always respond with 'Hello from test bot!'"
@@ -355,6 +356,14 @@ const makeChatFlowLayer = (
     Layer.provide(clusterLayer)
   )
 
+  const subroutineControlPlaneLayer = Layer.succeed(
+    SubroutineControlPlane,
+    {
+      enqueue: () => Effect.succeed({ accepted: false, reason: "deduped", runId: null }),
+      dispatchByTrigger: () => Effect.succeed([])
+    } as any
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -364,7 +373,8 @@ const makeChatFlowLayer = (
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(checkpointPortTagLayer)
+    Layer.provide(checkpointPortTagLayer),
+    Layer.provide(subroutineControlPlaneLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

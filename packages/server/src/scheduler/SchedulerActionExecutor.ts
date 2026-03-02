@@ -1,10 +1,21 @@
+import type { ConversationId, SessionId } from "@template/domain/ids"
 import type { ExecutionOutcome } from "@template/domain/status"
 import { Effect, Layer, ServiceMap } from "effect"
 import { GovernancePortTag } from "../PortTags.js"
+import { SubroutineCatalog, type SubroutineCatalogService } from "../memory/SubroutineCatalog.js"
+import { SubroutineRunner, type SubroutineContext, type SubroutineRunnerService } from "../memory/SubroutineRunner.js"
 import type { ExecutionTicket } from "../SchedulerRuntime.js"
 import { CommandRuntime, type CommandRuntimeService } from "../tools/command/CommandRuntime.js"
 
 const SCHEDULE_COMMAND_PREFIX = "action:command:"
+
+const MEMORY_SUBROUTINE_PREFIX = "action:memory_subroutine:"
+
+const parseMemorySubroutineId = (actionRef: string): string | null => {
+  if (!actionRef.startsWith(MEMORY_SUBROUTINE_PREFIX)) return null
+  const id = actionRef.slice(MEMORY_SUBROUTINE_PREFIX.length)
+  return id.length > 0 ? id : null
+}
 
 const parseScheduleCommand = (actionRef: string): string | null => {
   if (!actionRef.startsWith(SCHEDULE_COMMAND_PREFIX)) {
@@ -29,6 +40,8 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
     make: Effect.gen(function*() {
       const governance = yield* GovernancePortTag
       const commandRuntime = yield* CommandRuntime
+      const subroutineRunner = yield* SubroutineRunner
+      const subroutineCatalog = yield* SubroutineCatalog
 
       const execute = (ticket: ExecutionTicket): Effect.Effect<ExecutionOutcome> =>
         Effect.gen(function*() {
@@ -60,7 +73,9 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 
           return yield* dispatchAction({
             ticket,
-            commandRuntime
+            commandRuntime,
+            subroutineRunner,
+            subroutineCatalog
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.gen(function*() {
@@ -85,8 +100,43 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 const dispatchAction = (params: {
   readonly ticket: ExecutionTicket
   readonly commandRuntime: CommandRuntimeService
+  readonly subroutineRunner: SubroutineRunnerService
+  readonly subroutineCatalog: SubroutineCatalogService
 }): Effect.Effect<ExecutionOutcome> =>
   Effect.gen(function*() {
+    const subroutineId = parseMemorySubroutineId(params.ticket.actionRef)
+    if (subroutineId !== null) {
+      const loaded = yield* params.subroutineCatalog.getById(subroutineId).pipe(
+        Effect.catchTag("SubroutineNotFound", () =>
+          Effect.gen(function*() {
+            yield* Effect.log("Unknown memory subroutine in schedule", {
+              scheduleId: params.ticket.scheduleId,
+              subroutineId
+            })
+            return null
+          })
+        )
+      )
+      if (!loaded) return "ExecutionFailed" as const
+
+      const runId = crypto.randomUUID()
+      const context: SubroutineContext = {
+        agentId: params.ticket.ownerAgentId,
+        sessionId: `session:scheduled:${params.ticket.scheduleId}` as SessionId,
+        conversationId: `conversation:scheduled:${runId}` as ConversationId,
+        turnId: null,
+        triggerType: "Scheduled",
+        triggerReason: `Schedule: ${params.ticket.scheduleId} (${params.ticket.triggerSource})`,
+        now: params.ticket.startedAt,
+        runId
+      }
+
+      const result = yield* params.subroutineRunner.execute(loaded, context)
+      return result.success
+        ? "ExecutionSucceeded" as const
+        : "ExecutionFailed" as const
+    }
+
     const command = parseScheduleCommand(params.ticket.actionRef)
     if (command !== null) {
       if (command.trim().length === 0) {

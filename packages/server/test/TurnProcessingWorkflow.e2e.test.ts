@@ -42,6 +42,11 @@ import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag,
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
+  SubroutineControlPlane,
+  type SubroutineControlPlaneService,
+  type TriggerContext
+} from "../src/memory/SubroutineControlPlane.js"
+import {
   layer as TurnProcessingWorkflowLayer,
   type ProcessTurnPayload,
   TurnModelFailure,
@@ -474,6 +479,95 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("accepted turn calls dispatchByTrigger with PostTurn and correct IDs", () => {
+    const dbPath = testDatabasePath("turn-postturn-dispatch")
+    const dispatches: Array<{ triggerType: string; context: TriggerContext }> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", undefined, undefined, dispatches)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:dispatch" as AgentId,
+        tokenBudget: 200,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:dispatch" as SessionId,
+        conversationId: "conversation:dispatch" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:dispatch" as TurnId,
+        agentId: "agent:dispatch" as AgentId,
+        sessionId: "session:dispatch" as SessionId,
+        conversationId: "conversation:dispatch" as ConversationId,
+        createdAt: now,
+        inputTokens: 25,
+        content: "trigger post-turn"
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(dispatches).toHaveLength(1)
+      expect(dispatches[0].triggerType).toBe("PostTurn")
+      expect(dispatches[0].context.agentId).toBe("agent:dispatch")
+      expect(dispatches[0].context.sessionId).toBe("session:dispatch")
+      expect(dispatches[0].context.conversationId).toBe("conversation:dispatch")
+      expect(dispatches[0].context.turnId).toBe("turn:dispatch")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("denied turn does NOT call dispatchByTrigger", () => {
+    const dbPath = testDatabasePath("turn-postturn-deny")
+    const dispatches: Array<{ triggerType: string; context: TriggerContext }> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Deny", undefined, undefined, dispatches)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-02-24T12:00:00.000Z")
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:deny-dispatch" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:deny-dispatch" as SessionId,
+        conversationId: "conversation:deny-dispatch" as ConversationId,
+        tokenCapacity: 200,
+        tokensUsed: 0
+      }))
+
+      yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:deny-dispatch" as TurnId,
+        agentId: "agent:deny-dispatch" as AgentId,
+        sessionId: "session:deny-dispatch" as SessionId,
+        conversationId: "conversation:deny-dispatch" as ConversationId,
+        createdAt: now,
+        inputTokens: 20,
+        content: "should not dispatch"
+      })).pipe(
+        Effect.flip
+      )
+
+      expect(dispatches).toHaveLength(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("emits checkpoint_required and completed(false) when approval is required", () => {
     const dbPath = testDatabasePath("turn-checkpoint-required")
     const layer = makeTurnProcessingLayer(dbPath, "RequireApproval")
@@ -526,7 +620,8 @@ const makeTurnProcessingLayer = (
   mockOptions?: {
     readonly finishReasons?: ReadonlyArray<Response.FinishReason>
     readonly failWithErrorMessage?: string
-  }
+  },
+  capturedDispatches?: Array<{ triggerType: string; context: TriggerContext }>
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -683,6 +778,18 @@ const makeTurnProcessingLayer = (
     Layer.provide(clusterLayer)
   )
 
+  const mockControlPlane: SubroutineControlPlaneService = {
+    enqueue: () => Effect.succeed({ accepted: false, reason: "deduped", runId: null }),
+    dispatchByTrigger: (triggerType, context) => {
+      capturedDispatches?.push({ triggerType, context })
+      return Effect.succeed([])
+    }
+  }
+  const subroutineControlPlaneLayer = Layer.succeed(
+    SubroutineControlPlane,
+    mockControlPlane as any
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -692,7 +799,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(chatPersistenceLayer),
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
-    Layer.provide(checkpointPortTagLayer)
+    Layer.provide(checkpointPortTagLayer),
+    Layer.provide(subroutineControlPlaneLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

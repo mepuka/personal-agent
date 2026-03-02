@@ -12,6 +12,7 @@
  */
 import { Schema } from "effect"
 
+import { MemoryRoutinesConfig } from "./memory.js"
 import {
   DEFAULT_TOKEN_CAPACITY,
   DEFAULT_MAX_TOOL_ITERATIONS,
@@ -98,7 +99,8 @@ export const AgentProfileSchema = Schema.Struct({
   generation: GenerationConfigSchema,
   runtime: RuntimeConfigSchema.pipe(
     Schema.withDecodingDefaultKey(() => defaultRuntimeConfig)
-  )
+  ),
+  memoryRoutines: Schema.optionalKey(MemoryRoutinesConfig)
 })
 export type AgentProfile = typeof AgentProfileSchema.Type
 

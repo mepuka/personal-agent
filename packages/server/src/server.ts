@@ -27,6 +27,9 @@ import { FilePathPolicy } from "./tools/file/FilePathPolicy.js"
 import { FileReadTracker } from "./tools/file/FileReadTracker.js"
 import { FileRuntime } from "./tools/file/FileRuntime.js"
 import { ToolExecution } from "./tools/ToolExecution.js"
+import { SubroutineCatalog } from "./memory/SubroutineCatalog.js"
+import { SubroutineControlPlane } from "./memory/SubroutineControlPlane.js"
+import { SubroutineRunner } from "./memory/SubroutineRunner.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
@@ -221,22 +224,6 @@ const commandRuntimeLayer = CommandRuntime.layer.pipe(
   Layer.provide(BunServices.layer)
 )
 
-const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
-  Layer.provide(commandRuntimeLayer),
-  Layer.provide(governancePortTagLayer)
-)
-
-const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
-  Layer.provide(clusterLayer),
-  Layer.provide(schedulerRuntimeLayer),
-  Layer.provide(schedulerCommandLayer),
-  Layer.provide(schedulerActionExecutorLayer)
-)
-
-const schedulerTickLayer = SchedulerTickService.layer.pipe(
-  Layer.provide(schedulerDispatchLayer)
-)
-
 const fileHooksLayer = FileHooksDefaultLayer
 
 const filePathPolicyLayer = FilePathPolicy.layer.pipe(
@@ -269,16 +256,61 @@ const toolRegistryLayer = ToolRegistry.layer.pipe(
   Layer.provide(checkpointPortTagLayer)
 )
 
+const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
+  Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer))
+)
+
+const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    toolRegistryLayer,
+    chatPersistenceLayer,
+    agentConfigLayer,
+    modelRegistryLayer,
+    governancePortTagLayer
+  ))
+)
+
+const subroutineControlPlaneLayer = SubroutineControlPlane.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    subroutineRunnerLayer,
+    subroutineCatalogLayer,
+    governancePortTagLayer
+  ))
+)
+
+const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    commandRuntimeLayer,
+    governancePortTagLayer,
+    subroutineRunnerLayer,
+    subroutineCatalogLayer
+  ))
+)
+
+const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
+  Layer.provide(clusterLayer),
+  Layer.provide(schedulerRuntimeLayer),
+  Layer.provide(schedulerCommandLayer),
+  Layer.provide(schedulerActionExecutorLayer)
+)
+
+const schedulerTickLayer = SchedulerTickService.layer.pipe(
+  Layer.provide(schedulerDispatchLayer)
+)
+
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
-  Layer.provide(workflowEngineLayer),
-  Layer.provide(agentStatePortTagLayer),
-  Layer.provide(sessionTurnPortTagLayer),
-  Layer.provide(governancePortTagLayer),
-  Layer.provide(toolRegistryLayer),
-  Layer.provide(chatPersistenceLayer),
-  Layer.provide(agentConfigLayer),
-  Layer.provide(modelRegistryLayer),
-  Layer.provide(checkpointPortTagLayer)
+  Layer.provide(Layer.mergeAll(
+    workflowEngineLayer,
+    agentStatePortTagLayer,
+    sessionTurnPortTagLayer,
+    governancePortTagLayer,
+    toolRegistryLayer,
+    chatPersistenceLayer,
+    agentConfigLayer,
+    modelRegistryLayer,
+    checkpointPortTagLayer,
+    subroutineControlPlaneLayer
+  ))
 )
 
 const turnProcessingRuntimeLayer = TurnProcessingRuntime.layer.pipe(
@@ -386,6 +418,9 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(schedulerLayer),
   Layer.provideMerge(portTagsLayer),
   Layer.provideMerge(memoryPortSqliteLayer),
+  Layer.provideMerge(subroutineCatalogLayer),
+  Layer.provideMerge(subroutineRunnerLayer),
+  Layer.provideMerge(subroutineControlPlaneLayer),
   Layer.provideMerge(clusterLayer)
 )
 

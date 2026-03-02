@@ -44,6 +44,7 @@ import {
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
+import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import {
   AgentStatePortTag,
   CheckpointPortTag,
@@ -235,6 +236,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const agentConfig = yield* AgentConfig
     const modelRegistry = yield* ModelRegistry
     const checkpointPort = yield* CheckpointPortTag
+    const subroutineControlPlane = yield* SubroutineControlPlane
 
     const policy = yield* Activity.make({
       name: "EvaluatePolicy",
@@ -593,6 +595,15 @@ export const layer = TurnProcessingWorkflow.toLayer(
       "Allow",
       "turn_processing_accepted"
     )
+
+    // Dispatch post-turn memory subroutines (fire-and-forget)
+    yield* subroutineControlPlane.dispatchByTrigger("PostTurn", {
+      agentId: payload.agentId as AgentId,
+      sessionId: payload.sessionId as SessionId,
+      conversationId: payload.conversationId as ConversationId,
+      turnId: payload.turnId as TurnId,
+      now: payload.createdAt
+    }).pipe(Effect.ignore)
 
     return {
       turnId: payload.turnId,

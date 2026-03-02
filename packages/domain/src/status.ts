@@ -196,3 +196,11 @@ export const CheckpointStatus = Schema.Literals([
   "Consumed"
 ])
 export type CheckpointStatus = typeof CheckpointStatus.Type
+
+export const SubroutineTriggerType = Schema.Literals([
+  "PostTurn",
+  "PostSession",
+  "Scheduled",
+  "ContextPressure"
+])
+export type SubroutineTriggerType = typeof SubroutineTriggerType.Type

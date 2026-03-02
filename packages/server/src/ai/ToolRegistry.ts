@@ -13,7 +13,8 @@ import type {
   ToolInvocationId,
   TurnId
 } from "@template/domain/ids"
-import { toMemoryItemIds } from "@template/domain/memory"
+import { toMemoryItemIds, type SubroutineToolScope } from "@template/domain/memory"
+import { MemoryTier } from "@template/domain/status"
 import { InvokeToolReplayPayload, type Instant } from "@template/domain/ports"
 import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
 import { DateTime, Effect, Layer, Match, Ref, Schema, ServiceMap, Stream } from "effect"
@@ -25,6 +26,7 @@ import type { CommandInvocationContext } from "../tools/command/CommandTypes.js"
 import { ToolExecution } from "../tools/ToolExecution.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
+const POLICY_TOOL_SCOPE = "policy:invoke_tool:scope_denied:v1" as PolicyId
 const DEFAULT_AUDIT_LOG_ID = "auditlog:governance:default:v1" as AuditLogId
 
 const TOOL_NAMES = {
@@ -43,6 +45,29 @@ const TOOL_NAMES = {
   shell_execute: ToolName.makeUnsafe("shell_execute"),
   send_notification: ToolName.makeUnsafe("send_notification")
 } as const
+
+const TOOL_SCOPE_MAP: Record<keyof SubroutineToolScope, ReadonlyArray<string>> = {
+  fileRead: ["file_read", "file_ls", "file_find", "file_grep"],
+  fileWrite: ["file_write", "file_edit"],
+  shell: ["shell_execute"],
+  memoryRead: ["retrieve_memories"],
+  memoryWrite: ["store_memory", "forget_memories"],
+  notification: ["send_notification"]
+}
+
+const ALWAYS_ALLOWED_TOOLS = new Set(["time_now", "math_calculate", "echo_text"])
+
+const computeAllowedTools = (scope: SubroutineToolScope): Set<string> => {
+  const allowed = new Set(ALWAYS_ALLOWED_TOOLS)
+  for (const [scopeKey, toolNames] of Object.entries(TOOL_SCOPE_MAP)) {
+    if (scope[scopeKey as keyof SubroutineToolScope]) {
+      for (const name of toolNames) {
+        allowed.add(name)
+      }
+    }
+  }
+  return allowed
+}
 
 const ToolFailure = Schema.Struct({
   errorCode: Schema.String,
@@ -88,11 +113,12 @@ const EchoTextTool = Tool.make("echo_text", {
 })
 
 const StoreMemoryTool = Tool.make("store_memory", {
-  description: "Store a semantic memory item for this agent.",
+  description: "Store a memory item for this agent.",
   parameters: Schema.Struct({
     content: Schema.String,
     tags: Schema.optionalKey(Schema.Array(Schema.String)),
-    scope: Schema.optionalKey(Schema.Literals(["SessionScope", "GlobalScope"]))
+    scope: Schema.optionalKey(Schema.Literals(["SessionScope", "GlobalScope"])),
+    tier: Schema.optionalKey(MemoryTier)
   }),
   success: Schema.Struct({
     memoryId: Schema.String,
@@ -313,7 +339,11 @@ export interface ApprovedToolReplayResult {
 }
 
 export interface ToolRegistryService {
-  readonly makeToolkit: (context: ToolExecutionContext, checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>) => Effect.Effect<{
+  readonly makeToolkit: (
+    context: ToolExecutionContext,
+    checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>,
+    toolScope?: SubroutineToolScope
+  ) => Effect.Effect<{
     readonly toolkit: typeof SafeToolkit
     readonly handlerLayer: SafeToolkitHandlerLayer
   }>
@@ -505,7 +535,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         toolName: ToolName,
         input: Record<string, unknown>,
         execute: Effect.Effect<A, ToolFailure>,
-        checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>
+        checkpointSignalsRef?: Ref.Ref<ReadonlyArray<CheckpointSignal>>,
+        allowedToolNames?: Set<string>
       ): Effect.Effect<A, ToolFailure> =>
         Effect.gen(function*() {
           const inputJson = canonicalJsonStringify(input)
@@ -515,6 +546,23 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             toolName,
             inputJson
           )
+
+          if (allowedToolNames && !allowedToolNames.has(toolName as string)) {
+            return yield* failWithRecordedInvocation({
+              context,
+              toolName,
+              idempotencyKey,
+              inputJson,
+              decision: "Deny",
+              policyId: POLICY_TOOL_SCOPE,
+              toolDefinitionId: null,
+              reason: `tool_scope_denied:${toolName}`,
+              failure: {
+                errorCode: "ToolNotInScope",
+                message: `Tool '${toolName}' is not allowed in this subroutine's tool scope.`
+              }
+            })
+          }
 
           // --- Approved bypass path ---
           if (context.checkpointId !== undefined && context.checkpointAction === "InvokeTool") {
@@ -759,10 +807,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           toolName
         }) satisfies CommandInvocationContext
 
-      const makeToolkit: ToolRegistryService["makeToolkit"] = (context, checkpointSignalsRef) =>
+      const makeToolkit: ToolRegistryService["makeToolkit"] = (context, checkpointSignalsRef, toolScope) =>
         Effect.gen(function*() {
           const profile = yield* agentConfig.getAgent(context.agentId as string).pipe(Effect.orDie)
           const memoryLimits = profile.runtime.memory
+          const allowedTools = toolScope ? computeAllowedTools(toolScope) : undefined
 
           return {
             toolkit: SafeToolkit,
@@ -776,7 +825,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   Effect.succeed({
                     nowIso: DateTime.formatIso(context.now)
                   }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "math_calculate": ({ expression }) => {
                 const result = safeCalculate(expression)
@@ -790,7 +840,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: "Expression must contain only numbers and arithmetic operators."
                     })
                     : Effect.succeed({ result }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 )
               },
               "echo_text": ({ text }) =>
@@ -799,13 +850,14 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   TOOL_NAMES.echo_text,
                   { text },
                   Effect.succeed({ text }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
-              "store_memory": ({ content, tags, scope }) =>
+              "store_memory": ({ content, tags, scope, tier }) =>
                 runGovernedTool(
                   context,
                   TOOL_NAMES.store_memory,
-                  { content, tags, scope },
+                  { content, tags, scope, tier },
                   runMemoryPolicy({
                     context,
                     toolName: TOOL_NAMES.store_memory,
@@ -821,7 +873,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       const [memoryId] = yield* memoryPort.encode(
                         context.agentId,
                         [{
-                          tier: "SemanticMemory",
+                          tier: tier ?? "SemanticMemory",
                           scope: scope ?? "GlobalScope",
                           source: "AgentSource",
                           content,
@@ -843,7 +895,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       } as const
                     })
                   }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "retrieve_memories": ({ query, limit }) =>
                 runGovernedTool(
@@ -873,7 +926,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       }))
                     )
                   }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "forget_memories": ({ memoryIds }) =>
                 runGovernedTool(
@@ -904,7 +958,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       return { forgotten } as const
                     })
                   }),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_read": ({ path, offset, limit }) =>
                 runGovernedTool(
@@ -927,7 +982,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_write": ({ path, content }) =>
                 runGovernedTool(
@@ -949,7 +1005,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_edit": ({ path, old_string, new_string }) =>
                 runGovernedTool(
@@ -973,7 +1030,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_ls": ({ path, recursive, include_hidden, ignore, limit }) =>
                 runGovernedTool(
@@ -999,7 +1057,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_find": ({ pattern, path, include_hidden, limit }) =>
                 runGovernedTool(
@@ -1024,7 +1083,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "file_grep": ({ pattern, path, include_hidden, include, literal_text, case_sensitive, limit }) =>
                 runGovernedTool(
@@ -1052,7 +1112,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "shell_execute": ({ command, cwd }) =>
                 runGovernedTool(
@@ -1075,7 +1136,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 ),
               "send_notification": ({ recipient, message }) =>
                 runGovernedTool(
@@ -1093,7 +1155,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       message: error.message
                     }))
                   ),
-                  checkpointSignalsRef
+                  checkpointSignalsRef,
+                  allowedTools
                 )
             })
           ) as SafeToolkitHandlerLayer
