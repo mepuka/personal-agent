@@ -607,17 +607,24 @@ export const layer = TurnProcessingWorkflow.toLayer(
       now: payload.createdAt
     }).pipe(Effect.ignore)
 
-    // Project transcript for accepted turn (fire-and-forget)
-    yield* transcriptProjector.appendTurn(
-      payload.agentId as AgentId,
-      payload.sessionId as SessionId,
-      makeAssistantTurn(payload, {
-        assistantContent: assistantResult.assistantContent,
-        assistantContentBlocks: assistantResult.assistantContentBlocks,
-        modelFinishReason,
-        modelUsageJson: assistantResult.modelUsageJson
-      })
-    ).pipe(Effect.ignore)
+    // Project transcript for accepted turn — user + assistant (fire-and-forget)
+    yield* Effect.all([
+      transcriptProjector.appendTurn(
+        payload.agentId as AgentId,
+        payload.sessionId as SessionId,
+        makeUserTurn(payload)
+      ),
+      transcriptProjector.appendTurn(
+        payload.agentId as AgentId,
+        payload.sessionId as SessionId,
+        makeAssistantTurn(payload, {
+          assistantContent: assistantResult.assistantContent,
+          assistantContentBlocks: assistantResult.assistantContentBlocks,
+          modelFinishReason,
+          modelUsageJson: assistantResult.modelUsageJson
+        })
+      )
+    ], { concurrency: 1 }).pipe(Effect.ignore)
 
     return {
       turnId: payload.turnId,

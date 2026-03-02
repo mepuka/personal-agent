@@ -651,10 +651,15 @@ describe("TurnProcessingWorkflow e2e", () => {
       }))
 
       expect(result.accepted).toBe(true)
-      expect(capturedAppends).toHaveLength(1)
+      expect(capturedAppends).toHaveLength(2)
+      // First append is user turn
       expect(capturedAppends[0].agentId).toBe("agent:transcript")
       expect(capturedAppends[0].sessionId).toBe("session:transcript")
-      expect(capturedAppends[0].turn).toBeDefined()
+      expect((capturedAppends[0].turn as any).participantRole).toBe("UserRole")
+      // Second append is assistant turn
+      expect(capturedAppends[1].agentId).toBe("agent:transcript")
+      expect(capturedAppends[1].sessionId).toBe("session:transcript")
+      expect((capturedAppends[1].turn as any).participantRole).toBe("AssistantRole")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

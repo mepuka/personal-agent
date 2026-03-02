@@ -212,6 +212,8 @@ describe("TranscriptProjector", () => {
       expect(content).toContain("# Session Transcript")
       expect(content).toContain("## Turn 0 (user)")
       expect(content).toContain("## Turn 1 (assistant)")
+      // Verify header and first turn are separated (not merged)
+      expect(content).not.toContain("# Session Transcript##")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true })))

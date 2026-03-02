@@ -51,7 +51,7 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const rendered = renderTurn(turn)
           yield* appendFileWithDirs(fs, pathService, filePath, rendered)
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.catch(() => Effect.void))
 
       const projectSession: TranscriptProjectorService["projectSession"] = (agentId, sessionId, turns) =>
         Effect.gen(function*() {
@@ -61,7 +61,7 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const content = renderTranscript(turns)
           yield* writeFileWithDirs(fs, pathService, filePath, content)
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.catch(() => Effect.void))
 
       return { appendTurn, projectSession } satisfies TranscriptProjectorService
     })
@@ -94,7 +94,11 @@ const appendFileWithDirs = (
   Effect.gen(function*() {
     yield* fs.makeDirectory(pathService.dirname(filePath), { recursive: true })
     const existing = yield* fs.readFileString(filePath).pipe(
-      Effect.catch(() => Effect.succeed(""))
+      Effect.catchTag("PlatformError", (e) =>
+        e.reason._tag === "NotFound"
+          ? Effect.succeed("")
+          : Effect.fail(e)
+      )
     )
     yield* fs.writeFileString(filePath, existing + content)
   })
@@ -112,7 +116,7 @@ const renderTranscript = (turns: ReadonlyArray<TurnRecord>): string => {
     lines.push(renderTurn(turn))
   }
 
-  return lines.join("")
+  return lines.join("\n")
 }
 
 const renderTurn = (turn: TurnRecord): string => {

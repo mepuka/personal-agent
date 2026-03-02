@@ -51,7 +51,7 @@ export class TraceWriter extends ServiceMap.Service<TraceWriter>()(
 
           const content = renderTrace(params)
           yield* writeFileWithDirs(fs, pathService, filePath, content)
-        }).pipe(Effect.orDie)
+        }).pipe(Effect.catch(() => Effect.void))
 
       return { writeRunTrace } satisfies TraceWriterService
     })
