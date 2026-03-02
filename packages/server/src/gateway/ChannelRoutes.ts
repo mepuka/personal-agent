@@ -1,5 +1,6 @@
 import { AiProviderName } from "@template/domain/config"
 import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
+import type { ChannelId } from "@template/domain/ids"
 import { ChannelType } from "@template/domain/status"
 import { Effect, Layer, Option, Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
@@ -261,6 +262,34 @@ const getStatus = HttpRouter.add(
     )
 )
 
+const deleteChannel = HttpRouter.add(
+  "DELETE",
+  "/channels/:channelId",
+  (request) =>
+    Effect.gen(function*() {
+      const channelCore = yield* ChannelCore
+      const channelId = extractParam(request.url, 1)
+      if (channelId.length === 0) {
+        return yield* badRequest("Missing channelId")
+      }
+      yield* channelCore.deleteChannel(channelId as ChannelId)
+      return yield* HttpServerResponse.json({ ok: true })
+    }).pipe(
+      Effect.withSpan("ChannelRoutes.deleteChannel"),
+      Effect.catchTag("ChannelNotFound", (error) =>
+        HttpServerResponse.json(
+          { error: "ChannelNotFound", channelId: error.channelId },
+          { status: 404 }
+        )),
+      Effect.catchCause(() =>
+        HttpServerResponse.json(
+          { error: "InternalServerError" },
+          { status: 500 }
+        )
+      )
+    )
+)
+
 const SetModelPreferenceRequest = Schema.Struct({
   model: Schema.optionalKey(Schema.Union([
     Schema.Struct({ provider: AiProviderName, modelId: Schema.String }),
@@ -323,4 +352,12 @@ const health = HttpRouter.add(
 // ---------------------------------------------------------------------------
 
 export const healthLayer = health // always-on, never gated
-export const layer = Layer.mergeAll(listChannels, initializeChannel, sendMessage, getHistory, getStatus, setModelPreference) // gatable
+export const layer = Layer.mergeAll(
+  listChannels,
+  initializeChannel,
+  sendMessage,
+  getHistory,
+  getStatus,
+  deleteChannel,
+  setModelPreference
+) // gatable

@@ -20,7 +20,7 @@ export function SessionPickerModal({
         </box>
       ) : (
         <box flexDirection="column" flexGrow={1}>
-          <text content="Use ↑/↓ to select, Enter to switch." fg={theme.textMuted} />
+          <text content="Use ↑/↓ to select, Enter to switch, x to delete." fg={theme.textMuted} />
           <scrollbox flexGrow={1} stickyScroll={true} stickyStart="top">
             {channels.map((channel, index) => {
               const isSelected = index === selectedIndex

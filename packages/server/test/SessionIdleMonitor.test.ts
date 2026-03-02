@@ -91,6 +91,7 @@ const makeTestLayer = (opts: {
     {
       create: () => Effect.void,
       get: () => Effect.succeed(null),
+      delete: () => Effect.void,
       list: () => Effect.succeed(opts.channels ?? []),
       updateModelPreference: () => Effect.void
     } as ChannelPort as any
@@ -281,6 +282,7 @@ describe("SessionIdleMonitor", () => {
         {
           create: () => Effect.void,
           get: () => Effect.succeed(null),
+          delete: () => Effect.void,
           list: () => Effect.succeed([]),
           updateModelPreference: () => Effect.void
         } as any

@@ -188,6 +188,24 @@ describe("ChannelPortSqlite", () => {
     )
   })
 
+  it.effect("delete removes channel record", () => {
+    const dbPath = testDatabasePath("channel-delete")
+    return Effect.gen(function*() {
+      const port = yield* ChannelPortSqlite
+      const channel = makeChannel({ channelId: "channel:delete" as ChannelId })
+      yield* port.create(channel)
+
+      yield* port.delete(channel.channelId)
+      yield* port.delete(channel.channelId)
+
+      const deleted = yield* port.get(channel.channelId)
+      expect(deleted).toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("list returns channels ordered by most recent activity with counts", () => {
     const dbPath = testDatabasePath("channel-list")
     return Effect.gen(function*() {

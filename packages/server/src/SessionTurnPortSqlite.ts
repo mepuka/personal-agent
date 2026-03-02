@@ -209,6 +209,25 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
           Effect.orDie
         )
 
+      const deleteSession: SessionTurnPort["deleteSession"] = (sessionId) =>
+        sql.withTransaction(
+          Effect.gen(function*() {
+            yield* sql`
+              DELETE FROM turns
+              WHERE session_id = ${sessionId}
+            `.unprepared
+
+            yield* sql`
+              DELETE FROM sessions
+              WHERE session_id = ${sessionId}
+            `.unprepared
+          })
+        ).pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
       const updateContextWindow: SessionTurnPort["updateContextWindow"] = (
         sessionId,
         deltaTokens
@@ -263,6 +282,7 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
       return {
         startSession,
         appendTurn,
+        deleteSession,
         updateContextWindow,
         getSession,
         listTurns

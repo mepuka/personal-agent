@@ -113,6 +113,57 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     restoreChannel(channelId)
   }, [registry, restoreChannel, activeChannelId])
 
+  const deleteSelectedChannel = React.useCallback((targetChannelId: string) => {
+    const program = Effect.gen(function*() {
+      registry.set(connectionStatusAtom, "connecting")
+      yield* client.deleteChannel(targetChannelId)
+
+      const channels = yield* client.listChannels(DEFAULT_AGENT_ID)
+      registry.set(availableChannelsAtom, channels)
+      yield* Effect.sync(() => {
+        setSessionPickerIndex((previous) => {
+          if (channels.length === 0) {
+            return 0
+          }
+          return Math.min(previous, channels.length - 1)
+        })
+      })
+
+      if (targetChannelId !== activeChannelId) {
+        registry.set(connectionStatusAtom, "connected")
+        return
+      }
+
+      if (channels.length === 0) {
+        const freshChannelId = `channel:${crypto.randomUUID()}`
+        registry.set(channelIdAtom, freshChannelId)
+        yield* client.initialize(freshChannelId, DEFAULT_AGENT_ID)
+        const history = yield* client.getHistory(freshChannelId)
+        registry.set(messagesAtom, toChatMessages(history))
+        registry.set(toolEventsAtom, [])
+        registry.set(connectionStatusAtom, "connected")
+        return
+      }
+
+      const nextChannelId = channels[0]!.channelId
+      registry.set(channelIdAtom, nextChannelId)
+      yield* client.initialize(nextChannelId, DEFAULT_AGENT_ID)
+      const history = yield* client.getHistory(nextChannelId)
+      registry.set(messagesAtom, toChatMessages(history))
+      registry.set(toolEventsAtom, [])
+      registry.set(connectionStatusAtom, "connected")
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          console.error("Delete channel failed:", error)
+          registry.set(connectionStatusAtom, "error")
+        })
+      )
+    )
+
+    Effect.runFork(program)
+  }, [registry, client, activeChannelId])
+
   React.useEffect(() => {
     if (activeModal !== "session-picker") {
       return
@@ -163,6 +214,13 @@ export function App({ client }: { readonly client: ChatClientShape }) {
         const selected = availableChannels[sessionPickerIndex]
         if (selected !== undefined) {
           selectChannel(selected.channelId)
+        }
+        return
+      }
+      if (key.name === "x") {
+        const selected = availableChannels[sessionPickerIndex]
+        if (selected !== undefined) {
+          deleteSelectedChannel(selected.channelId)
         }
         return
       }

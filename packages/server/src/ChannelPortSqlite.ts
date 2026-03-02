@@ -179,6 +179,16 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
           Effect.orDie
         )
 
+      const deleteChannel: ChannelPort["delete"] = (channelId) =>
+        sql`
+          DELETE FROM channels
+          WHERE channel_id = ${channelId}
+        `.unprepared.pipe(
+          Effect.asVoid,
+          Effect.tapDefect(Effect.logError),
+          Effect.orDie
+        )
+
       const updateModelPreference: ChannelPort["updateModelPreference"] = (channelId, update) =>
         Effect.gen(function*() {
           if ("modelOverride" in update && "generationConfigOverride" in update) {
@@ -211,6 +221,7 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
         get,
         list,
         create,
+        delete: deleteChannel,
         updateModelPreference
       } as const
     })

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest"
 import { DateTime } from "effect"
+import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Response from "effect/unstable/ai/Response"
 import {
   inferToolChoice,
   toProviderConfigOverride,
   makeUserTurn,
   makeAssistantTurn,
+  sanitizePromptForAnthropic,
   toPromptText,
   toTurnModelFailure,
   toModelFailureMessage,
@@ -303,6 +305,63 @@ describe("toPromptText", () => {
       { contentBlockType: "ToolResultBlock" as const, content: "discard" }
     ]
     expect(toPromptText("fallback", blocks as any)).toBe("keep")
+  })
+})
+
+describe("sanitizePromptForAnthropic", () => {
+  it("removes empty text parts while preserving tool parts", () => {
+    const prompt = Prompt.make([
+      {
+        role: "system",
+        content: "   "
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "   " },
+          { type: "text", text: "hello world" }
+        ]
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "" },
+          {
+            type: "tool-call",
+            id: "tool_1",
+            name: "shell_execute",
+            params: { command: "pwd" },
+            providerExecuted: false
+          }
+        ]
+      }
+    ])
+
+    const sanitized = sanitizePromptForAnthropic(prompt)
+
+    expect(sanitized.content.some((message) => message.role === "system")).toBe(false)
+
+    const textParts: Array<{ readonly text: string }> = []
+    let sawToolCall = false
+
+    for (const message of sanitized.content) {
+      if (message.role === "system") {
+        continue
+      }
+
+      for (const part of message.content) {
+        if (part.type === "text") {
+          textParts.push({ text: part.text })
+        }
+        if (part.type === "tool-call") {
+          sawToolCall = true
+        }
+      }
+    }
+
+    expect(textParts.length).toBe(1)
+    expect(textParts[0]?.text).toBe("hello world")
+    expect(sawToolCall).toBe(true)
   })
 })
 

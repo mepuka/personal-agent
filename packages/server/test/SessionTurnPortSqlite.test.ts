@@ -107,6 +107,43 @@ describe("SessionTurnPortSqlite", () => {
     )
   })
 
+  it.effect("deleteSession removes session and all turns", () => {
+    const dbPath = testDatabasePath("session-delete")
+    const layer = makeSessionLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sessionPort = yield* SessionTurnPortSqlite
+      const session = makeSessionState({
+        sessionId: "session:delete" as SessionId,
+        conversationId: "conversation:delete" as ConversationId
+      })
+
+      yield* sessionPort.startSession(session)
+      yield* sessionPort.appendTurn(makeTurnRecord({
+        turnId: "turn:delete:1" as TurnId,
+        sessionId: session.sessionId,
+        conversationId: session.conversationId
+      }))
+      yield* sessionPort.appendTurn(makeTurnRecord({
+        turnId: "turn:delete:2" as TurnId,
+        sessionId: session.sessionId,
+        conversationId: session.conversationId
+      }))
+
+      yield* sessionPort.deleteSession(session.sessionId)
+      yield* sessionPort.deleteSession(session.sessionId)
+
+      const deletedSession = yield* sessionPort.getSession(session.sessionId)
+      const deletedTurns = yield* sessionPort.listTurns(session.sessionId)
+
+      expect(deletedSession).toBeNull()
+      expect(deletedTurns).toEqual([])
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("retains sessions and turns across cold restart", () => {
     const dbPath = testDatabasePath("session-restart")
     const firstLayer = makeSessionLayer(dbPath)

@@ -31,6 +31,12 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
           return HashMap.set(map, turn.sessionId, next)
         })
 
+      const deleteSession: SessionTurnPort["deleteSession"] = (sessionId) =>
+        Effect.all([
+          Ref.update(sessions, HashMap.remove(sessionId)),
+          Ref.update(turns, HashMap.remove(sessionId))
+        ]).pipe(Effect.asVoid)
+
       const updateContextWindow: SessionTurnPort["updateContextWindow"] = (sessionId, deltaTokens) =>
         Ref.get(sessions).pipe(
           Effect.flatMap((map): Effect.Effect<void, ContextWindowExceeded | SessionNotFound> => {
@@ -78,6 +84,7 @@ export class SessionTurnPortMemory extends ServiceMap.Service<SessionTurnPortMem
       return {
         startSession,
         appendTurn,
+        deleteSession,
         updateContextWindow,
         getSession,
         listTurns
