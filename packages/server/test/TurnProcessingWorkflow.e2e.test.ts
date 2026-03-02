@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type { AgentId, ChannelId, CheckpointId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
 import type {
   AgentState,
   AgentStatePort,
+  CheckpointRecord,
   CheckpointPort,
   GovernancePort,
   Instant,
@@ -12,7 +13,7 @@ import type {
   SessionTurnPort
 } from "@template/domain/ports"
 import type { AuthorizationDecision } from "@template/domain/status"
-import { DateTime, Effect, Layer, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Response from "effect/unstable/ai/Response"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
@@ -41,6 +42,7 @@ import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
+import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
 import {
   SubroutineControlPlane,
   type SubroutineControlPlaneService,
@@ -619,6 +621,473 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("ReadMemory checkpoints use payload-bound hashes and versioned replay payloads", () => {
+    const dbPath = testDatabasePath("turn-checkpoint-hash-binding")
+    const layer = makeTurnProcessingLayer(dbPath, "RequireApproval")
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortTag
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-03-02T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:checkpoint-hash" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:checkpoint-hash" as SessionId,
+        conversationId: "conversation:checkpoint-hash" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const first = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:checkpoint-hash:1" as TurnId,
+        sessionId: "session:checkpoint-hash" as SessionId,
+        conversationId: "conversation:checkpoint-hash" as ConversationId,
+        agentId: "agent:checkpoint-hash" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "read memory A",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "read memory A" }]
+      }))
+
+      const second = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:checkpoint-hash:2" as TurnId,
+        sessionId: "session:checkpoint-hash" as SessionId,
+        conversationId: "conversation:checkpoint-hash" as ConversationId,
+        agentId: "agent:checkpoint-hash" as AgentId,
+        createdAt: DateTime.add(now, { minutes: 1 }),
+        inputTokens: 10,
+        content: "read memory B",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "read memory B" }]
+      }))
+
+      expect(first.accepted).toBe(false)
+      expect(second.accepted).toBe(false)
+      expect(first.checkpointId).toBeDefined()
+      expect(second.checkpointId).toBeDefined()
+
+      const pending = yield* checkpointPort.listPending("agent:checkpoint-hash" as AgentId)
+      expect(pending).toHaveLength(2)
+      expect(new Set(pending.map((record) => record.payloadHash)).size).toBe(2)
+      expect(
+        pending.every((record) => record.payloadJson.includes("\"replayPayloadVersion\":1"))
+      ).toBe(true)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("InvokeTool replay continuation persists replay tool turn and no synthetic user turn", () => {
+    const dbPath = testDatabasePath("turn-invoke-replay-continuation")
+    const capturedPrompts: Array<string> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", capturedPrompts)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortTag
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-03-02T15:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:invoke-replay" as AgentId,
+        tokenBudget: 500,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:invoke-replay" as SessionId,
+        conversationId: "conversation:invoke-replay" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const inputJson = encodeJson({ command: "pwd" })
+      const checkpointPayload = {
+        replayPayloadVersion: 1 as const,
+        kind: "InvokeTool" as const,
+        toolName: "shell_execute",
+        inputJson,
+        turnContext: {
+          agentId: "agent:invoke-replay",
+          sessionId: "session:invoke-replay",
+          conversationId: "conversation:invoke-replay",
+          channelId: "channel:invoke-replay",
+          turnId: "turn:blocked",
+          createdAt: DateTime.formatIso(now)
+        }
+      }
+      const payloadHash = yield* makeCheckpointPayloadHash("InvokeTool", checkpointPayload)
+      const checkpointId = "checkpoint:invoke-replay-approved" as CheckpointId
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:invoke-replay" as AgentId,
+        sessionId: "session:invoke-replay" as SessionId,
+        channelId: "channel:invoke-replay" as ChannelId,
+        turnId: "turn:blocked",
+        action: "InvokeTool",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: encodeJson(checkpointPayload),
+        payloadHash,
+        status: "Approved",
+        requestedAt: now,
+        decidedAt: now,
+        decidedBy: "user:cli:local",
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      } satisfies CheckpointRecord)
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:invoke-replay" as TurnId,
+        sessionId: "session:invoke-replay" as SessionId,
+        conversationId: "conversation:invoke-replay" as ConversationId,
+        agentId: "agent:invoke-replay" as AgentId,
+        channelId: "channel:invoke-replay",
+        createdAt: now,
+        inputTokens: 0,
+        content: "",
+        contentBlocks: [],
+        checkpointId,
+        invokeToolReplay: {
+          replayPayloadVersion: 1,
+          toolName: "shell_execute",
+          inputJson,
+          outputJson: encodeJson({
+            ok: true,
+            exitCode: 0,
+            stdout: "/tmp",
+            stderr: ""
+          }),
+          isError: false
+        }
+      }))
+
+      expect(result.accepted).toBe(true)
+      expect(result.assistantContentBlocks.some((b) => b.contentBlockType === "ToolUseBlock")).toBe(true)
+      expect(result.assistantContentBlocks.some((b) => b.contentBlockType === "ToolResultBlock")).toBe(true)
+
+      const turns = yield* sessionPort.listTurns("session:invoke-replay" as SessionId)
+      expect(turns).toHaveLength(2)
+      expect(turns[0].participantRole).toBe("AssistantRole")
+      expect(turns[0].message.contentBlocks.some((b) => b.contentBlockType === "ToolUseBlock")).toBe(true)
+      expect(turns[0].message.contentBlocks.some((b) => b.contentBlockType === "ToolResultBlock")).toBe(true)
+      expect(turns[1].participantRole).toBe("AssistantRole")
+      expect(turns[1].message.content).toContain("assistant")
+
+      const persistedSession = yield* sessionPort.getSession("session:invoke-replay" as SessionId)
+      const persistedAgent = yield* agentPort.get("agent:invoke-replay" as AgentId)
+      expect(persistedSession?.tokensUsed).toBe(0)
+      expect(persistedAgent?.tokensConsumed).toBe(0)
+
+      expect(capturedPrompts.length).toBeGreaterThan(0)
+      const decodedCaptured = decodeJson(capturedPrompts[0] ?? "")
+      expect(decodedCaptured._tag).toBe("Some")
+      const captured = (decodedCaptured._tag === "Some" ? decodedCaptured.value : {}) as {
+        prompt?: { content?: ReadonlyArray<{ role: string; content: unknown }> }
+      }
+      const promptMessages = captured.prompt?.content ?? []
+      const hasNonEmptyText = promptMessages.some((message) =>
+        Array.isArray(message.content)
+        && message.content.some(
+          (part) =>
+            typeof part === "object"
+            && part !== null
+            && "type" in part
+            && part.type === "text"
+            && "text" in part
+            && typeof part.text === "string"
+            && part.text.trim().length > 0
+        )
+      )
+      const hasEmptyText = promptMessages.some((message) =>
+        Array.isArray(message.content)
+        && message.content.some(
+          (part) =>
+            typeof part === "object"
+            && part !== null
+            && "type" in part
+            && part.type === "text"
+            && "text" in part
+            && typeof part.text === "string"
+            && part.text.trim().length === 0
+        )
+      )
+      expect(hasNonEmptyText).toBe(true)
+      expect(hasEmptyText).toBe(false)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ReadMemory replay rejects payload-hash tampering before persistence side effects", () => {
+    const dbPath = testDatabasePath("turn-readmemory-hash-tamper")
+    const layer = makeTurnProcessingLayer(dbPath, "RequireApproval")
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortTag
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-03-02T18:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:readmemory-tamper" as AgentId,
+        tokenBudget: 300,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:readmemory-tamper" as SessionId,
+        conversationId: "conversation:readmemory-tamper" as ConversationId,
+        tokenCapacity: 400,
+        tokensUsed: 0
+      }))
+
+      const checkpointId = "checkpoint:readmemory-hash-tamper" as CheckpointId
+      const checkpointPayload = {
+        replayPayloadVersion: 1 as const,
+        kind: "ReadMemory" as const,
+        content: "read secure memory",
+        contentBlocks: [{ contentBlockType: "TextBlock" as const, text: "read secure memory" }],
+        turnContext: {
+          agentId: "agent:readmemory-tamper",
+          sessionId: "session:readmemory-tamper",
+          conversationId: "conversation:readmemory-tamper",
+          channelId: "channel:readmemory-tamper",
+          turnId: "turn:blocked",
+          createdAt: DateTime.formatIso(now)
+        }
+      }
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:readmemory-tamper" as AgentId,
+        sessionId: "session:readmemory-tamper" as SessionId,
+        channelId: "channel:readmemory-tamper" as ChannelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: encodeJson(checkpointPayload),
+        payloadHash: "tampered-hash",
+        status: "Approved",
+        requestedAt: now,
+        decidedAt: now,
+        decidedBy: "user:cli:local",
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      } satisfies CheckpointRecord)
+
+      const failure = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:readmemory-tamper" as TurnId,
+        sessionId: "session:readmemory-tamper" as SessionId,
+        conversationId: "conversation:readmemory-tamper" as ConversationId,
+        agentId: "agent:readmemory-tamper" as AgentId,
+        channelId: "channel:readmemory-tamper",
+        createdAt: now,
+        inputTokens: 12,
+        content: "read secure memory",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "read secure memory" }],
+        checkpointId
+      })).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("TurnPolicyDenied")
+      if (failure._tag === "TurnPolicyDenied") {
+        expect(failure.reason).toBe("checkpoint_payload_mismatch")
+      }
+
+      const turns = yield* sessionPort.listTurns("session:readmemory-tamper" as SessionId)
+      expect(turns).toHaveLength(0)
+      const session = yield* sessionPort.getSession("session:readmemory-tamper" as SessionId)
+      expect(session?.tokensUsed).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ReadMemory replay rejects turn-context mismatches", () => {
+    const dbPath = testDatabasePath("turn-readmemory-context-mismatch")
+    const layer = makeTurnProcessingLayer(dbPath, "RequireApproval")
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortTag
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-03-02T19:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:readmemory-context" as AgentId,
+        tokenBudget: 300,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:readmemory-context" as SessionId,
+        conversationId: "conversation:readmemory-context" as ConversationId,
+        tokenCapacity: 400,
+        tokensUsed: 0
+      }))
+
+      const checkpointId = "checkpoint:readmemory-context-mismatch" as CheckpointId
+      const checkpointPayload = {
+        replayPayloadVersion: 1 as const,
+        kind: "ReadMemory" as const,
+        content: "expected request",
+        contentBlocks: [{ contentBlockType: "TextBlock" as const, text: "expected request" }],
+        turnContext: {
+          agentId: "agent:readmemory-context",
+          sessionId: "session:readmemory-context",
+          conversationId: "conversation:readmemory-context",
+          channelId: "channel:readmemory-context",
+          turnId: "turn:blocked",
+          createdAt: DateTime.formatIso(now)
+        }
+      }
+      const payloadHash = yield* makeCheckpointPayloadHash("ReadMemory", checkpointPayload)
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:readmemory-context" as AgentId,
+        sessionId: "session:readmemory-context" as SessionId,
+        channelId: "channel:readmemory-context" as ChannelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: encodeJson(checkpointPayload),
+        payloadHash,
+        status: "Approved",
+        requestedAt: now,
+        decidedAt: now,
+        decidedBy: "user:cli:local",
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      } satisfies CheckpointRecord)
+
+      const failure = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:readmemory-context" as TurnId,
+        sessionId: "session:readmemory-context" as SessionId,
+        conversationId: "conversation:readmemory-context" as ConversationId,
+        agentId: "agent:readmemory-context" as AgentId,
+        channelId: "channel:readmemory-context",
+        createdAt: now,
+        inputTokens: 12,
+        content: "different request",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "different request" }],
+        checkpointId
+      })).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("TurnPolicyDenied")
+      if (failure._tag === "TurnPolicyDenied") {
+        expect(failure.reason).toBe("checkpoint_payload_mismatch")
+      }
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("InvokeTool replay rejects payload-hash tampering", () => {
+    const dbPath = testDatabasePath("turn-invoketool-hash-tamper")
+    const layer = makeTurnProcessingLayer(dbPath, "Allow")
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortTag
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-03-02T20:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:invoke-tamper" as AgentId,
+        tokenBudget: 500,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:invoke-tamper" as SessionId,
+        conversationId: "conversation:invoke-tamper" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const inputJson = encodeJson({ command: "pwd" })
+      const checkpointId = "checkpoint:invoke-hash-tamper" as CheckpointId
+      const checkpointPayload = {
+        replayPayloadVersion: 1 as const,
+        kind: "InvokeTool" as const,
+        toolName: "shell_execute",
+        inputJson,
+        turnContext: {
+          agentId: "agent:invoke-tamper",
+          sessionId: "session:invoke-tamper",
+          conversationId: "conversation:invoke-tamper",
+          channelId: "channel:invoke-tamper",
+          turnId: "turn:blocked",
+          createdAt: DateTime.formatIso(now)
+        }
+      }
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:invoke-tamper" as AgentId,
+        sessionId: "session:invoke-tamper" as SessionId,
+        channelId: "channel:invoke-tamper" as ChannelId,
+        turnId: "turn:blocked",
+        action: "InvokeTool",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: encodeJson(checkpointPayload),
+        payloadHash: "tampered-invoke-hash",
+        status: "Approved",
+        requestedAt: now,
+        decidedAt: now,
+        decidedBy: "user:cli:local",
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      } satisfies CheckpointRecord)
+
+      const failure = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:invoke-tamper" as TurnId,
+        sessionId: "session:invoke-tamper" as SessionId,
+        conversationId: "conversation:invoke-tamper" as ConversationId,
+        agentId: "agent:invoke-tamper" as AgentId,
+        channelId: "channel:invoke-tamper",
+        createdAt: now,
+        inputTokens: 0,
+        content: "",
+        contentBlocks: [],
+        checkpointId,
+        invokeToolReplay: {
+          replayPayloadVersion: 1,
+          toolName: "shell_execute",
+          inputJson,
+          outputJson: encodeJson({ ok: true, exitCode: 0, stdout: "/tmp", stderr: "" }),
+          isError: false
+        }
+      })).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("TurnPolicyDenied")
+      if (failure._tag === "TurnPolicyDenied") {
+        expect(failure.reason).toBe("checkpoint_payload_mismatch")
+      }
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("accepted turn calls appendTurn with correct IDs and turn", () => {
     const dbPath = testDatabasePath("turn-transcript-append")
     const capturedAppends: Array<{ agentId: string; sessionId: string; turn: unknown }> = []
@@ -993,6 +1462,9 @@ describe("TurnProcessingWorkflow e2e", () => {
   })
 })
 
+const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
+const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+
 const makeTurnProcessingLayer = (
   dbPath: string,
   forcedDecision: AuthorizationDecision = "Allow",
@@ -1228,13 +1700,15 @@ const makeTurnProcessingLayer = (
       agentStateTagLayer,
       sessionTurnTagLayer,
       governanceTagLayer,
-      memoryPortTagLayer
+      memoryPortTagLayer,
+      checkpointPortTagLayer
     )),
     Layer.provideMerge(Layer.mergeAll(
       agentStateSqliteLayer,
       sessionTurnSqliteLayer,
       governanceSqliteLayer,
-      memoryPortSqliteLayer
+      memoryPortSqliteLayer,
+      checkpointPortSqliteLayer
     )),
     Layer.provideMerge(clusterLayer),
     Layer.provideMerge(sqlInfrastructureLayer)
@@ -1272,7 +1746,13 @@ const makeTurnPayload = (overrides: Partial<ProcessTurnPayload>): ProcessTurnPay
   content: overrides.content ?? "hello",
   contentBlocks: overrides.contentBlocks ?? [{ contentBlockType: "TextBlock", text: "hello" }],
   createdAt: overrides.createdAt ?? instant("2026-02-24T12:00:00.000Z"),
-  inputTokens: overrides.inputTokens ?? 10
+  inputTokens: overrides.inputTokens ?? 10,
+  ...(overrides.checkpointId !== undefined ? { checkpointId: overrides.checkpointId } : {}),
+  ...(overrides.invokeToolReplay !== undefined ? { invokeToolReplay: overrides.invokeToolReplay } : {}),
+  ...(overrides.modelOverride !== undefined ? { modelOverride: overrides.modelOverride } : {}),
+  ...(overrides.generationConfigOverride !== undefined
+    ? { generationConfigOverride: overrides.generationConfigOverride }
+    : {})
 })
 
 const makeMockLanguageModel = (
@@ -1287,7 +1767,7 @@ const makeMockLanguageModel = (
   return {
     generateText: (options: any) => {
       if (capturedPrompts) {
-        capturedPrompts.push(JSON.stringify(options))
+        capturedPrompts.push(encodeJson(options))
       }
       if (mockOptions?.failWithErrorMessage) {
         return Effect.fail({

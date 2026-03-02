@@ -1,7 +1,7 @@
 import { AtomRegistry } from "effect/unstable/reactivity"
 import { describe, expect, it } from "vitest"
 import { messagesAtom, toolEventsAtom } from "../src/atoms/session.js"
-import { dispatchEvent } from "../src/hooks/useSendMessage.js"
+import { _test, dispatchEvent } from "../src/hooks/useSendMessage.js"
 
 describe("dispatchEvent", () => {
   function makeRegistry() {
@@ -136,6 +136,18 @@ describe("dispatchEvent", () => {
     const last = registry.get(messagesAtom)[0]!
     expect(last.status).toBe("failed")
     expect(last.errorMessage).toBe("PROVIDER_ERROR: Rate limited")
+  })
+
+  it("maps checkpoint_payload_invalid failures to actionable UI text", () => {
+    expect(_test.toFailureDisplayMessage("checkpoint_payload_invalid", "raw")).toContain(
+      "Checkpoint payload is invalid or stale"
+    )
+  })
+
+  it("maps checkpoint_transition_failed failures to actionable UI text", () => {
+    expect(_test.toFailureDisplayMessage("checkpoint_transition_failed", "raw")).toContain(
+      "replay could not be finalized"
+    )
   })
 
   it("tool.call appends tool event", () => {

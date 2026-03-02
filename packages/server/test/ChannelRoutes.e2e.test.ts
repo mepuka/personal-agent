@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
 import type { AgentStatePort, ChannelPort, CheckpointPort, CheckpointRecord, SessionTurnPort } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { HttpRouter } from "effect/unstable/http"
@@ -23,6 +23,7 @@ import { layer as CLIAdapterEntityLayer } from "../src/entities/CLIAdapterEntity
 import { layer as SessionEntityLayer } from "../src/entities/SessionEntity.js"
 import { healthLayer as HealthRoutesLayer, layer as ChannelRoutesLayer } from "../src/gateway/ChannelRoutes.js"
 import { layer as CheckpointRoutesLayer } from "../src/gateway/CheckpointRoutes.js"
+import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
@@ -120,6 +121,8 @@ const makeMockTurnProcessingRuntime = () =>
       )
     }
   } as any)
+
+const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 // ---------------------------------------------------------------------------
 // App layer (everything except HTTP server) — used with Layer.build pattern
@@ -316,7 +319,7 @@ describe("ChannelRoutes e2e", () => {
         _tag: "Event",
         event: event.type,
         id: String(event.sequence),
-        data: JSON.stringify(event)
+        data: encodeJson(event)
       })
 
       yield* HttpRouter.addAll([
@@ -471,7 +474,86 @@ describe("ChannelRoutes e2e", () => {
       const sessionId = `session:${channelId}` as SessionId
       const conversationId = `conv:${channelId}` as ConversationId
       const requestedAt = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
-      const payloadJson = JSON.stringify({
+      const replayPayload = {
+        replayPayloadVersion: 1,
+        kind: "ReadMemory",
+        content: "replay approved request",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "replay approved request" }],
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-02-28T00:00:00.000Z"
+        }
+      } as const
+      const payloadJson = encodeJson(replayPayload)
+      const payloadHash = yield* makeCheckpointPayloadHash("ReadMemory", replayPayload)
+
+      const checkpointRecord: CheckpointRecord = {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson,
+        payloadHash,
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      }
+      yield* seedCheckpoint(dbPath, checkpointRecord)
+
+      const decideReq = yield* HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
+        HttpClientRequest.bodyJson({ decision: "Approved", decidedBy: "user:cli:local" })
+      )
+      const decideResponse = yield* client.execute(decideReq)
+      const decideBody = yield* decideResponse.text
+      expect(decideResponse.status).toBe(200)
+
+      expect(decideBody).toContain("turn.completed")
+      const getCheckpointResponse = yield* client.get(`/checkpoints/${checkpointId}`)
+      expect(getCheckpointResponse.status).toBe(200)
+      const persisted = (yield* getCheckpointResponse.json) as Record<string, unknown>
+      expect(persisted.status).toBe("Consumed")
+      expect(persisted.decidedBy).toBe("user:cli:local")
+      expect(persisted.consumedBy).toBe("user:cli:local")
+      expect(typeof persisted.consumedAt === "string" && persisted.consumedAt.length > 0).toBe(true)
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("checkpoint decide returns 400 for malformed JSON payload", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-decide-invalid-json")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const payloadJson = encodeJson({
+        replayPayloadVersion: 1,
         kind: "ReadMemory",
         content: "replay approved request",
         contentBlocks: [{ contentBlockType: "TextBlock", text: "replay approved request" }],
@@ -485,7 +567,7 @@ describe("ChannelRoutes e2e", () => {
         }
       })
 
-      const checkpointRecord: CheckpointRecord = {
+      yield* seedCheckpoint(dbPath, {
         checkpointId,
         agentId: "agent:bootstrap" as any,
         sessionId,
@@ -503,24 +585,340 @@ describe("ChannelRoutes e2e", () => {
         consumedAt: null,
         consumedBy: null,
         expiresAt: null
-      }
-      yield* seedCheckpoint(dbPath, checkpointRecord)
+      })
+
+      const decideReq = HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
+        HttpClientRequest.bodyText("{\"decision\":\"Approved\",", "application/json")
+      )
+      const decideResponse = yield* client.execute(decideReq)
+      expect(decideResponse.status).toBe(400)
+      const body = (yield* decideResponse.json) as Record<string, unknown>
+      expect(body.error).toBe("BadRequest")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("checkpoint decide returns 400 when decidedBy is blank after trim", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-decide-blank-decider")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const payloadJson = encodeJson({
+        replayPayloadVersion: 1,
+        kind: "ReadMemory",
+        content: "replay approved request",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "replay approved request" }],
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-02-28T00:00:00.000Z"
+        }
+      })
+
+      yield* seedCheckpoint(dbPath, {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson,
+        payloadHash: "irrelevant-for-mock-runtime",
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
 
       const decideReq = yield* HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
-        HttpClientRequest.bodyJson({ decision: "Approved", decidedBy: "user:cli:local" })
+        HttpClientRequest.bodyJson({ decision: "Approved", decidedBy: "   " })
+      )
+      const decideResponse = yield* client.execute(decideReq)
+      expect(decideResponse.status).toBe(400)
+      const body = (yield* decideResponse.json) as Record<string, unknown>
+      expect(body.error).toBe("BadRequest")
+      expect(String(body.message)).toContain("decidedBy must be a non-empty string")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("checkpoint decide Rejected returns ack and persists Rejected status", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-decide-rejected")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      yield* seedCheckpoint(dbPath, {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson: encodeJson({
+          replayPayloadVersion: 1,
+          kind: "ReadMemory",
+          content: "x",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "x" }],
+          turnContext: {
+            agentId: "agent:bootstrap",
+            sessionId,
+            conversationId,
+            channelId,
+            turnId: "turn:blocked",
+            createdAt: "2026-03-02T00:00:00.000Z"
+          }
+        }),
+        payloadHash: "irrelevant-for-mock-runtime",
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      const decideReq = yield* HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
+        HttpClientRequest.bodyJson({ decision: "Rejected", decidedBy: "user:cli:local" })
       )
       const decideResponse = yield* client.execute(decideReq)
       expect(decideResponse.status).toBe(200)
-      const decideBody = yield* decideResponse.text
+      const body = (yield* decideResponse.json) as Record<string, unknown>
+      expect(body.ok).toBe(true)
 
-      expect(decideBody).toContain("turn.completed")
-      const getCheckpointResponse = yield* client.get(`/checkpoints/${checkpointId}`)
-      expect(getCheckpointResponse.status).toBe(200)
-      const persisted = (yield* getCheckpointResponse.json) as Record<string, unknown>
-      expect(persisted.status).toBe("Consumed")
+      const persistedResponse = yield* client.get(`/checkpoints/${checkpointId}`)
+      expect(persistedResponse.status).toBe(200)
+      const persisted = (yield* persistedResponse.json) as Record<string, unknown>
+      expect(persisted.status).toBe("Rejected")
       expect(persisted.decidedBy).toBe("user:cli:local")
-      expect(persisted.consumedBy).toBe("user:cli:local")
-      expect(typeof persisted.consumedAt === "string" && persisted.consumedAt.length > 0).toBe(true)
+      expect(persisted.consumedAt).toBeNull()
+      expect(persisted.consumedBy).toBeNull()
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("checkpoint decide Deferred returns ack and persists Deferred status", () => {
+    const dbPath = testDatabasePath("e2e-checkpoint-decide-deferred")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      yield* seedCheckpoint(dbPath, {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson: encodeJson({
+          replayPayloadVersion: 1,
+          kind: "ReadMemory",
+          content: "x",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "x" }],
+          turnContext: {
+            agentId: "agent:bootstrap",
+            sessionId,
+            conversationId,
+            channelId,
+            turnId: "turn:blocked",
+            createdAt: "2026-03-02T00:00:00.000Z"
+          }
+        }),
+        payloadHash: "irrelevant-for-mock-runtime",
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      const decideReq = yield* HttpClientRequest.post(`/checkpoints/${checkpointId}/decide`).pipe(
+        HttpClientRequest.bodyJson({ decision: "Deferred", decidedBy: "user:cli:local" })
+      )
+      const decideResponse = yield* client.execute(decideReq)
+      expect(decideResponse.status).toBe(200)
+      const body = (yield* decideResponse.json) as Record<string, unknown>
+      expect(body.ok).toBe(true)
+
+      const persistedResponse = yield* client.get(`/checkpoints/${checkpointId}`)
+      expect(persistedResponse.status).toBe(200)
+      const persisted = (yield* persistedResponse.json) as Record<string, unknown>
+      expect(persisted.status).toBe("Deferred")
+      expect(persisted.decidedBy).toBe("user:cli:local")
+      expect(persisted.consumedAt).toBeNull()
+      expect(persisted.consumedBy).toBeNull()
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("DELETE /channels/:channelId clears session history and pending checkpoints", () => {
+    const dbPath = testDatabasePath("e2e-delete-channel")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const requestedAt = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      yield* client.execute(createReq).pipe(Effect.scoped)
+
+      const sendReq = yield* HttpClientRequest.post(`/channels/${channelId}/messages`).pipe(
+        HttpClientRequest.bodyJson({ content: "persist this turn" })
+      )
+      yield* client.execute(sendReq).pipe(
+        Effect.flatMap((response) => response.text)
+      )
+
+      yield* seedCheckpoint(dbPath, {
+        checkpointId,
+        agentId: "agent:bootstrap" as any,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "approval required",
+        payloadJson: encodeJson({
+          replayPayloadVersion: 1,
+          kind: "ReadMemory",
+          content: "pwd",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "pwd" }],
+          turnContext: {
+            agentId: "agent:bootstrap",
+            sessionId,
+            conversationId,
+            channelId,
+            turnId: "turn:blocked",
+            createdAt: "2026-03-02T00:00:00.000Z"
+          }
+        }),
+        payloadHash: "delete-route-checkpoint-hash",
+        status: "Pending",
+        requestedAt,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      const deleteResponse = yield* client.execute(
+        HttpClientRequest.delete(`/channels/${channelId}`)
+      )
+      expect(deleteResponse.status).toBe(200)
+      const deleteBody = (yield* deleteResponse.json) as Record<string, unknown>
+      expect(deleteBody.ok).toBe(true)
+
+      const deletedHistoryResponse = yield* client.get(`/channels/${channelId}/history`)
+      expect(deletedHistoryResponse.status).toBe(404)
+
+      const pendingResponse = yield* client.get("/checkpoints/pending?agentId=agent:bootstrap")
+      expect(pendingResponse.status).toBe(200)
+      const pendingBody = (yield* pendingResponse.json) as {
+        readonly items: ReadonlyArray<{ readonly checkpointId: string }>
+      }
+      expect(pendingBody.items.some((item) => item.checkpointId === checkpointId)).toBe(false)
+
+      const channelsResponse = yield* client.get("/channels?agentId=agent:bootstrap")
+      expect(channelsResponse.status).toBe(200)
+      const channelsBody = (yield* channelsResponse.json) as {
+        readonly items: ReadonlyArray<{ readonly channelId: string }>
+      }
+      expect(channelsBody.items.some((item) => item.channelId === channelId)).toBe(false)
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("DELETE /channels/:channelId returns 404 for unknown channel", () => {
+    const dbPath = testDatabasePath("e2e-delete-channel-notfound")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const response = yield* client.execute(
+        HttpClientRequest.delete(`/channels/${channelId}`)
+      )
+      expect(response.status).toBe(404)
+      const body = (yield* response.json) as Record<string, unknown>
+      expect(body.error).toBe("ChannelNotFound")
+      expect(body.channelId).toBe(channelId)
     }).pipe(
       Effect.provide(NodeHttpServer.layerTest),
       Effect.ensuring(cleanupDatabase(dbPath))

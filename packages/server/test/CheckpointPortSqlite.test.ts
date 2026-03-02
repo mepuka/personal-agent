@@ -149,6 +149,47 @@ describe("CheckpointPortSqlite", () => {
     )
   })
 
+  it.effect("deleteByChannel removes checkpoints only for selected channel", () => {
+    const dbPath = testDatabasePath("delete-by-channel")
+    const layer = makeCheckpointLayer(dbPath)
+
+    const channelA1 = makeCheckpointRecord({
+      channelId: "channel:a" as ChannelId,
+      sessionId: "session:a" as SessionId
+    })
+    const channelA2 = makeCheckpointRecord({
+      channelId: "channel:a" as ChannelId,
+      sessionId: "session:a" as SessionId
+    })
+    const channelB1 = makeCheckpointRecord({
+      channelId: "channel:b" as ChannelId,
+      sessionId: "session:b" as SessionId
+    })
+
+    return Effect.gen(function*() {
+      const port = yield* CheckpointPortSqlite
+
+      yield* port.create(channelA1)
+      yield* port.create(channelA2)
+      yield* port.create(channelB1)
+
+      yield* port.deleteByChannel("channel:a" as ChannelId)
+      yield* port.deleteByChannel("channel:a" as ChannelId)
+
+      const deletedA1 = yield* port.get(channelA1.checkpointId)
+      const deletedA2 = yield* port.get(channelA2.checkpointId)
+      const keptB1 = yield* port.get(channelB1.checkpointId)
+
+      expect(deletedA1).toBeNull()
+      expect(deletedA2).toBeNull()
+      expect(keptB1).not.toBeNull()
+      expect(keptB1!.channelId).toBe("channel:b")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.live("expiry behavior — lazy expiry on get", () => {
     const dbPath = testDatabasePath("expiry-lazy")
     const layer = makeCheckpointLayer(dbPath)
@@ -268,6 +309,112 @@ describe("CheckpointPortSqlite", () => {
       expect(fetched!.status).toBe("Consumed")
       expect(fetched!.decidedBy).toBe("human:approver")
       expect(fetched!.consumedBy).toBe("agent:executor")
+      expect(fetched!.consumedAt).not.toBeNull()
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("explicit transition methods — decidePending then consumeApproved", () => {
+    const dbPath = testDatabasePath("explicit-transition-methods")
+    const layer = makeCheckpointLayer(dbPath)
+    const record = makeCheckpointRecord()
+
+    return Effect.gen(function*() {
+      const port = yield* CheckpointPortSqlite
+
+      yield* port.create(record)
+      yield* port.decidePending(
+        record.checkpointId,
+        "Approved",
+        "human:approver",
+        instant("2026-02-27T12:05:00.000Z")
+      )
+      yield* port.consumeApproved(
+        record.checkpointId,
+        "agent:executor",
+        instant("2026-02-27T12:06:00.000Z")
+      )
+
+      const fetched = yield* port.get(record.checkpointId)
+      expect(fetched).not.toBeNull()
+      expect(fetched!.status).toBe("Consumed")
+      expect(fetched!.decidedBy).toBe("human:approver")
+      expect(fetched!.consumedBy).toBe("agent:executor")
+      expect(fetched!.consumedAt).not.toBeNull()
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("race — concurrent decidePending yields one success and one CheckpointAlreadyDecided", () => {
+    const dbPath = testDatabasePath("race-decide")
+    const layer = makeCheckpointLayer(dbPath)
+    const record = makeCheckpointRecord()
+    const decidedAt = instant("2026-02-27T12:05:00.000Z")
+
+    return Effect.gen(function*() {
+      const port = yield* CheckpointPortSqlite
+      yield* port.create(record)
+
+      const outcomes = yield* Effect.all([
+        port.decidePending(record.checkpointId, "Approved", "human:a", decidedAt).pipe(
+          Effect.as("ok:a"),
+          Effect.catch((error) => Effect.succeed(error._tag))
+        ),
+        port.decidePending(record.checkpointId, "Approved", "human:b", decidedAt).pipe(
+          Effect.as("ok:b"),
+          Effect.catch((error) => Effect.succeed(error._tag))
+        )
+      ], { concurrency: 2 })
+
+      expect(outcomes.filter((value) => value.startsWith("ok:"))).toHaveLength(1)
+      expect(outcomes).toContain("CheckpointAlreadyDecided")
+
+      const fetched = yield* port.get(record.checkpointId)
+      expect(fetched).not.toBeNull()
+      expect(fetched!.status).toBe("Approved")
+      expect(["human:a", "human:b"]).toContain(fetched!.decidedBy)
+      expect(fetched!.consumedAt).toBeNull()
+      expect(fetched!.consumedBy).toBeNull()
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("race — concurrent consumeApproved yields one success and one CheckpointAlreadyDecided", () => {
+    const dbPath = testDatabasePath("race-consume")
+    const layer = makeCheckpointLayer(dbPath)
+    const record = makeCheckpointRecord()
+    const decidedAt = instant("2026-02-27T12:05:00.000Z")
+    const consumedAt = instant("2026-02-27T12:06:00.000Z")
+
+    return Effect.gen(function*() {
+      const port = yield* CheckpointPortSqlite
+      yield* port.create(record)
+      yield* port.decidePending(record.checkpointId, "Approved", "human:approver", decidedAt)
+
+      const outcomes = yield* Effect.all([
+        port.consumeApproved(record.checkpointId, "agent:a", consumedAt).pipe(
+          Effect.as("ok:a"),
+          Effect.catch((error) => Effect.succeed(error._tag))
+        ),
+        port.consumeApproved(record.checkpointId, "agent:b", consumedAt).pipe(
+          Effect.as("ok:b"),
+          Effect.catch((error) => Effect.succeed(error._tag))
+        )
+      ], { concurrency: 2 })
+
+      expect(outcomes.filter((value) => value.startsWith("ok:"))).toHaveLength(1)
+      expect(outcomes).toContain("CheckpointAlreadyDecided")
+
+      const fetched = yield* port.get(record.checkpointId)
+      expect(fetched).not.toBeNull()
+      expect(fetched!.status).toBe("Consumed")
+      expect(["agent:a", "agent:b"]).toContain(fetched!.consumedBy)
       expect(fetched!.consumedAt).not.toBeNull()
     }).pipe(
       Effect.provide(layer),

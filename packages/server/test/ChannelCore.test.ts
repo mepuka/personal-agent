@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, CheckpointId, ConversationId, MessageId, SessionId, TurnId } from "@template/domain/ids"
 import type { AgentStatePort, ChannelPort, CheckpointPort, CheckpointRecord, SessionTurnPort, TurnRecord } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -13,6 +13,7 @@ import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ChannelCore } from "../src/ChannelCore.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
+import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
@@ -126,6 +127,8 @@ const makeMockTurnProcessingRuntime = () =>
     })
   )
 
+const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
+
 // ---------------------------------------------------------------------------
 // Test layer — SQLite-backed ports + mock runtime + ChannelCore
 // ---------------------------------------------------------------------------
@@ -142,7 +145,12 @@ const mockAgentConfigLayer = AgentConfig.layerFromParsed({
   server: { port: 3000 }
 })
 
-const makeTestLayer = (dbPath: string) => {
+const makeTestLayer = (
+  dbPath: string,
+  options?: {
+    readonly toolRegistryOverride?: ServiceMap.Service.Shape<typeof ToolRegistry>
+  }
+) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
@@ -190,11 +198,14 @@ const makeTestLayer = (dbPath: string) => {
   const mockRuntimeLayer = makeMockTurnProcessingRuntime().pipe(
     Layer.provide(sessionTurnTagLayer)
   )
-  const toolRegistryStubLayer = Layer.succeed(ToolRegistry, {
-    makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in ChannelCore tests"),
-    executeApprovedCheckpointTool: () =>
-      Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in ChannelCore tests")
-  } as any)
+  const toolRegistryStubLayer = Layer.succeed(
+    ToolRegistry,
+    options?.toolRegistryOverride ?? ({
+      makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in ChannelCore tests"),
+      executeApprovedCheckpointTool: () =>
+        Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in ChannelCore tests")
+    } as any)
+  )
 
   // Provide a mock Sharding that does NOT have makeClient,
   // so ChannelCore falls back to the direct TurnProcessingRuntime.
@@ -562,6 +573,98 @@ describe("ChannelCore", () => {
     )
   })
 
+  it.effect("deleteChannel clears channel, active session turns, and checkpoints", () => {
+    const dbPath = testDatabasePath("core-delete-channel")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const channelPort = yield* ChannelPortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const checkpointPort = yield* CheckpointPortSqlite
+      const channelId = "channel:core-delete" as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const payload = yield* core.buildTurnPayload({
+        channelId,
+        content: "message before delete",
+        contentBlocks: [{ contentBlockType: "TextBlock", text: "message before delete" }],
+        userId: "user:cli:local"
+      })
+      yield* core.processTurn(payload).pipe(Stream.runCollect)
+
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const now = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:bootstrap" as AgentId,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: encodeJson({
+          replayPayloadVersion: 1,
+          kind: "ReadMemory",
+          content: "ls -la",
+          contentBlocks: [{ contentBlockType: "TextBlock", text: "ls -la" }],
+          turnContext: {
+            agentId: "agent:bootstrap",
+            sessionId,
+            conversationId,
+            channelId,
+            turnId: "turn:blocked",
+            createdAt: "2026-03-02T00:00:00.000Z"
+          }
+        }),
+        payloadHash: "checkpoint-delete-hash",
+        status: "Pending",
+        requestedAt: now,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      yield* core.deleteChannel(channelId)
+
+      const deletedChannel = yield* channelPort.get(channelId)
+      const deletedSession = yield* sessionPort.getSession(sessionId)
+      const deletedTurns = yield* sessionPort.listTurns(sessionId)
+      const deletedCheckpoint = yield* checkpointPort.get(checkpointId)
+
+      expect(deletedChannel).toBeNull()
+      expect(deletedSession).toBeNull()
+      expect(deletedTurns).toEqual([])
+      expect(deletedCheckpoint).toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("deleteChannel fails with ChannelNotFound when channel does not exist", () => {
+    const dbPath = testDatabasePath("core-delete-notfound")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const error = yield* core.deleteChannel("channel:missing" as ChannelId).pipe(Effect.flip)
+      expect(error._tag).toBe("ChannelNotFound")
+      expect(error.channelId).toBe("channel:missing")
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("processTurn streams events using direct runtime fallback in test", () => {
     const dbPath = testDatabasePath("core-process")
     return Effect.gen(function*() {
@@ -612,7 +715,8 @@ describe("ChannelCore", () => {
 
       const sessionId = `session:${channelId}` as SessionId
       const conversationId = `conv:${channelId}` as ConversationId
-      const payloadJson = JSON.stringify({
+      const replayPayload = {
+        replayPayloadVersion: 1,
         kind: "ReadMemory",
         content: "run ls -la",
         contentBlocks: [{ contentBlockType: "TextBlock", text: "run ls -la" }],
@@ -624,7 +728,9 @@ describe("ChannelCore", () => {
           turnId: "turn:blocked",
           createdAt: "2026-02-28T00:00:00.000Z"
         }
-      })
+      } as const
+      const payloadJson = encodeJson(replayPayload)
+      const payloadHash = yield* makeCheckpointPayloadHash("ReadMemory", replayPayload)
 
       const checkpointRecord: CheckpointRecord = {
         checkpointId,
@@ -636,7 +742,7 @@ describe("ChannelCore", () => {
         policyId: null,
         reason: "requires approval",
         payloadJson,
-        payloadHash: "read-memory-hash",
+        payloadHash,
         status: "Pending",
         requestedAt: now,
         decidedAt: null,
@@ -669,6 +775,274 @@ describe("ChannelCore", () => {
       expect(persisted!.consumedAt).not.toBeNull()
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("approved checkpoint replay is retryable while checkpoint is still Approved and unconsumed", () => {
+    const dbPath = testDatabasePath("core-checkpoint-retry-approved")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const checkpointPort = yield* CheckpointPortSqlite
+      const channelId = "channel:core-checkpoint-retry" as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const now = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
+
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const sessionId = `session:${channelId}` as SessionId
+      const checkpointRecord: CheckpointRecord = {
+        checkpointId,
+        agentId: "agent:bootstrap" as AgentId,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "ReadMemory",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson: "{not-valid-json",
+        payloadHash: "read-memory-hash",
+        status: "Pending",
+        requestedAt: now,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      }
+      yield* checkpointPort.create(checkpointRecord)
+
+      const firstDecision = yield* core.decideCheckpoint({
+        checkpointId,
+        decision: "Approved",
+        decidedBy: "user:cli:local"
+      })
+
+      expect(firstDecision.kind).toBe("stream")
+      if (firstDecision.kind !== "stream") {
+        return
+      }
+
+      const firstFailure = yield* firstDecision.stream.pipe(Stream.runCollect, Effect.flip)
+      expect(firstFailure._tag).toBe("TurnModelFailure")
+      if (firstFailure._tag === "TurnModelFailure") {
+        expect(firstFailure.reason).toBe("checkpoint_payload_invalid")
+      }
+
+      const persistedAfterFirstReplay = yield* checkpointPort.get(checkpointId)
+      expect(persistedAfterFirstReplay).not.toBeNull()
+      expect(persistedAfterFirstReplay!.status).toBe("Approved")
+      expect(persistedAfterFirstReplay!.consumedAt).toBeNull()
+
+      const secondDecision = yield* core.decideCheckpoint({
+        checkpointId,
+        decision: "Approved",
+        decidedBy: "user:cli:local"
+      })
+
+      expect(secondDecision.kind).toBe("stream")
+      if (secondDecision.kind !== "stream") {
+        return
+      }
+
+      const secondFailure = yield* secondDecision.stream.pipe(Stream.runCollect, Effect.flip)
+      expect(secondFailure._tag).toBe("TurnModelFailure")
+      if (secondFailure._tag === "TurnModelFailure") {
+        expect(secondFailure.reason).toBe("checkpoint_payload_invalid")
+      }
+
+      const persistedAfterSecondReplay = yield* checkpointPort.get(checkpointId)
+      expect(persistedAfterSecondReplay).not.toBeNull()
+      expect(persistedAfterSecondReplay!.status).toBe("Approved")
+      expect(persistedAfterSecondReplay!.consumedAt).toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("InvokeTool replay payload must include supported replayPayloadVersion", () => {
+    const dbPath = testDatabasePath("core-checkpoint-invoke-version")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const checkpointPort = yield* CheckpointPortSqlite
+      const channelId = "channel:core-checkpoint-invoke-version" as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const now = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const payloadJson = encodeJson({
+        // Intentionally missing replayPayloadVersion
+        kind: "InvokeTool",
+        toolName: "shell_execute",
+        inputJson: encodeJson({ command: "pwd" }),
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-03-02T00:00:00.000Z"
+        }
+      })
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:bootstrap" as AgentId,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "InvokeTool",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson,
+        payloadHash: "invoke-tool-hash",
+        status: "Pending",
+        requestedAt: now,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      const decision = yield* core.decideCheckpoint({
+        checkpointId,
+        decision: "Approved",
+        decidedBy: "user:cli:local"
+      })
+
+      expect(decision.kind).toBe("stream")
+      if (decision.kind !== "stream") {
+        return
+      }
+
+      const failure = yield* decision.stream.pipe(Stream.runCollect, Effect.flip)
+      expect(failure._tag).toBe("TurnModelFailure")
+      if (failure._tag === "TurnModelFailure") {
+        expect(failure.reason).toBe("checkpoint_payload_invalid")
+      }
+
+      const persisted = yield* checkpointPort.get(checkpointId)
+      expect(persisted).not.toBeNull()
+      expect(persisted!.status).toBe("Approved")
+      expect(persisted!.consumedAt).toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("InvokeTool replay tool-execution failure keeps checkpoint Approved for retry", () => {
+    const dbPath = testDatabasePath("core-checkpoint-invoke-tool-failure")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const checkpointPort = yield* CheckpointPortSqlite
+      const channelId = "channel:core-checkpoint-invoke-fail" as ChannelId
+      const checkpointId = `checkpoint:${crypto.randomUUID()}` as CheckpointId
+      const now = DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z"))
+
+      yield* core.initializeChannel({
+        channelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const sessionId = `session:${channelId}` as SessionId
+      const conversationId = `conv:${channelId}` as ConversationId
+      const replayPayload = {
+        replayPayloadVersion: 1,
+        kind: "InvokeTool",
+        toolName: "shell_execute",
+        inputJson: encodeJson({ command: "pwd" }),
+        turnContext: {
+          agentId: "agent:bootstrap",
+          sessionId,
+          conversationId,
+          channelId,
+          turnId: "turn:blocked",
+          createdAt: "2026-03-02T00:00:00.000Z"
+        }
+      } as const
+      const payloadJson = encodeJson(replayPayload)
+      const payloadHash = yield* makeCheckpointPayloadHash("InvokeTool", replayPayload)
+
+      yield* checkpointPort.create({
+        checkpointId,
+        agentId: "agent:bootstrap" as AgentId,
+        sessionId,
+        channelId,
+        turnId: "turn:blocked",
+        action: "InvokeTool",
+        policyId: null,
+        reason: "requires approval",
+        payloadJson,
+        payloadHash,
+        status: "Pending",
+        requestedAt: now,
+        decidedAt: null,
+        decidedBy: null,
+        consumedAt: null,
+        consumedBy: null,
+        expiresAt: null
+      })
+
+      const decision = yield* core.decideCheckpoint({
+        checkpointId,
+        decision: "Approved",
+        decidedBy: "user:cli:local"
+      })
+
+      expect(decision.kind).toBe("stream")
+      if (decision.kind !== "stream") {
+        return
+      }
+
+      const failure = yield* decision.stream.pipe(Stream.runCollect, Effect.flip)
+      expect(failure._tag).toBe("TurnModelFailure")
+      if (failure._tag === "TurnModelFailure") {
+        expect(failure.reason).toBe("checkpoint_tool_replay_failed:shell_execute")
+      }
+
+      const persisted = yield* checkpointPort.get(checkpointId)
+      expect(persisted).not.toBeNull()
+      expect(persisted!.status).toBe("Approved")
+      expect(persisted!.consumedAt).toBeNull()
+      expect(persisted!.consumedBy).toBeNull()
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath, {
+        toolRegistryOverride: {
+          makeToolkit: () => Effect.die("ToolRegistry.makeToolkit not used in this test"),
+          executeApprovedCheckpointTool: () =>
+            Effect.succeed({
+              turnId: "turn:replay:tool-failure" as TurnId,
+              sessionId: "session:unused" as SessionId,
+              createdAt: DateTime.fromDateUnsafe(new Date("2026-03-02T00:00:00.000Z")),
+              replayPayloadVersion: 1,
+              toolName: "shell_execute",
+              inputJson: encodeJson({ command: "pwd" }),
+              outputJson: encodeJson({
+                errorCode: "ToolInvocationError",
+                message: "shell execution failed"
+              }),
+              isError: true
+            })
+        } as any
+      })),
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
