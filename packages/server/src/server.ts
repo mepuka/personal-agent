@@ -3,6 +3,7 @@ import type {
   AgentStatePort,
   ChannelPort,
   CheckpointPort,
+  CompactionCheckpointPort,
   GovernancePort,
   IntegrationPort,
   MemoryPort,
@@ -27,6 +28,7 @@ import { FilePathPolicy } from "./tools/file/FilePathPolicy.js"
 import { FileReadTracker } from "./tools/file/FileReadTracker.js"
 import { FileRuntime } from "./tools/file/FileRuntime.js"
 import { ToolExecution } from "./tools/ToolExecution.js"
+import { SessionIdleMonitor } from "./memory/SessionIdleMonitor.js"
 import { SubroutineCatalog } from "./memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "./memory/SubroutineControlPlane.js"
 import { SubroutineRunner } from "./memory/SubroutineRunner.js"
@@ -34,6 +36,7 @@ import { TraceWriter } from "./memory/TraceWriter.js"
 import { TranscriptProjector } from "./memory/TranscriptProjector.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
+import { CompactionCheckpointPortSqlite } from "./CompactionCheckpointPortSqlite.js"
 import { ChannelPortSqlite } from "./ChannelPortSqlite.js"
 import { layer as AgentEntityLayer } from "./entities/AgentEntity.js"
 import { layer as CLIAdapterEntityLayer } from "./entities/CLIAdapterEntity.js"
@@ -55,6 +58,7 @@ import {
   AgentStatePortTag,
   ChannelPortTag,
   CheckpointPortTag,
+  CompactionCheckpointPortTag,
   GovernancePortTag,
   IntegrationPortTag,
   MemoryPortTag,
@@ -132,6 +136,17 @@ const checkpointPortTagLayer = Layer.effect(
     return (yield* CheckpointPortSqlite) as CheckpointPort
   })
 ).pipe(Layer.provide(checkpointPortSqliteLayer))
+
+const compactionCheckpointPortSqliteLayer = CompactionCheckpointPortSqlite.layer.pipe(
+  Layer.provide(sqlInfrastructureLayer)
+)
+
+const compactionCheckpointPortTagLayer = Layer.effect(
+  CompactionCheckpointPortTag,
+  Effect.gen(function*() {
+    return (yield* CompactionCheckpointPortSqlite) as CompactionCheckpointPort
+  })
+).pipe(Layer.provide(compactionCheckpointPortSqliteLayer))
 
 const channelPortSqliteLayer = ChannelPortSqlite.layer.pipe(
   Layer.provide(sqlInfrastructureLayer)
@@ -287,7 +302,8 @@ const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
     agentConfigLayer,
     modelRegistryLayer,
     governancePortTagLayer,
-    traceWriterLayer
+    traceWriterLayer,
+    compactionCheckpointPortTagLayer
   ))
 )
 
@@ -325,6 +341,15 @@ const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
   Layer.provide(memoryFileServicesLayer)
 )
 
+const sessionIdleMonitorLayer = SessionIdleMonitor.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    channelPortTagLayer,
+    subroutineControlPlaneLayer,
+    subroutineCatalogLayer,
+    agentConfigLayer
+  ))
+)
+
 const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
   Layer.provide(Layer.mergeAll(
     workflowEngineLayer,
@@ -337,7 +362,8 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     modelRegistryLayer,
     checkpointPortTagLayer,
     subroutineControlPlaneLayer,
-    transcriptProjectorLayer
+    transcriptProjectorLayer,
+    subroutineCatalogLayer
   ))
 )
 
@@ -424,6 +450,7 @@ const portTagsLayer = Layer.mergeAll(
   schedulePortTagLayer,
   governancePortTagLayer,
   checkpointPortTagLayer,
+  compactionCheckpointPortTagLayer,
   channelPortTagLayer,
   integrationPortTagLayer
 )
@@ -459,6 +486,7 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(subroutineCatalogLayer),
   Layer.provideMerge(subroutineRunnerLayer),
   Layer.provideMerge(subroutineControlPlaneLayer),
+  Layer.provideMerge(sessionIdleMonitorLayer),
   Layer.provideMerge(clusterLayer)
 )
 

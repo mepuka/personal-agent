@@ -743,6 +743,35 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS idx_notifications_created_at
       ON notifications (created_at DESC)
     `.unprepared
+  }),
+  "0016_compaction_checkpoints": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS compaction_checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        subroutine_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        first_kept_turn_id TEXT,
+        first_kept_message_id TEXT,
+        tokens_before INTEGER,
+        tokens_after INTEGER,
+        details_json TEXT
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_compaction_checkpoints_agent_session_subroutine
+      ON compaction_checkpoints (agent_id, session_id, subroutine_id, created_at DESC)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_compaction_checkpoints_session_only
+      ON compaction_checkpoints (session_id, created_at ASC)
+    `.unprepared
   })
 })
 

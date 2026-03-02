@@ -13,6 +13,7 @@ import type {
   AuditLogId,
   ChannelId,
   CheckpointId,
+  CompactionCheckpointId,
   ExternalServiceId,
   IntegrationId,
   MemoryItemId,
@@ -551,4 +552,28 @@ export interface IntegrationPort {
     serviceId: ExternalServiceId
   ) => Effect.Effect<IntegrationRecord | null>
   readonly updateStatus: (integrationId: IntegrationId, status: IntegrationStatus) => Effect.Effect<void>
+}
+
+export interface CompactionCheckpointRecord {
+  readonly checkpointId: CompactionCheckpointId
+  readonly agentId: AgentId
+  readonly sessionId: SessionId
+  readonly subroutineId: string
+  readonly createdAt: Instant
+  readonly summary: string
+  readonly firstKeptTurnId: TurnId | null
+  readonly firstKeptMessageId: MessageId | null
+  readonly tokensBefore: number | null
+  readonly tokensAfter: number | null
+  readonly detailsJson: string | null
+}
+
+export interface CompactionCheckpointPort {
+  readonly create: (record: CompactionCheckpointRecord) => Effect.Effect<void>
+  readonly getLatestForSubroutine: (
+    agentId: AgentId,
+    sessionId: SessionId,
+    subroutineId: string
+  ) => Effect.Effect<CompactionCheckpointRecord | null>
+  readonly listBySession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<CompactionCheckpointRecord>>
 }

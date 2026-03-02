@@ -44,6 +44,7 @@ import {
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
+import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 import {
@@ -238,6 +239,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const modelRegistry = yield* ModelRegistry
     const checkpointPort = yield* CheckpointPortTag
     const subroutineControlPlane = yield* SubroutineControlPlane
+    const subroutineCatalog = yield* SubroutineCatalog
     const transcriptProjector = yield* TranscriptProjector
 
     const policy = yield* Activity.make({
@@ -372,6 +374,48 @@ export const layer = TurnProcessingWorkflow.toLayer(
         yield* sessionTurnPort.appendTurn(makeUserTurn(payload))
       })
     }).asEffect()
+
+    // ContextPressure proactive detection (non-fatal, inline)
+    yield* Effect.gen(function*() {
+      const sessionState = yield* sessionTurnPort.getSession(payload.sessionId as SessionId)
+      if (sessionState === null) return
+
+      const contextPressureSubs = yield* subroutineCatalog.getByTrigger(
+        payload.agentId,
+        "ContextPressure"
+      )
+
+      const currentTokens = sessionState.tokensUsed
+      const previousTokens = Math.max(currentTokens - payload.inputTokens, 0)
+
+      for (const sub of contextPressureSubs) {
+        if (sub.config.trigger.type !== "ContextPressure") continue
+
+        const threshold = sessionState.tokenCapacity - sub.config.trigger.reserveTokens
+        const crossed = previousTokens < threshold && currentTokens >= threshold
+        if (!crossed) continue
+
+        yield* subroutineControlPlane.enqueue({
+          agentId: payload.agentId as AgentId,
+          sessionId: payload.sessionId as SessionId,
+          conversationId: payload.conversationId as ConversationId,
+          subroutineId: sub.config.id,
+          turnId: payload.turnId as TurnId,
+          triggerType: "ContextPressure",
+          triggerReason:
+            `Context pressure crossed: tokensUsed=${currentTokens}, threshold=${threshold}, reserve=${sub.config.trigger.reserveTokens}`,
+          enqueuedAt: payload.createdAt
+        })
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.log("ContextPressure dispatch failed", {
+          turnId: payload.turnId,
+          sessionId: payload.sessionId,
+          cause
+        }).pipe(Effect.annotateLogs("level", "error"))
+      )
+    )
 
     const maxToolIterations = yield* agentStatePort.get(payload.agentId as AgentId).pipe(
       Effect.map((state) => Math.min(Math.max(state?.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS, 1), MAX_TOOL_ITERATIONS_CAP))

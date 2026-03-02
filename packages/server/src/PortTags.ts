@@ -2,6 +2,7 @@ import type {
   AgentStatePort,
   ChannelPort,
   CheckpointPort,
+  CompactionCheckpointPort,
   GovernancePort,
   IntegrationPort,
   MemoryPort,
@@ -29,3 +30,7 @@ export const ChannelPortTag = ServiceMap.Service<ChannelPort>("server/ports/Chan
 export const IntegrationPortTag = ServiceMap.Service<IntegrationPort>("server/ports/IntegrationPort")
 
 export const CheckpointPortTag = ServiceMap.Service<CheckpointPort>("server/ports/CheckpointPort")
+
+export const CompactionCheckpointPortTag = ServiceMap.Service<CompactionCheckpointPort>(
+  "server/ports/CompactionCheckpointPort"
+)

@@ -1,8 +1,9 @@
 import * as Anthropic from "@effect/ai-anthropic"
 import * as OpenAi from "@effect/ai-openai"
 import type { SubroutineToolScope } from "@template/domain/memory"
+import type { CompactionCheckpointId } from "@template/domain/ids"
 import type { SubroutineTriggerType } from "@template/domain/status"
-import { Effect, Layer, Ref, Schema, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Ref, Schema, ServiceMap } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Response from "effect/unstable/ai/Response"
@@ -22,7 +23,7 @@ import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
-import { GovernancePortTag } from "../PortTags.js"
+import { CompactionCheckpointPortTag, GovernancePortTag } from "../PortTags.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
 import { TraceWriter } from "./TraceWriter.js"
 import {
@@ -88,6 +89,7 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
       const agentConfig = yield* AgentConfig
       const modelRegistry = yield* ModelRegistry
       const governancePort = yield* GovernancePortTag
+      const compactionCheckpointPort = yield* CompactionCheckpointPortTag
       const traceWriter = yield* TraceWriter
 
       const execute: SubroutineRunnerService["execute"] = (subroutine, context) =>
@@ -185,6 +187,34 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
             },
             usage: loopResult.usage
           }).pipe(Effect.ignore)
+
+          // Compaction checkpoint write (non-fatal, inline)
+          if (subroutine.config.writesCheckpoint === true) {
+            yield* Effect.gen(function*() {
+              const createdAt = yield* DateTime.now
+              yield* compactionCheckpointPort.create({
+                checkpointId: `compaction:${context.runId}` as CompactionCheckpointId,
+                agentId: context.agentId,
+                sessionId: context.sessionId,
+                subroutineId: subroutine.config.id,
+                createdAt,
+                summary: assistantContent,
+                firstKeptTurnId: null,
+                firstKeptMessageId: null,
+                tokensBefore: null,
+                tokensAfter: null,
+                detailsJson: null
+              })
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.log("Compaction checkpoint write failed", {
+                  subroutineId: subroutine.config.id,
+                  runId: context.runId,
+                  cause
+                }).pipe(Effect.annotateLogs("level", "error"))
+              )
+            )
+          }
 
           return {
             subroutineId: subroutine.config.id,

@@ -44,8 +44,11 @@ import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import {
   SubroutineControlPlane,
   type SubroutineControlPlaneService,
-  type TriggerContext
+  type TriggerContext,
+  type DispatchRequest
 } from "../src/memory/SubroutineControlPlane.js"
+import { SubroutineCatalog, type SubroutineCatalogService } from "../src/memory/SubroutineCatalog.js"
+import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
 import {
   TranscriptProjector,
   type TranscriptProjectorService
@@ -707,6 +710,287 @@ describe("TurnProcessingWorkflow e2e", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("ContextPressure: threshold crossing enqueues subroutine", () => {
+    const capturedEnqueues: Array<DispatchRequest> = []
+    const dbPath = testDatabasePath("ctx-pressure-crossing")
+    const mockSub = {
+      config: {
+        id: "compactor",
+        name: "Compactor",
+        tier: "SemanticMemory" as const,
+        trigger: { type: "ContextPressure" as const, reserveTokens: 100, retryOnOverflow: false },
+        promptFile: "prompts/compact.md",
+        maxIterations: 3,
+        toolConcurrency: 1,
+        dedupeWindowSeconds: 30
+      },
+      prompt: "compact",
+      resolvedToolScope: { fileRead: true, fileWrite: false, shell: false, memoryRead: true, memoryWrite: true, notification: false }
+    }
+    const layer = makeTurnProcessingLayer(
+      dbPath, "Allow", undefined, undefined, undefined, undefined,
+      [mockSub], capturedEnqueues
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-01T12:00:00.000Z")
+      // tokenCapacity=500, reserveTokens=100 => threshold=400
+      // tokensUsed starts at 390, inputTokens=20 => tokensUsed becomes 410
+      // previousTokens = 410-20 = 390 < 400, currentTokens = 410 >= 400 => CROSSED
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:default" as AgentId,
+        tokenBudget: 1000,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:default" as SessionId,
+        conversationId: "conversation:default" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 390
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        createdAt: now,
+        inputTokens: 20,
+        content: "trigger context pressure"
+      }))
+      expect(result.accepted).toBe(true)
+
+
+      expect(capturedEnqueues.length).toBe(1)
+      expect(capturedEnqueues[0].subroutineId).toBe("compactor")
+      expect(capturedEnqueues[0].triggerType).toBe("ContextPressure")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ContextPressure: above threshold without crossing does not enqueue", () => {
+    const capturedEnqueues: Array<DispatchRequest> = []
+    const dbPath = testDatabasePath("ctx-pressure-no-cross")
+    const mockSub = {
+      config: {
+        id: "compactor",
+        name: "Compactor",
+        tier: "SemanticMemory" as const,
+        trigger: { type: "ContextPressure" as const, reserveTokens: 100, retryOnOverflow: false },
+        promptFile: "prompts/compact.md",
+        maxIterations: 3,
+        toolConcurrency: 1,
+        dedupeWindowSeconds: 30
+      },
+      prompt: "compact",
+      resolvedToolScope: { fileRead: true, fileWrite: false, shell: false, memoryRead: true, memoryWrite: true, notification: false }
+    }
+    const layer = makeTurnProcessingLayer(
+      dbPath, "Allow", undefined, undefined, undefined, undefined,
+      [mockSub], capturedEnqueues
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-01T12:00:00.000Z")
+      // tokenCapacity=500, reserveTokens=100 => threshold=400
+      // tokensUsed starts at 410, inputTokens=10 => tokensUsed becomes 420
+      // previousTokens = 420-10 = 410 >= 400 => already above, NOT crossed
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:default" as AgentId,
+        tokenBudget: 1000,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:default" as SessionId,
+        conversationId: "conversation:default" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 410
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        createdAt: now,
+        inputTokens: 10,
+        content: "already above threshold"
+      }))
+      expect(result.accepted).toBe(true)
+
+
+      expect(capturedEnqueues.length).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ContextPressure: under threshold does not enqueue", () => {
+    const capturedEnqueues: Array<DispatchRequest> = []
+    const dbPath = testDatabasePath("ctx-pressure-under")
+    const mockSub = {
+      config: {
+        id: "compactor",
+        name: "Compactor",
+        tier: "SemanticMemory" as const,
+        trigger: { type: "ContextPressure" as const, reserveTokens: 100, retryOnOverflow: false },
+        promptFile: "prompts/compact.md",
+        maxIterations: 3,
+        toolConcurrency: 1,
+        dedupeWindowSeconds: 30
+      },
+      prompt: "compact",
+      resolvedToolScope: { fileRead: true, fileWrite: false, shell: false, memoryRead: true, memoryWrite: true, notification: false }
+    }
+    const layer = makeTurnProcessingLayer(
+      dbPath, "Allow", undefined, undefined, undefined, undefined,
+      [mockSub], capturedEnqueues
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-01T12:00:00.000Z")
+      // tokenCapacity=500, reserveTokens=100 => threshold=400
+      // tokensUsed starts at 0, inputTokens=10 => tokensUsed becomes 10
+      // well below threshold
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:default" as AgentId,
+        tokenBudget: 1000,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:default" as SessionId,
+        conversationId: "conversation:default" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        createdAt: now,
+        inputTokens: 10,
+        content: "well under threshold"
+      }))
+      expect(result.accepted).toBe(true)
+
+
+      expect(capturedEnqueues.length).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ContextPressure: boundary value triggers on exact crossing", () => {
+    const capturedEnqueues: Array<DispatchRequest> = []
+    const dbPath = testDatabasePath("ctx-pressure-boundary")
+    const mockSub = {
+      config: {
+        id: "compactor",
+        name: "Compactor",
+        tier: "SemanticMemory" as const,
+        trigger: { type: "ContextPressure" as const, reserveTokens: 100, retryOnOverflow: false },
+        promptFile: "prompts/compact.md",
+        maxIterations: 3,
+        toolConcurrency: 1,
+        dedupeWindowSeconds: 30
+      },
+      prompt: "compact",
+      resolvedToolScope: { fileRead: true, fileWrite: false, shell: false, memoryRead: true, memoryWrite: true, notification: false }
+    }
+    const layer = makeTurnProcessingLayer(
+      dbPath, "Allow", undefined, undefined, undefined, undefined,
+      [mockSub], capturedEnqueues
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-01T12:00:00.000Z")
+      // tokenCapacity=500, reserveTokens=100 => threshold=400
+      // tokensUsed starts at 395, inputTokens=5 => tokensUsed becomes 400
+      // previousTokens = 400-5 = 395 < 400, currentTokens = 400 >= 400 => CROSSED (boundary)
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:default" as AgentId,
+        tokenBudget: 1000,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:default" as SessionId,
+        conversationId: "conversation:default" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 395
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        createdAt: now,
+        inputTokens: 5,
+        content: "exact boundary"
+      }))
+      expect(result.accepted).toBe(true)
+
+
+      expect(capturedEnqueues.length).toBe(1)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("ContextPressure: no ContextPressure subroutines means no enqueue", () => {
+    const capturedEnqueues: Array<DispatchRequest> = []
+    const dbPath = testDatabasePath("ctx-pressure-no-subs")
+    // No mock catalog subs (empty array)
+    const layer = makeTurnProcessingLayer(
+      dbPath, "Allow", undefined, undefined, undefined, undefined,
+      [], capturedEnqueues
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-01T12:00:00.000Z")
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:default" as AgentId,
+        tokenBudget: 1000,
+        tokensConsumed: 0,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:default" as SessionId,
+        conversationId: "conversation:default" as ConversationId,
+        tokenCapacity: 500,
+        tokensUsed: 100
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        createdAt: now,
+        inputTokens: 20,
+        content: "no subs configured"
+      }))
+      expect(result.accepted).toBe(true)
+
+
+      expect(capturedEnqueues.length).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeTurnProcessingLayer = (
@@ -718,7 +1002,9 @@ const makeTurnProcessingLayer = (
     readonly failWithErrorMessage?: string
   },
   capturedDispatches?: Array<{ triggerType: string; context: TriggerContext }>,
-  capturedTranscriptAppends?: Array<{ agentId: string; sessionId: string; turn: unknown }>
+  capturedTranscriptAppends?: Array<{ agentId: string; sessionId: string; turn: unknown }>,
+  mockCatalogSubs?: ReadonlyArray<LoadedSubroutine>,
+  capturedEnqueues?: Array<DispatchRequest>
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -876,7 +1162,10 @@ const makeTurnProcessingLayer = (
   )
 
   const mockControlPlane: SubroutineControlPlaneService = {
-    enqueue: () => Effect.succeed({ accepted: false, reason: "deduped", runId: null }),
+    enqueue: (request) => {
+      capturedEnqueues?.push(request)
+      return Effect.succeed({ accepted: true, reason: "dispatched", runId: "mock-run-id" })
+    },
     dispatchByTrigger: (triggerType, context) => {
       capturedDispatches?.push({ triggerType, context })
       return Effect.succeed([])
@@ -886,6 +1175,12 @@ const makeTurnProcessingLayer = (
     SubroutineControlPlane,
     mockControlPlane as any
   )
+
+  const mockCatalog: SubroutineCatalogService = {
+    getByTrigger: () => Effect.succeed(mockCatalogSubs ?? []),
+    getById: () => Effect.die(new Error("SubroutineNotFound in test mock"))
+  }
+  const subroutineCatalogLayer = Layer.succeed(SubroutineCatalog, mockCatalog as any)
 
   const mockTranscriptProjector: TranscriptProjectorService = {
     appendTurn: (agentId, sessionId, turn) =>
@@ -910,7 +1205,8 @@ const makeTurnProcessingLayer = (
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(checkpointPortTagLayer),
     Layer.provide(subroutineControlPlaneLayer),
-    Layer.provide(transcriptProjectorLayer)
+    Layer.provide(transcriptProjectorLayer),
+    Layer.provide(subroutineCatalogLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

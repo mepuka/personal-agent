@@ -40,6 +40,7 @@ import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
+import { SubroutineCatalog } from "../src/memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
 import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
@@ -373,6 +374,14 @@ const makeChatFlowLayer = (
     } as any
   )
 
+  const subroutineCatalogLayer = Layer.succeed(
+    SubroutineCatalog,
+    {
+      getByTrigger: () => Effect.succeed([]),
+      getById: () => Effect.die(new Error("SubroutineNotFound in test mock"))
+    } as any
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -384,7 +393,8 @@ const makeChatFlowLayer = (
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(checkpointPortTagLayer),
     Layer.provide(subroutineControlPlaneLayer),
-    Layer.provide(transcriptProjectorLayer)
+    Layer.provide(transcriptProjectorLayer),
+    Layer.provide(subroutineCatalogLayer)
   )
 
   const turnRuntimeLayer = TurnProcessingRuntime.layer.pipe(

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
 import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, CheckpointPort, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
+import type { AgentState, CheckpointPort, CompactionCheckpointPort, CompactionCheckpointRecord, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
 import type { SubroutineToolScope } from "@template/domain/memory"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
@@ -17,7 +17,7 @@ import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
-import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import { CheckpointPortTag, CompactionCheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
@@ -142,6 +142,16 @@ const mockAgentConfigLayer = AgentConfig.layerFromParsed({
 })
 
 // ---------------------------------------------------------------------------
+// Mock Compaction Checkpoint Port
+// ---------------------------------------------------------------------------
+
+const makeCompactionCheckpointMock = (captured?: Array<CompactionCheckpointRecord>): CompactionCheckpointPort => ({
+  create: (record) => Effect.sync(() => { captured?.push(record) }),
+  getLatestForSubroutine: () => Effect.succeed(null),
+  listBySession: () => Effect.succeed([])
+})
+
+// ---------------------------------------------------------------------------
 // Test Fixtures
 // ---------------------------------------------------------------------------
 
@@ -207,7 +217,8 @@ const makeAgentState = (overrides: Partial<AgentState>): AgentState => ({
 
 const makeTestLayer = (
   dbPath: string,
-  mockOptions?: Parameters<typeof makeMockLanguageModel>[0]
+  mockOptions?: Parameters<typeof makeMockLanguageModel>[0],
+  capturedCheckpoints?: Array<CompactionCheckpointRecord>
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -301,13 +312,19 @@ const makeTestLayer = (
     writeRunTrace: () => Effect.void
   } as any)
 
+  const compactionCheckpointPortTagLayer = Layer.succeed(
+    CompactionCheckpointPortTag,
+    makeCompactionCheckpointMock(capturedCheckpoints) as any
+  )
+
   const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(mockAgentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(governanceTagLayer),
-    Layer.provide(traceWriterLayer)
+    Layer.provide(traceWriterLayer),
+    Layer.provide(compactionCheckpointPortTagLayer)
   )
 
   return Layer.mergeAll(
@@ -614,6 +631,201 @@ describe("SubroutineRunner.execute", () => {
 
       expect(result.subroutineId).toBe("custom_routine")
       expect(result.runId).toBe(runId)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Integration Tests: Compaction Checkpoint
+// ---------------------------------------------------------------------------
+
+describe("SubroutineRunner checkpoint", () => {
+  it("success + writesCheckpoint=true creates record", async () => {
+    const dbPath = testDatabasePath("sub-checkpoint-success")
+    const capturedCheckpoints: Array<CompactionCheckpointRecord> = []
+    const layer = makeTestLayer(dbPath, { textResponse: "Compacted." }, capturedCheckpoints)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({ budgetResetAt: NOW }))
+
+      const runner = yield* SubroutineRunner
+      const subroutine = makeLoadedSubroutine()
+      // Patch writesCheckpoint = true
+      const withCheckpoint: LoadedSubroutine = {
+        ...subroutine,
+        config: { ...subroutine.config, writesCheckpoint: true }
+      }
+
+      const result = yield* runner.execute(withCheckpoint, makeSubroutineContext())
+      expect(result.success).toBe(true)
+
+      expect(capturedCheckpoints.length).toBe(1)
+      expect(capturedCheckpoints[0].subroutineId).toBe("memory_consolidation")
+      expect(capturedCheckpoints[0].summary).toContain("Compacted.")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("failure + writesCheckpoint=true does not create record", async () => {
+    const dbPath = testDatabasePath("sub-checkpoint-failure")
+    const capturedCheckpoints: Array<CompactionCheckpointRecord> = []
+    const layer = makeTestLayer(dbPath, { failWithErrorMessage: "Provider down" }, capturedCheckpoints)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({ budgetResetAt: NOW }))
+
+      const runner = yield* SubroutineRunner
+      const subroutine = makeLoadedSubroutine()
+      const withCheckpoint: LoadedSubroutine = {
+        ...subroutine,
+        config: { ...subroutine.config, writesCheckpoint: true }
+      }
+
+      const result = yield* runner.execute(withCheckpoint, makeSubroutineContext())
+      expect(result.success).toBe(false)
+
+      expect(capturedCheckpoints.length).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("success + writesCheckpoint absent does not create record", async () => {
+    const dbPath = testDatabasePath("sub-checkpoint-absent")
+    const capturedCheckpoints: Array<CompactionCheckpointRecord> = []
+    const layer = makeTestLayer(dbPath, { textResponse: "Done." }, capturedCheckpoints)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({ budgetResetAt: NOW }))
+
+      const runner = yield* SubroutineRunner
+      const result = yield* runner.execute(makeLoadedSubroutine(), makeSubroutineContext())
+      expect(result.success).toBe(true)
+
+      expect(capturedCheckpoints.length).toBe(0)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("checkpoint create failure is non-fatal", async () => {
+    const dbPath = testDatabasePath("sub-checkpoint-nonfatal")
+    // Use a failing mock
+    const failingCheckpointLayer = Layer.succeed(
+      CompactionCheckpointPortTag,
+      {
+        create: () => Effect.die(new Error("DB write failed")),
+        getLatestForSubroutine: () => Effect.succeed(null),
+        listBySession: () => Effect.succeed([])
+      } as any
+    )
+
+    const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
+    const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
+    const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+
+    const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    const governanceTagLayer = Layer.effect(
+      GovernancePortTag,
+      Effect.gen(function*() { return (yield* GovernancePortSqlite) as GovernancePort })
+    ).pipe(Layer.provide(governanceSqliteLayer))
+
+    const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    const memoryPortTagLayer = Layer.effect(
+      MemoryPortTag,
+      Effect.gen(function*() { return (yield* MemoryPortSqlite) as MemoryPort })
+    ).pipe(Layer.provide(memoryPortSqliteLayer))
+
+    const checkpointPortSqliteLayer = CheckpointPortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    const checkpointPortTagLayer = Layer.effect(
+      CheckpointPortTag,
+      Effect.gen(function*() { return (yield* CheckpointPortSqlite) as CheckpointPort })
+    ).pipe(Layer.provide(checkpointPortSqliteLayer))
+
+    const cliRuntimeLayer = CliRuntimeLocalLayer.pipe(Layer.provide(NodeServices.layer))
+    const commandBackendLayer = CommandBackendLocalLayer.pipe(Layer.provide(cliRuntimeLayer))
+    const commandRuntimeLayer = CommandRuntime.layer.pipe(
+      Layer.provide(CommandHooksDefaultLayer),
+      Layer.provide(commandBackendLayer),
+      Layer.provide(NodeServices.layer)
+    )
+    const filePathPolicyLayer = FilePathPolicy.layer.pipe(Layer.provide(NodeServices.layer))
+    const fileRuntimeLayer = FileRuntime.layer.pipe(
+      Layer.provide(FileHooksDefaultLayer),
+      Layer.provide(FileReadTracker.layer),
+      Layer.provide(filePathPolicyLayer),
+      Layer.provide(NodeServices.layer)
+    )
+    const toolExecutionLayer = ToolExecution.layer.pipe(
+      Layer.provide(fileRuntimeLayer),
+      Layer.provide(filePathPolicyLayer),
+      Layer.provide(cliRuntimeLayer),
+      Layer.provide(commandRuntimeLayer),
+      Layer.provide(sqlInfrastructureLayer),
+      Layer.provide(NodeServices.layer)
+    )
+    const toolRegistryLayer = ToolRegistry.layer.pipe(
+      Layer.provide(toolExecutionLayer),
+      Layer.provide(governanceTagLayer),
+      Layer.provide(memoryPortTagLayer),
+      Layer.provide(mockAgentConfigLayer),
+      Layer.provide(checkpointPortTagLayer)
+    )
+    const chatPersistenceLayer = ChatPersistence.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    const mockModelRegistryLayer = Layer.effect(
+      ModelRegistry,
+      Effect.succeed({
+        get: (_provider: string, _modelId: string) =>
+          Effect.succeed(Layer.succeed(LanguageModel.LanguageModel, makeMockLanguageModel({ textResponse: "Checkpoint fail test." })))
+      })
+    )
+    const traceWriterLayer = Layer.succeed(TraceWriter, { writeRunTrace: () => Effect.void } as any)
+
+    const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
+      Layer.provide(toolRegistryLayer),
+      Layer.provide(chatPersistenceLayer),
+      Layer.provide(mockAgentConfigLayer),
+      Layer.provide(mockModelRegistryLayer),
+      Layer.provide(governanceTagLayer),
+      Layer.provide(traceWriterLayer),
+      Layer.provide(failingCheckpointLayer)
+    )
+
+    const layer = Layer.mergeAll(
+      sqlInfrastructureLayer,
+      AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
+      subroutineRunnerLayer
+    )
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({ budgetResetAt: NOW }))
+
+      const runner = yield* SubroutineRunner
+      const subroutine = makeLoadedSubroutine()
+      const withCheckpoint: LoadedSubroutine = {
+        ...subroutine,
+        config: { ...subroutine.config, writesCheckpoint: true }
+      }
+
+      // Should NOT throw even though checkpoint write dies
+      const result = yield* runner.execute(withCheckpoint, makeSubroutineContext())
+      expect(result.success).toBe(true)
+      expect(result.assistantContent).toContain("Checkpoint fail test.")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

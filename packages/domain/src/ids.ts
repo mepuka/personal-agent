@@ -56,3 +56,6 @@ export type ExternalServiceId = typeof ExternalServiceId.Type
 
 export const CheckpointId = Schema.String.pipe(Schema.brand("CheckpointId"))
 export type CheckpointId = typeof CheckpointId.Type
+
+export const CompactionCheckpointId = Schema.String.pipe(Schema.brand("CompactionCheckpointId"))
+export type CompactionCheckpointId = typeof CompactionCheckpointId.Type
