@@ -45,14 +45,14 @@ describe("pendingCheckpointAtom", () => {
       turnId: "t1",
       status: "checkpoint_required",
       checkpointId: "cp-42",
-      checkpointAction: "shell_execute",
+      checkpointAction: "InvokeTool",
       checkpointReason: "Destructive operation detected"
     }
     registry.set(messagesAtom, [msg])
 
     expect(registry.get(pendingCheckpointAtom)).toEqual({
       checkpointId: "cp-42",
-      action: "shell_execute",
+      action: "InvokeTool",
       reason: "Destructive operation detected"
     })
   })
@@ -69,7 +69,7 @@ describe("pendingCheckpointAtom", () => {
     expect(registry.get(pendingCheckpointAtom)).toBeNull()
   })
 
-  it("defaults action to 'unknown' and reason to '' when missing", () => {
+  it("returns null when checkpoint_required but action is missing", () => {
     const registry = makeRegistry()
     const msg: ChatMessage = {
       role: "assistant",
@@ -79,11 +79,6 @@ describe("pendingCheckpointAtom", () => {
       checkpointId: "cp-99"
     }
     registry.set(messagesAtom, [msg])
-
-    expect(registry.get(pendingCheckpointAtom)).toEqual({
-      checkpointId: "cp-99",
-      action: "unknown",
-      reason: ""
-    })
+    expect(registry.get(pendingCheckpointAtom)).toBeNull()
   })
 })

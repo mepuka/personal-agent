@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { ContentBlock } from "./ports.js"
-import { ModelFinishReason } from "./status.js"
+import { CheckpointAction, ModelFinishReason, TurnAuditReasonCode } from "./status.js"
 
 export class SubmitTurnRequest extends Schema.Class<SubmitTurnRequest>("SubmitTurnRequest")({
   turnId: Schema.String,
@@ -49,6 +49,16 @@ export class ToolResultEvent extends Schema.Class<ToolResultEvent>("ToolResultEv
   isError: Schema.Boolean
 }) {}
 
+export class ToolErrorEvent extends Schema.Class<ToolErrorEvent>("ToolErrorEvent")({
+  type: Schema.Literal("tool.error"),
+  sequence: Schema.Number,
+  turnId: Schema.String,
+  sessionId: Schema.String,
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  outputJson: Schema.String
+}) {}
+
 export class IterationCompletedEvent extends Schema.Class<IterationCompletedEvent>(
   "IterationCompletedEvent"
 )({
@@ -70,7 +80,7 @@ export class TurnCompletedEvent extends Schema.Class<TurnCompletedEvent>(
   turnId: Schema.String,
   sessionId: Schema.String,
   accepted: Schema.Boolean,
-  auditReasonCode: Schema.String,
+  auditReasonCode: TurnAuditReasonCode,
   iterationsUsed: Schema.Number,
   toolCallsTotal: Schema.Number,
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
@@ -110,7 +120,7 @@ export class TurnCheckpointRequiredEvent extends Schema.Class<TurnCheckpointRequ
   turnId: Schema.String,
   sessionId: Schema.String,
   checkpointId: Schema.String,
-  action: Schema.String,
+  action: CheckpointAction,
   reason: Schema.String
 }) {}
 
@@ -119,6 +129,7 @@ export const TurnStreamEvent = Schema.Union([
   AssistantDeltaEvent,
   ToolCallEvent,
   ToolResultEvent,
+  ToolErrorEvent,
   IterationCompletedEvent,
   TurnCheckpointRequiredEvent,
   TurnCompletedEvent,

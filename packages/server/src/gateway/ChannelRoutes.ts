@@ -1,14 +1,13 @@
 import { AiProviderName } from "@template/domain/config"
-import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
+import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import { ChannelType } from "@template/domain/status"
-import { Effect, Layer, Option, Schema, Stream } from "effect"
-import * as Sse from "effect/unstable/encoding/Sse"
+import { Effect, Layer, Option, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
 import { CLIAdapterEntity } from "../entities/CLIAdapterEntity.js"
-import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
+import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,15 +18,6 @@ const extractParam = (inputUrl: string, index: number): string => {
   const parts = url.pathname.split("/").filter(Boolean)
   return parts[index] ?? ""
 }
-
-const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
-
-const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
-  _tag: "Event",
-  event: event.type,
-  id: String(event.sequence),
-  data: encodeToJson(event)
-})
 
 const InitializeChannelRequest = Schema.Struct({
   channelType: Schema.Union([ChannelType, Schema.Undefined]),
@@ -62,9 +52,9 @@ const badRequest = (message: string) =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
-  const identity = toTurnFailureIdentity(error)
-
+const mapChannelNotFoundFailure = (
+  error: unknown
+): { readonly errorCode: TurnFailureCode; readonly message: string } | null => {
   if (
     typeof error === "object" &&
     error !== null &&
@@ -75,27 +65,13 @@ const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
     if (errorCode === "ChannelNotFound" && "channelId" in error) {
       const channelId = typeof error.channelId === "string" ? error.channelId : "unknown"
       return {
-        type: "turn.failed",
-        sequence: Number.MAX_SAFE_INTEGER,
-        turnId: identity.turnId || "unknown",
-        sessionId: identity.sessionId || "unknown",
         errorCode: "turn_processing_error",
         message: `Channel not found: ${channelId}`
       }
     }
   }
 
-  const message = toTurnFailureMessage(error, "Turn processing failed unexpectedly")
-  const errorCode = toTurnFailureCode(error, message)
-
-  return {
-    type: "turn.failed",
-    sequence: Number.MAX_SAFE_INTEGER,
-    turnId: identity.turnId || "unknown",
-    sessionId: identity.sessionId || "unknown",
-    errorCode,
-    message
-  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -182,16 +158,19 @@ const sendMessage = HttpRouter.add(
 
       const client = makeClient(channelId)
 
-      const stream = client.receiveMessage({
-        content: decodedBody.value.content,
-        userId: "user:cli:local",
-        ...decodedBody.value.model ? { modelOverride: decodedBody.value.model } : {},
-        ...decodedBody.value.generationConfig ? { generationConfigOverride: decodedBody.value.generationConfig } : {}
-      }).pipe(
-        Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
-        Stream.map(toSseEvent),
-        Stream.pipeThroughChannel(Sse.encode()),
-        Stream.encodeText
+      const stream = toSseTextStream(
+        withFailedTurnEvent(
+          client.receiveMessage({
+            content: decodedBody.value.content,
+            userId: "user:cli:local",
+            ...decodedBody.value.model ? { modelOverride: decodedBody.value.model } : {},
+            ...decodedBody.value.generationConfig ? { generationConfigOverride: decodedBody.value.generationConfig } : {}
+          }),
+          {
+            fallbackMessage: "Turn processing failed unexpectedly",
+            mapKnownError: mapChannelNotFoundFailure
+          }
+        )
       )
 
       return HttpServerResponse.stream(stream, {

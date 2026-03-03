@@ -1,5 +1,12 @@
 import { Atom } from "effect/unstable/reactivity"
-import type { ChannelSummary, ChatMessage, ConnectionStatus, ModalId, ToolEvent } from "../types.js"
+import type {
+  ChannelSummary,
+  ChatMessage,
+  ConnectionStatus,
+  ModalId,
+  PendingCheckpoint,
+  ToolEvent
+} from "../types.js"
 
 // --- Writable atoms (source of truth) ---
 
@@ -25,14 +32,14 @@ export const activeToolsAtom = Atom.make((get: Atom.Context) =>
 
 export const messageCountAtom = Atom.make((get: Atom.Context) => get(messagesAtom).length)
 
-export const pendingCheckpointAtom = Atom.make((get: Atom.Context) => {
+export const pendingCheckpointAtom = Atom.make((get: Atom.Context): PendingCheckpoint | null => {
   const msgs = get(messagesAtom)
   if (msgs.length === 0) return null
   const last = msgs[msgs.length - 1]!
-  if (last.status !== "checkpoint_required" || !last.checkpointId) return null
+  if (last.status !== "checkpoint_required" || !last.checkpointId || !last.checkpointAction) return null
   return {
     checkpointId: last.checkpointId,
-    action: last.checkpointAction ?? "unknown",
+    action: last.checkpointAction,
     reason: last.checkpointReason ?? ""
   }
 })

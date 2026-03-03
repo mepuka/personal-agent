@@ -38,7 +38,11 @@ import {
   type PostCommitTaskRecord,
   type TurnRecord
 } from "../../../domain/src/ports.js"
-import { ModelFinishReason } from "../../../domain/src/status.js"
+import {
+  CheckpointAction,
+  ModelFinishReason,
+  TurnAuditReasonCode
+} from "../../../domain/src/status.js"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import {
   encodeFinishReason,
@@ -47,7 +51,12 @@ import {
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { makeToolCallId } from "../ai/ToolCallId.js"
-import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
+import {
+  RequiresApprovalToolFailure,
+  ToolRegistry,
+  type ToolRegistryService,
+  type CheckpointSignal
+} from "../ai/ToolRegistry.js"
 import { makeCheckpointPayloadHash } from "../checkpoints/ReplayHash.js"
 import {
   toCheckpointFailureReason,
@@ -62,18 +71,6 @@ import {
   GovernancePortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
-
-
-export const TurnAuditReasonCode = Schema.Literals([
-  "turn_processing_accepted",
-  "turn_processing_policy_denied",
-  "turn_processing_requires_approval",
-  "turn_processing_checkpoint_required",
-  "turn_processing_token_budget_exceeded",
-  "turn_processing_provider_credit_exhausted",
-  "turn_processing_model_error"
-])
-export type TurnAuditReasonCode = typeof TurnAuditReasonCode.Type
 
 const PostCommitPayload = Schema.Struct({
   turnId: Schema.String,
@@ -137,7 +134,7 @@ export const ProcessTurnResult = Schema.Struct({
   modelFinishReason: Schema.Union([ModelFinishReason, Schema.Null]),
   modelUsageJson: Schema.Union([Schema.String, Schema.Null]),
   checkpointId: Schema.optionalKey(Schema.String),
-  checkpointAction: Schema.optionalKey(Schema.String),
+  checkpointAction: Schema.optionalKey(CheckpointAction),
   checkpointReason: Schema.optionalKey(Schema.String)
 })
 export type ProcessTurnResult = typeof ProcessTurnResult.Type
@@ -610,6 +607,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
           now: payload.createdAt,
           channelId: payload.channelId,
           userId: payload.userId,
+          recoverToolErrors: true,
           ...(payload.checkpointId !== undefined && invokeToolReplay === undefined
             ? {
               checkpointId: payload.checkpointId,
@@ -634,16 +632,15 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
       return { _outcome: "success" as const, result: loopResultOption.value }
     }).pipe(
-      Effect.catch((error) => {
-        // Tool governance RequiresApproval — the @effect/ai framework does not
-        // catch tool handler failures, so they propagate here. When a tool needed
-        // approval, a checkpoint signal was already stored in checkpointSignalsRef.
-        // Return it as a checkpoint outcome instead of failing the turn.
-        const isRequiresApproval = typeof error === "object" && error !== null
-          && "errorCode" in error && (error as any).errorCode === "RequiresApproval"
-
-        if (isRequiresApproval) {
-          return Ref.get(checkpointSignalsRef).pipe(
+      Effect.mapError((error) =>
+        isRequiresApprovalToolFailure(error)
+          ? error
+          : toTurnModelFailure(payload.turnId, error)
+      ),
+      Effect.catchTag(
+        "RequiresApprovalToolFailure",
+        (error) =>
+          Ref.get(checkpointSignalsRef).pipe(
             Effect.flatMap((signals) => {
               if (signals.length > 0) {
                 return Effect.succeed({
@@ -652,29 +649,23 @@ export const layer = TurnProcessingWorkflow.toLayer(
                 })
               }
               // No signals despite RequiresApproval — treat as model error
-              const modelFailure = toTurnModelFailure(payload.turnId, error)
-              return writeAuditEntry(
+              return failWithAuditedModelFailure(
                 governancePort,
                 payload,
-                "Deny",
-                toModelFailureAuditReason(modelFailure.reason)
-              ).pipe(
-                Effect.andThen(Effect.fail(modelFailure))
+                error
               )
             })
           )
-        }
-
-        const modelFailure = toTurnModelFailure(payload.turnId, error)
-        return writeAuditEntry(
-          governancePort,
-          payload,
-          "Deny",
-          toModelFailureAuditReason(modelFailure.reason)
-        ).pipe(
-          Effect.andThen(Effect.fail(modelFailure))
-        )
-      })
+      ),
+      Effect.catchTag(
+        "TurnModelFailure",
+        (error) =>
+          failWithAuditedModelFailure(
+            governancePort,
+            payload,
+            error
+          )
+      )
     )
 
     // Tool governance checkpoint — return early with checkpoint result
@@ -735,20 +726,13 @@ export const layer = TurnProcessingWorkflow.toLayer(
       } as const
     }).pipe(
       Effect.catch((error) =>
-        writeAuditEntry(
+        failWithAuditedModelFailure(
           governancePort,
           payload,
-          "Deny",
-          "turn_processing_model_error"
-        ).pipe(
-          Effect.andThen(
-            Effect.fail(
-              new TurnModelFailure({
-                turnId: payload.turnId,
-                reason: `encoding_error: ${error instanceof Error ? error.message : String(error)}`
-              })
-            )
-          )
+          new TurnModelFailure({
+            turnId: payload.turnId,
+            reason: `encoding_error: ${toModelFailureMessage(error)}`
+          })
         )
       )
     )
@@ -1002,33 +986,36 @@ const appendInvokeToolReplayToHistory = (params: {
     )
   })
 
-const processWithToolLoop = (params: {
-  readonly chat: Chat.Persisted
-  readonly toolRegistry: ToolRegistryService
-  readonly lmLayer: Layer.Layer<any>
-  readonly resolvedProvider: string
-  readonly effectiveGenerationConfig: {
-    readonly temperature?: number
-    readonly maxOutputTokens?: number
-    readonly topP?: number
+const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoop")(function*(
+  params: {
+    readonly chat: Chat.Persisted
+    readonly toolRegistry: ToolRegistryService
+    readonly lmLayer: Layer.Layer<any>
+    readonly resolvedProvider: string
+    readonly effectiveGenerationConfig: {
+      readonly temperature?: number
+      readonly maxOutputTokens?: number
+      readonly topP?: number
+    }
+    readonly context: {
+      readonly agentId: AgentId
+      readonly sessionId: SessionId
+      readonly conversationId: ConversationId
+      readonly turnId: TurnId
+      readonly now: Instant
+      readonly channelId: string
+      readonly checkpointId?: string
+      readonly checkpointAction?: CheckpointAction
+      readonly userId?: string
+      readonly recoverToolErrors?: boolean
+    }
+    readonly rawUserContent: string
+    readonly initialPrompt: Prompt.RawInput
+    readonly maxIterations: number
+    readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
   }
-  readonly context: {
-    readonly agentId: AgentId
-    readonly sessionId: SessionId
-    readonly conversationId: ConversationId
-    readonly turnId: TurnId
-    readonly now: Instant
-    readonly channelId: string
-    readonly checkpointId?: string
-    readonly checkpointAction?: string
-    readonly userId?: string
-  }
-  readonly rawUserContent: string
-  readonly initialPrompt: Prompt.RawInput
-  readonly maxIterations: number
-  readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
-}): Effect.Effect<ToolLoopResult, unknown, never> =>
-  Effect.suspend(function loop(
+) {
+  return yield* Effect.suspend(function loop(
     iteration = 0,
     toolCallsTotal = 0,
     allParts: ReadonlyArray<Response.Part<any>> = [],
@@ -1120,6 +1107,7 @@ const processWithToolLoop = (params: {
         usage: mergedUsage
       } as const
     })
+  })
   })
 
 const writeAuditEntry = (
@@ -1239,6 +1227,30 @@ export const toTurnModelFailure = (
       turnId,
       reason: normalizeModelFailureReason(toModelFailureMessage(error))
     })
+
+export const isRequiresApprovalToolFailure = (
+  error: unknown
+): error is RequiresApprovalToolFailure =>
+  error instanceof RequiresApprovalToolFailure
+
+const failWithAuditedModelFailure = Effect.fn("TurnProcessingWorkflow.failWithAuditedModelFailure")(function*(
+  governancePort: {
+    readonly writeAudit: (entry: AuditEntryRecord) => Effect.Effect<void>
+  },
+  payload: ProcessTurnPayload,
+  error: unknown
+) {
+  const modelFailure = toTurnModelFailure(payload.turnId, error)
+
+  yield* writeAuditEntry(
+    governancePort,
+    payload,
+    "Deny",
+    toModelFailureAuditReason(modelFailure.reason)
+  )
+
+  return yield* modelFailure
+})
 
 export const toModelFailureMessage = (error: unknown): string => {
   if (typeof error === "string") {

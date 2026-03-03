@@ -18,7 +18,6 @@ import type {
   IntegrationId,
   MemoryItemId,
   PolicyId,
-  PostCommitTaskId,
   ScheduledExecutionId,
   ScheduleId,
   ToolDefinitionId,
@@ -30,6 +29,8 @@ import type {
   AuthorizationDecision,
   ChannelCapability,
   ChannelType,
+  CheckpointAction,
+  CheckpointDecision,
   CheckpointStatus,
   ComplianceStatus,
   ConcurrencyPolicy,
@@ -159,6 +160,19 @@ export interface MemoryForgetFilters {
   readonly itemIds?: ReadonlyArray<MemoryItemId>
 }
 
+export interface RetrieveFilters {
+  readonly query: string
+  readonly tier?: MemoryTier | undefined
+  readonly scope?: MemoryScope | undefined
+  readonly limit: number
+}
+
+export interface ListFilters {
+  readonly tier?: MemoryTier | undefined
+  readonly scope?: MemoryScope | undefined
+  readonly limit: number
+}
+
 export interface MemoryItemRecord {
   readonly memoryItemId: MemoryItemId
   readonly agentId: AgentId
@@ -177,6 +191,8 @@ export interface MemoryItemRecord {
   readonly createdAt: Instant
   readonly updatedAt: Instant
 }
+
+export type MemoryItemRow = MemoryItemRecord
 
 export interface PolicyInput {
   readonly agentId: AgentId
@@ -356,6 +372,7 @@ export interface AgentStatePort {
     requestedTokens: number,
     now: Instant
   ) => Effect.Effect<void, TokenBudgetExceeded>
+  readonly listAgentStates: () => Effect.Effect<Array<AgentState>>
 }
 
 export interface SessionTurnPort {
@@ -375,7 +392,7 @@ export interface SessionTurnPort {
   ) => Effect.Effect<SessionState | null>
   readonly listTurns: (
     sessionId: SessionId
-  ) => Effect.Effect<ReadonlyArray<TurnRecord>>
+  ) => Effect.Effect<Array<TurnRecord>>
 }
 
 export interface MemoryPort {
@@ -391,13 +408,21 @@ export interface MemoryPort {
       readonly source: MemorySource
       readonly content: string
       readonly metadataJson?: string | null
-      readonly generatedByTurnId?: TurnId | null
-      readonly sessionId?: SessionId | null
+      readonly generatedByTurnId?: string | null
+      readonly sessionId?: string | null
       readonly sensitivity?: SensitivityLevel
     }>,
     now: Instant
   ) => Effect.Effect<ReadonlyArray<MemoryItemId>>
+  readonly retrieve: (
+    agentId: AgentId,
+    filters: RetrieveFilters
+  ) => Effect.Effect<ReadonlyArray<MemoryItemRow>>
   readonly forget: (agentId: AgentId, filters: MemoryForgetFilters) => Effect.Effect<number>
+  readonly listAll: (
+    agentId: AgentId,
+    filters: ListFilters
+  ) => Effect.Effect<ReadonlyArray<MemoryItemRow>>
 }
 
 export interface GovernancePort {
@@ -436,6 +461,8 @@ export interface SchedulePort {
   readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void>
   readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<DueScheduleRecord>>
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
+  readonly getSchedule: (scheduleId: ScheduleId) => Effect.Effect<ScheduleRecord | null>
+  readonly listExecutions: () => Effect.Effect<Array<ScheduledExecutionRecord>>
 }
 
 export interface ChannelRecord {
@@ -487,7 +514,7 @@ export interface CheckpointRecord {
   readonly sessionId: SessionId
   readonly channelId: ChannelId
   readonly turnId: string
-  readonly action: GovernanceAction
+  readonly action: CheckpointAction
   readonly policyId: PolicyId | null
   readonly reason: string
   readonly payloadJson: string
@@ -548,7 +575,7 @@ export interface CheckpointPort {
   readonly deleteByChannel: (channelId: ChannelId) => Effect.Effect<void>
   readonly decidePending: (
     checkpointId: CheckpointId,
-    decision: "Approved" | "Rejected" | "Deferred",
+    decision: CheckpointDecision,
     decidedBy: string,
     decidedAt: Instant
   ) => Effect.Effect<

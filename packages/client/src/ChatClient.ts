@@ -1,4 +1,5 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
+import type { CheckpointDecision } from "@template/domain/status"
 import {
   classifyTurnFailureText,
   toTurnFailureMessageFromUnknown
@@ -55,6 +56,13 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       HttpClient.filterStatusOk
     )
 
+    const decodeTurnSseStream = (stream: Stream.Stream<Uint8Array, unknown>) =>
+      stream.pipe(
+        Stream.decodeText(),
+        Stream.pipeThroughChannel(Sse.decodeDataSchema(TurnStreamEvent)),
+        Stream.map((event) => event.data)
+      )
+
     const initialize = (channelId: string, agentId: string) =>
       HttpClientRequest.bodyJsonUnsafe(
         HttpClientRequest.post(`${baseUrl}/channels/${channelId}/initialize`),
@@ -71,13 +79,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         { content }
       ).pipe(
         (request) => httpClient.execute(request),
-        Effect.map((response) =>
-          response.stream.pipe(
-            Stream.decodeText(),
-            Stream.pipeThroughChannel(Sse.decodeDataSchema(TurnStreamEvent)),
-            Stream.map((event) => event.data)
-          )
-        )
+        Effect.map((response) => decodeTurnSseStream(response.stream))
       )
 
     const getHistory = (channelId: string) =>
@@ -109,7 +111,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
 
     const decideCheckpoint = (
       checkpointId: string,
-      decision: "Approved" | "Rejected" | "Deferred"
+      decision: CheckpointDecision
     ) =>
       Effect.gen(function*() {
         const request = HttpClientRequest.bodyJsonUnsafe(
@@ -121,11 +123,7 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         const contentType = response.headers["content-type"] ?? ""
         if (response.status >= 200 && response.status < 300) {
           if (contentType.includes("text/event-stream")) {
-            const stream = response.stream.pipe(
-              Stream.decodeText(),
-              Stream.pipeThroughChannel(Sse.decodeDataSchema(TurnStreamEvent)),
-              Stream.map((event) => event.data)
-            )
+            const stream = decodeTurnSseStream(response.stream)
             return { kind: "stream" as const, stream }
           }
           return { kind: "ack" as const }

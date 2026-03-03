@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ChannelId, CheckpointId, PolicyId, SessionId } from "@template/domain/ids"
 import type { CheckpointRecord, Instant } from "@template/domain/ports"
-import type { GovernanceAction } from "@template/domain/status"
+import type { CheckpointAction } from "@template/domain/status"
 import { DateTime, Effect, Layer } from "effect"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -40,7 +40,7 @@ const makeCheckpointRecord = (overrides: Partial<CheckpointRecord> = {}): Checkp
   sessionId: "session:test" as SessionId,
   channelId: "channel:test" as ChannelId,
   turnId: "turn:test",
-  action: "InvokeTool" as GovernanceAction,
+  action: "InvokeTool" as CheckpointAction,
   policyId: "policy:test" as PolicyId,
   reason: "test_reason",
   payloadJson: "{}",

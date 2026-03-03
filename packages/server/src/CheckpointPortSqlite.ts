@@ -5,7 +5,7 @@ import {
 } from "@template/domain/errors"
 import type { AgentId, ChannelId, CheckpointId, PolicyId, SessionId } from "@template/domain/ids"
 import type { CheckpointPort, CheckpointRecord } from "@template/domain/ports"
-import type { CheckpointStatus, GovernanceAction } from "@template/domain/status"
+import { CheckpointAction, CheckpointStatus } from "@template/domain/status"
 import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
@@ -16,12 +16,12 @@ const CheckpointRowSchema = Schema.Struct({
   session_id: Schema.String,
   channel_id: Schema.String,
   turn_id: Schema.String,
-  action: Schema.String,
+  action: CheckpointAction,
   policy_id: Schema.Union([Schema.String, Schema.Null]),
   reason: Schema.String,
   payload_json: Schema.String,
   payload_hash: Schema.String,
-  status: Schema.String,
+  status: CheckpointStatus,
   requested_at: Schema.String,
   decided_at: Schema.Union([Schema.String, Schema.Null]),
   decided_by: Schema.Union([Schema.String, Schema.Null]),
@@ -42,12 +42,12 @@ const decodeCheckpointRow = (row: CheckpointRow): CheckpointRecord => ({
   sessionId: row.session_id as SessionId,
   channelId: row.channel_id as ChannelId,
   turnId: row.turn_id,
-  action: row.action as GovernanceAction,
+  action: row.action,
   policyId: row.policy_id as PolicyId | null,
   reason: row.reason,
   payloadJson: row.payload_json,
   payloadHash: row.payload_hash,
-  status: row.status as CheckpointStatus,
+  status: row.status,
   requestedAt: decodeSqlInstant(row.requested_at),
   decidedAt: row.decided_at ? decodeSqlInstant(row.decided_at) : null,
   decidedBy: row.decided_by,

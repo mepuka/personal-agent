@@ -25,13 +25,16 @@ import {
   type CheckpointReplayPayloadVersion,
   type Instant
 } from "@template/domain/ports"
-import type { AuthorizationDecision, ComplianceStatus } from "@template/domain/status"
+import type {
+  AuthorizationDecision,
+  CheckpointAction,
+  ComplianceStatus
+} from "@template/domain/status"
 import { DateTime, Effect, Layer, Match, Ref, Schema, ServiceMap, Stream } from "effect"
 import * as Tool from "effect/unstable/ai/Tool"
 import * as Toolkit from "effect/unstable/ai/Toolkit"
 import { AgentConfig } from "./AgentConfig.js"
 import {
-  ALWAYS_ALLOWED_TOOLS,
   computeAllowedTools,
   TOOL_CATALOG_BY_NAME
 } from "./ToolCatalog.js"
@@ -68,15 +71,68 @@ const TOOL_NAMES = {
   send_notification: ToolName.makeUnsafe("send_notification")
 } as const
 
-const ToolFailure = Schema.Struct({
+const ToolFailurePayload = Schema.Struct({
   errorCode: Schema.String,
   message: Schema.String
 })
-type ToolFailure = typeof ToolFailure.Type
+type ToolFailurePayload = typeof ToolFailurePayload.Type
+
+class ToolFailureError extends Schema.ErrorClass<ToolFailureError>(
+  "ToolFailureError"
+)({
+  _tag: Schema.tag("ToolFailureError"),
+  errorCode: Schema.String,
+  message: Schema.String
+}) {}
+
+export class RequiresApprovalToolFailure extends Schema.ErrorClass<RequiresApprovalToolFailure>(
+  "RequiresApprovalToolFailure"
+)({
+  _tag: Schema.tag("RequiresApprovalToolFailure"),
+  errorCode: Schema.Literal("RequiresApproval"),
+  message: Schema.String
+}) {}
+
+type ToolFailure = ToolFailureError | RequiresApprovalToolFailure
+
+const makeToolFailure = (
+  errorCode: string,
+  message: string
+): ToolFailure =>
+  errorCode === "RequiresApproval"
+    ? new RequiresApprovalToolFailure({ errorCode: "RequiresApproval", message })
+    : new ToolFailureError({ errorCode, message })
+
+const toToolFailurePayload = (
+  failure: ToolFailure
+): ToolFailurePayload =>
+  failure._tag === "RequiresApprovalToolFailure"
+    ? {
+      errorCode: "RequiresApproval",
+      message: failure.message
+    }
+    : {
+      errorCode: failure.errorCode,
+      message: failure.message
+    }
+
+const fromToolFailurePayload = (
+  failure: ToolFailurePayload
+): ToolFailure => makeToolFailure(failure.errorCode, failure.message)
+
+const ToolErrorResult = Schema.Struct({
+  ok: Schema.Literal(false),
+  errorCode: Schema.String,
+  message: Schema.String
+})
+type ToolErrorResult = typeof ToolErrorResult.Type
+
+const withToolErrorResult = <A extends Schema.Top>(success: A) =>
+  Schema.Union([success, ToolErrorResult])
 
 export interface CheckpointSignal {
   readonly checkpointId: string
-  readonly action: string
+  readonly action: CheckpointAction
   readonly toolName: string
   readonly inputJson: string
   readonly reason: string
@@ -84,10 +140,10 @@ export interface CheckpointSignal {
 
 const TimeNowTool = Tool.make("time_now", {
   description: "Return the current UTC timestamp as ISO 8601.",
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     nowIso: Schema.String
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const MathCalculateTool = Tool.make("math_calculate", {
@@ -95,10 +151,10 @@ const MathCalculateTool = Tool.make("math_calculate", {
   parameters: Schema.Struct({
     expression: Schema.String
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     result: Schema.Number
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const EchoTextTool = Tool.make("echo_text", {
@@ -106,10 +162,10 @@ const EchoTextTool = Tool.make("echo_text", {
   parameters: Schema.Struct({
     text: Schema.String
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     text: Schema.String
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const StoreMemoryTool = Tool.make("store_memory", {
@@ -120,11 +176,11 @@ const StoreMemoryTool = Tool.make("store_memory", {
     scope: Schema.optionalKey(MemoryScope),
     tier: Schema.optionalKey(MemoryTier)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     memoryId: Schema.String,
     stored: Schema.Boolean
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const RetrieveMemoriesTool = Tool.make("retrieve_memories", {
@@ -133,15 +189,15 @@ const RetrieveMemoriesTool = Tool.make("retrieve_memories", {
     query: Schema.String,
     limit: Schema.optionalKey(Schema.Number)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     memories: Schema.Array(Schema.Struct({
       memoryId: Schema.String,
       content: Schema.String,
       metadataJson: Schema.Union([Schema.String, Schema.Null]),
       createdAt: Schema.String
     }))
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const ForgetMemoriesTool = Tool.make("forget_memories", {
@@ -149,10 +205,10 @@ const ForgetMemoriesTool = Tool.make("forget_memories", {
   parameters: Schema.Struct({
     memoryIds: Schema.Array(Schema.String)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     forgotten: Schema.Number
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileReadTool = Tool.make("file_read", {
@@ -162,12 +218,12 @@ const FileReadTool = Tool.make("file_read", {
     offset: Schema.optionalKey(Schema.Number),
     limit: Schema.optionalKey(Schema.Number)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     content: Schema.String
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileWriteTool = Tool.make("file_write", {
@@ -176,12 +232,12 @@ const FileWriteTool = Tool.make("file_write", {
     path: Schema.String,
     content: Schema.String
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     bytesWritten: Schema.Number
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileEditTool = Tool.make("file_edit", {
@@ -191,13 +247,13 @@ const FileEditTool = Tool.make("file_edit", {
     old_string: Schema.NonEmptyString,
     new_string: Schema.String
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     bytesWritten: Schema.Number,
     diff: Schema.String
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileLsTool = Tool.make("file_ls", {
@@ -209,13 +265,13 @@ const FileLsTool = Tool.make("file_ls", {
     ignore: Schema.optionalKey(Schema.Array(Schema.String)),
     limit: Schema.optionalKey(Schema.Number)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     entries: Schema.Array(Schema.String),
     truncated: Schema.Boolean
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileFindTool = Tool.make("file_find", {
@@ -226,13 +282,13 @@ const FileFindTool = Tool.make("file_find", {
     include_hidden: Schema.optionalKey(Schema.Boolean),
     limit: Schema.optionalKey(Schema.Number)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     matches: Schema.Array(Schema.String),
     truncated: Schema.Boolean
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const FileGrepTool = Tool.make("file_grep", {
@@ -246,7 +302,7 @@ const FileGrepTool = Tool.make("file_grep", {
     case_sensitive: Schema.optionalKey(Schema.Boolean),
     limit: Schema.optionalKey(Schema.Number)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     path: Schema.String,
     matches: Schema.Array(Schema.Struct({
@@ -255,8 +311,8 @@ const FileGrepTool = Tool.make("file_grep", {
       text: Schema.String
     })),
     truncated: Schema.Boolean
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const ShellExecuteTool = Tool.make("shell_execute", {
@@ -265,13 +321,13 @@ const ShellExecuteTool = Tool.make("shell_execute", {
     command: Schema.String,
     cwd: Schema.optionalKey(Schema.String)
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     exitCode: Schema.Number,
     stdout: Schema.String,
     stderr: Schema.String
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const SendNotificationTool = Tool.make("send_notification", {
@@ -280,12 +336,12 @@ const SendNotificationTool = Tool.make("send_notification", {
     recipient: Schema.String,
     message: Schema.String
   }),
-  success: Schema.Struct({
+  success: withToolErrorResult(Schema.Struct({
     ok: Schema.Literal(true),
     notificationId: Schema.String,
     delivered: Schema.Boolean
-  }),
-  failure: ToolFailure
+  })),
+  failure: ToolFailurePayload
 })
 
 const SafeToolkit = Toolkit.make(
@@ -323,9 +379,10 @@ export interface ToolExecutionContext {
   readonly iteration?: number
   readonly channelId: string
   readonly checkpointId?: string
-  readonly checkpointAction?: string
+  readonly checkpointAction?: CheckpointAction
   readonly userId?: string
   readonly content?: string
+  readonly recoverToolErrors?: boolean
 }
 
 export interface ApprovedToolReplayResult {
@@ -376,7 +433,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
       const missingFromCatalog = [...toolkitNames].filter((n) => !catalogNames.has(n))
       const missingFromToolkit = [...catalogNames].filter((n) => !toolkitNames.has(n))
       if (missingFromCatalog.length > 0 || missingFromToolkit.length > 0) {
-        yield* Effect.die(
+        return yield* Effect.die(
           new Error(
             `ToolRegistry/ToolCatalog name parity mismatch. `
             + (missingFromCatalog.length > 0
@@ -444,14 +501,16 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
       ): Effect.Effect<A, ToolFailure> =>
         Effect.suspend(() => {
           const parsed = safeJsonParse(outputJson)
-          if (isToolFailure(parsed)) {
-            return Effect.fail(parsed)
+          if (isToolFailurePayload(parsed)) {
+            return Effect.fail(fromToolFailurePayload(parsed))
           }
           if (parsed === null || parsed === undefined) {
-            return Effect.fail<ToolFailure>({
-              errorCode: "ReplayDecodeFailed",
-              message: "stored invocation output was null or undefined"
-            })
+            return Effect.fail(
+              makeToolFailure(
+                "ReplayDecodeFailed",
+                "stored invocation output was null or undefined"
+              )
+            )
           }
           return Effect.succeed(parsed as A)
         })
@@ -472,7 +531,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           toolName: params.toolName,
           idempotencyKey: params.idempotencyKey,
           inputJson: params.inputJson,
-          outputJson: safeJsonStringify(params.failure),
+          outputJson: safeJsonStringify(toToolFailurePayload(params.failure)),
           decision: params.decision,
           complianceStatus: "NonCompliant",
           policyId: params.policyId,
@@ -481,6 +540,28 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         }).pipe(
           Effect.andThen(Effect.fail(params.failure))
         )
+
+      const toToolErrorResult = (failure: ToolFailure): ToolErrorResult => {
+        const payload = toToolFailurePayload(failure)
+        return {
+          ok: false,
+          errorCode: payload.errorCode,
+          message: payload.message
+        }
+      }
+
+      const withToolErrorRecovery = <A>(
+        context: ToolExecutionContext,
+        effect: Effect.Effect<A, ToolFailure>
+      ): Effect.Effect<A | ToolErrorResult, ToolFailure> =>
+        context.recoverToolErrors === true
+          ? effect.pipe(
+            Effect.catchTags({
+              ToolFailureError: (failure) => Effect.succeed(toToolErrorResult(failure)),
+              RequiresApprovalToolFailure: (failure) => Effect.fail(failure)
+            })
+          )
+          : effect
 
       const runMemoryPolicy = <A>(params: {
         readonly context: ToolExecutionContext
@@ -499,10 +580,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             action: params.action
           }).pipe(
             Effect.catchCause(() =>
-              Effect.fail<ToolFailure>({
-                errorCode: "MemoryPolicyError",
-                message: "memory policy evaluation failed"
-              })
+              Effect.fail(makeToolFailure("MemoryPolicyError", "memory policy evaluation failed"))
             )
           )
 
@@ -522,10 +600,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 createdAt: params.context.now
               }).pipe(
                 Effect.andThen(
-                  Effect.fail<ToolFailure>({
-                    errorCode: "MemoryAccessDenied",
-                    message: policy.reason
-                  })
+                  Effect.fail(makeToolFailure("MemoryAccessDenied", policy.reason))
                 )
               )
             )
@@ -577,10 +652,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               policyId: POLICY_TOOL_SCOPE,
               toolDefinitionId: null,
               reason: `tool_scope_denied:${toolName}`,
-              failure: {
-                errorCode: "ToolNotInScope",
-                message: `Tool '${toolName}' is not allowed in this subroutine's tool scope.`
-              }
+              failure: makeToolFailure(
+                "ToolNotInScope",
+                `Tool '${toolName}' is not allowed in this subroutine's tool scope.`
+              )
             })
           }
 
@@ -597,17 +672,21 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               },
               expectedToolName: toolName as string,
               expectedInputJson: inputJson
-            }).pipe(Effect.mapError(toCheckpointToolFailure))
+            }).pipe(
+              Effect.mapError((failure) =>
+                fromToolFailurePayload(toCheckpointToolFailure(failure))
+              )
+            )
 
             // Local defensive assert to keep bypass path invariant explicit at call site.
             if (
               validatedCheckpoint.payload.toolName !== (toolName as string)
               || validatedCheckpoint.payload.inputJson !== inputJson
             ) {
-              return yield* Effect.fail<ToolFailure>({
-                errorCode: "CheckpointPayloadMismatch",
-                message: `checkpoint ${context.checkpointId} payload does not match replay tool input`
-              })
+              return yield* makeToolFailure(
+                "CheckpointPayloadMismatch",
+                `checkpoint ${context.checkpointId} payload does not match replay tool input`
+              )
             }
 
             // Bypass policy/idempotency — execute directly
@@ -654,10 +733,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 policyId: POLICY_SYSTEM_ERROR,
                 toolDefinitionId: null,
                 reason: "governance_system_error:evaluate_policy",
-                failure: {
-                  errorCode: "GovernancePolicyError",
-                  message: "policy evaluation failed"
-                }
+                failure: makeToolFailure("GovernancePolicyError", "policy evaluation failed")
               })
             )
           )
@@ -673,7 +749,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
                 toolDefinitionId: policy.toolDefinitionId,
                 reason: `tool_policy_denied:${toolName}`,
-                failure: { errorCode: "PolicyDenied", message: policy.reason }
+                failure: makeToolFailure("PolicyDenied", policy.reason)
               })
             ),
             Match.when("RequireApproval", () =>
@@ -723,7 +799,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                     ...signals,
                     {
                       checkpointId: newCheckpointId,
-                      action: "InvokeTool",
+                      action: "InvokeTool" as const,
                       toolName: toolName as string,
                       inputJson,
                       reason: policy.reason
@@ -740,7 +816,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                   policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
                   toolDefinitionId: policy.toolDefinitionId,
                   reason: `tool_requires_approval:${toolName}`,
-                  failure: { errorCode: "RequiresApproval", message: policy.reason }
+                  failure: makeToolFailure("RequiresApproval", policy.reason)
                 })
               })
             ),
@@ -759,10 +835,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
                 toolDefinitionId: policy.toolDefinitionId,
                 reason: `tool_quota_exceeded:${toolName}`,
-                failure: {
-                  errorCode: "ToolQuotaExceeded",
-                  message: `remaining_invocations=${error.remainingInvocations}`
-                }
+                failure: makeToolFailure(
+                  "ToolQuotaExceeded",
+                  `remaining_invocations=${error.remainingInvocations}`
+                )
               })
             ),
             Effect.catchDefect(() =>
@@ -775,10 +851,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 policyId: POLICY_SYSTEM_ERROR,
                 toolDefinitionId: policy.toolDefinitionId,
                 reason: "governance_system_error:check_quota",
-                failure: {
-                  errorCode: "GovernanceQuotaError",
-                  message: "quota check failed"
-                }
+                failure: makeToolFailure("GovernanceQuotaError", "quota check failed")
               })
             )
           )
@@ -799,22 +872,38 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                 reason: `tool_invoked:${toolName}`
               })
             ),
-            Effect.catch((failure) =>
-              persistInvocation({
-                context,
-                toolName,
-                idempotencyKey,
-                inputJson,
-                outputJson: safeJsonStringify(failure),
-                decision: "Allow",
-                complianceStatus: "Compliant",
-                policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
-                toolDefinitionId: policy.toolDefinitionId,
-                reason: `tool_execution_failed:${toolName}:${failure.errorCode}`
-              }).pipe(
-                Effect.andThen(Effect.fail(failure))
-              )
-            )
+            Effect.catchTags({
+              ToolFailureError: (failure) =>
+                persistInvocation({
+                  context,
+                  toolName,
+                  idempotencyKey,
+                  inputJson,
+                  outputJson: safeJsonStringify(toToolFailurePayload(failure)),
+                  decision: "Allow",
+                  complianceStatus: "Compliant",
+                  policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
+                  toolDefinitionId: policy.toolDefinitionId,
+                  reason: `tool_execution_failed:${toolName}:${failure.errorCode}`
+                }).pipe(
+                  Effect.andThen(Effect.fail(failure))
+                ),
+              RequiresApprovalToolFailure: (failure) =>
+                persistInvocation({
+                  context,
+                  toolName,
+                  idempotencyKey,
+                  inputJson,
+                  outputJson: safeJsonStringify(toToolFailurePayload(failure)),
+                  decision: "Allow",
+                  complianceStatus: "Compliant",
+                  policyId: policy.policyId ?? POLICY_SYSTEM_ERROR,
+                  toolDefinitionId: policy.toolDefinitionId,
+                  reason: `tool_execution_failed:${toolName}:${failure.errorCode}`
+                }).pipe(
+                  Effect.andThen(Effect.fail(failure))
+                )
+            })
           )
         }) as Effect.Effect<A, ToolFailure>
 
@@ -839,49 +928,62 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           const profile = yield* agentConfig.getAgent(context.agentId as string).pipe(Effect.orDie)
           const memoryLimits = profile.runtime.memory
           const allowedTools = toolScope ? computeAllowedTools(toolScope) : undefined
+          const runTool = <A>(
+            toolContext: ToolExecutionContext,
+            toolName: ToolName,
+            input: Record<string, unknown>,
+            execute: Effect.Effect<A, ToolFailure>
+          ): Effect.Effect<A | ToolErrorResult, ToolFailure> =>
+            withToolErrorRecovery(
+              toolContext,
+              runGovernedTool(
+                toolContext,
+                toolName,
+                input,
+                execute,
+                checkpointSignalsRef,
+                allowedTools
+              )
+            )
 
           return {
             toolkit: SafeToolkit,
             handlerLayer: SafeToolkit.toLayer(
               SafeToolkit.of({
               "time_now": () =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.time_now,
                   {},
                   Effect.succeed({
                     nowIso: DateTime.formatIso(context.now)
-                  }),
-                  checkpointSignalsRef,
-                  allowedTools
+                  })
                 ),
               "math_calculate": ({ expression }) => {
                 const result = safeCalculate(expression)
-                return runGovernedTool(
+                return runTool(
                   context,
                   TOOL_NAMES.math_calculate,
                   { expression },
                   result === null
-                    ? Effect.fail<ToolFailure>({
-                      errorCode: "InvalidExpression",
-                      message: "Expression must contain only numbers and arithmetic operators."
-                    })
-                    : Effect.succeed({ result }),
-                  checkpointSignalsRef,
-                  allowedTools
+                    ? Effect.fail(
+                      makeToolFailure(
+                        "InvalidExpression",
+                        "Expression must contain only numbers and arithmetic operators."
+                      )
+                    )
+                    : Effect.succeed({ result })
                 )
               },
               "echo_text": ({ text }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.echo_text,
                   { text },
-                  Effect.succeed({ text }),
-                  checkpointSignalsRef,
-                  allowedTools
+                  Effect.succeed({ text })
                 ),
               "store_memory": ({ content, tags, scope, tier }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.store_memory,
                   { content, tags, scope, tier },
@@ -910,10 +1012,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       )
 
                       if (memoryId === undefined) {
-                        return yield* Effect.fail<ToolFailure>({
-                          errorCode: "MemoryStoreFailed",
-                          message: "memory store did not return an item id"
-                        })
+                        return yield* makeToolFailure(
+                          "MemoryStoreFailed",
+                          "memory store did not return an item id"
+                        )
                       }
 
                       return {
@@ -921,12 +1023,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                         stored: true
                       } as const
                     })
-                  }),
-                  checkpointSignalsRef,
-                  allowedTools
+                  })
                 ),
               "retrieve_memories": ({ query, limit }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.retrieve_memories,
                   { query, limit },
@@ -952,12 +1052,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                         }))
                       }))
                     )
-                  }),
-                  checkpointSignalsRef,
-                  allowedTools
+                  })
                 ),
               "forget_memories": ({ memoryIds }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.forget_memories,
                   { memoryIds },
@@ -973,10 +1071,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       const validIds = toMemoryItemIds(memoryIds)
 
                       if (validIds.length === 0) {
-                        return yield* Effect.fail<ToolFailure>({
-                          errorCode: "InvalidMemoryIds",
-                          message: "memoryIds must contain at least one non-empty id"
-                        })
+                        return yield* makeToolFailure(
+                          "InvalidMemoryIds",
+                          "memoryIds must contain at least one non-empty id"
+                        )
                       }
 
                       const forgotten = yield* memoryPort.forget(context.agentId, {
@@ -984,12 +1082,10 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       })
                       return { forgotten } as const
                     })
-                  }),
-                  checkpointSignalsRef,
-                  allowedTools
+                  })
                 ),
               "file_read": ({ path, offset, limit }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_read,
                   { path, offset, limit },
@@ -1004,16 +1100,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       path: result.path,
                       content: result.content
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "file_write": ({ path, content }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_write,
                   { path, content },
@@ -1027,16 +1118,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       path: result.path,
                       bytesWritten: result.bytesWritten
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "file_edit": ({ path, old_string, new_string }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_edit,
                   { path, old_string, new_string },
@@ -1052,16 +1138,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       bytesWritten: result.bytesWritten,
                       diff: result.diff
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "file_ls": ({ path, recursive, include_hidden, ignore, limit }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_ls,
                   { path, recursive, include_hidden, ignore, limit },
@@ -1079,16 +1160,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       entries: result.entries,
                       truncated: result.truncated
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "file_find": ({ pattern, path, include_hidden, limit }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_find,
                   { pattern, path, include_hidden, limit },
@@ -1105,16 +1181,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       matches: result.matches,
                       truncated: result.truncated
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "file_grep": ({ pattern, path, include_hidden, include, literal_text, case_sensitive, limit }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.file_grep,
                   { pattern, path, include_hidden, include, literal_text, case_sensitive, limit },
@@ -1134,16 +1205,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       matches: result.matches,
                       truncated: result.truncated
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "shell_execute": ({ command, cwd }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.shell_execute,
                   { command, cwd },
@@ -1158,16 +1224,11 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       stdout: result.stdout,
                       stderr: result.stderr
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 ),
               "send_notification": ({ recipient, message }) =>
-                runGovernedTool(
+                runTool(
                   context,
                   TOOL_NAMES.send_notification,
                   { recipient, message },
@@ -1177,13 +1238,8 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
                       notificationId: result.notificationId,
                       delivered: result.delivered
                     })),
-                    Effect.mapError((error) => ({
-                      errorCode: error.errorCode,
-                      message: error.message
-                    }))
-                  ),
-                  checkpointSignalsRef,
-                  allowedTools
+                    Effect.mapError((error) => makeToolFailure(error.errorCode, error.message))
+                  )
                 )
             })
           ) as SafeToolkitHandlerLayer
@@ -1209,7 +1265,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
             replayPayloadVersion: CHECKPOINT_REPLAY_PAYLOAD_VERSION,
             toolName: "unknown",
             inputJson: "{}",
-            outputJson: safeJsonStringify(failure),
+            outputJson: safeJsonStringify(toToolFailurePayload(failure)),
             isError: true
           })
 
@@ -1223,11 +1279,16 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               channelId: params.channelId
             }
           }).pipe(
-            Effect.mapError(toCheckpointToolFailure),
+            Effect.mapError((failure) =>
+              fromToolFailurePayload(toCheckpointToolFailure(failure))
+            ),
             Effect.map((result) => ({ ok: true as const, result })),
-            Effect.catch((failure) =>
-              Effect.succeed({ ok: false as const, failure })
-            )
+            Effect.catchTags({
+              ToolFailureError: (failure) =>
+                Effect.succeed({ ok: false as const, failure }),
+              RequiresApprovalToolFailure: (failure) =>
+                Effect.succeed({ ok: false as const, failure })
+            })
           )
 
           if (!validatedCheckpoint.ok) {
@@ -1244,10 +1305,14 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               replayPayloadVersion: replayPayload.replayPayloadVersion,
               toolName: replayPayload.toolName,
               inputJson: replayPayload.inputJson,
-              outputJson: safeJsonStringify({
-                errorCode: "CheckpointPayloadInvalid",
-                message: "tool replay input is not a valid JSON object"
-              }),
+              outputJson: safeJsonStringify(
+                toToolFailurePayload(
+                  makeToolFailure(
+                    "CheckpointPayloadInvalid",
+                    "tool replay input is not a valid JSON object"
+                  )
+                )
+              ),
               isError: true
             } satisfies ApprovedToolReplayResult
           }
@@ -1281,12 +1346,18 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               isError: false as const,
               outputJson: safeJsonStringify(chunks)
             })),
-            Effect.catch((failure) =>
-              Effect.succeed({
-                isError: true as const,
-                outputJson: safeJsonStringify(toToolFailure(failure))
-              })
-            )
+            Effect.catchTags({
+              ToolFailureError: (failure: ToolFailureError) =>
+                Effect.succeed({
+                  isError: true as const,
+                  outputJson: safeJsonStringify(toToolFailurePayload(failure))
+                }),
+              RequiresApprovalToolFailure: (failure: RequiresApprovalToolFailure) =>
+                Effect.succeed({
+                  isError: true as const,
+                  outputJson: safeJsonStringify(toToolFailurePayload(failure))
+                })
+            })
           )
 
           return {
@@ -1370,22 +1441,26 @@ const safeCalculate = (expression: string): number | null => {
   }
 }
 
-
-const isToolFailure = Schema.is(ToolFailure)
+const isToolFailurePayload = Schema.is(ToolFailurePayload)
 
 const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-const toToolFailure = (error: unknown): ToolFailure => ({
-  errorCode: (
+const toToolFailure = (error: unknown): ToolFailure => {
+  if (error instanceof ToolFailureError || error instanceof RequiresApprovalToolFailure) {
+    return error
+  }
+
+  const errorCode = (
       typeof error === "object"
       && error !== null
       && "errorCode" in error
       && typeof (error as { readonly errorCode?: unknown }).errorCode === "string"
     )
     ? (error as { readonly errorCode: string }).errorCode
-    : "ToolInvocationError",
-  message: (
+    : "ToolInvocationError"
+
+  const message = (
       typeof error === "object"
       && error !== null
       && "message" in error
@@ -1395,4 +1470,6 @@ const toToolFailure = (error: unknown): ToolFailure => ({
     : error instanceof Error
     ? error.message
     : String(error)
-})
+
+  return makeToolFailure(errorCode, message)
+}

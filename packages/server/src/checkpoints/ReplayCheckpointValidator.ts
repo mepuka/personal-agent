@@ -6,6 +6,7 @@ import {
   type CheckpointRecord,
   type ContentBlock
 } from "@template/domain/ports"
+import type { CheckpointAction } from "@template/domain/status"
 import { Effect, Schema } from "effect"
 import { canonicalJsonStringify, makeCheckpointPayloadHash } from "./ReplayHash.js"
 
@@ -39,7 +40,7 @@ const fail = (
 const loadApprovedCheckpoint = (params: {
   readonly checkpointPort: Pick<CheckpointPort, "get">
   readonly checkpointId: CheckpointId
-  readonly action: "InvokeTool" | "ReadMemory"
+  readonly action: CheckpointAction
 }): Effect.Effect<CheckpointRecord, ReplayCheckpointValidationError> =>
   Effect.gen(function*() {
     const checkpoint = yield* params.checkpointPort.get(params.checkpointId)

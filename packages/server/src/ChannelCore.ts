@@ -10,7 +10,7 @@ import {
   type ContentBlock,
   type TurnRecord
 } from "@template/domain/ports"
-import type { ChannelCapability, ChannelType } from "@template/domain/status"
+import type { ChannelCapability, ChannelType, CheckpointDecision } from "@template/domain/status"
 import { Cause, DateTime, Effect, Layer, Option, ServiceMap, Stream } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SessionEntity } from "./entities/SessionEntity.js"
@@ -85,14 +85,13 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
               inputJson: params.inputJson
             },
             {
-              type: "tool.result" as const,
+              type: "tool.error" as const,
               sequence: 3,
               turnId: params.turnId,
               sessionId: params.sessionId,
               toolCallId,
               toolName: params.toolName,
-              outputJson: params.outputJson,
-              isError: true
+              outputJson: params.outputJson
             }
           ]),
           replayFailureStream(
@@ -473,7 +472,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
 
       const decideCheckpoint = (params: {
         readonly checkpointId: CheckpointId
-        readonly decision: "Approved" | "Rejected" | "Deferred"
+        readonly decision: CheckpointDecision
         readonly decidedBy: string
       }) =>
         Effect.gen(function*() {
@@ -802,7 +801,7 @@ export type ChannelCoreService = {
 
   readonly decideCheckpoint: (params: {
     readonly checkpointId: CheckpointId
-    readonly decision: "Approved" | "Rejected" | "Deferred"
+    readonly decision: CheckpointDecision
     readonly decidedBy: string
   }) => Effect.Effect<
     | { readonly ok: true; readonly kind: "ack" }

@@ -3,7 +3,7 @@ import type { ChatMessage } from "../types.js"
 import { theme } from "../theme.js"
 import { SyntaxStyleContext } from "./SyntaxStyleContext.js"
 
-export function MessageBubble({ message }: { readonly message: ChatMessage }) {
+const MessageBubbleInner = function MessageBubble({ message }: { readonly message: ChatMessage }) {
   const syntaxStyle = React.useContext(SyntaxStyleContext)
 
   if (message.role === "user") {
@@ -37,7 +37,7 @@ export function MessageBubble({ message }: { readonly message: ChatMessage }) {
       )}
       {message.status === "checkpoint_required" ? (
         <text
-          content={`  ⚠ Checkpoint: ${message.checkpointAction ?? "unknown"} — ${message.checkpointReason ?? ""}`}
+          content={`  ⚠ Checkpoint: ${message.checkpointAction ?? "approval"} — ${message.checkpointReason ?? ""}`}
           fg={theme.statusPending}
         />
       ) : null}
@@ -59,3 +59,5 @@ export function MessageBubble({ message }: { readonly message: ChatMessage }) {
     </box>
   )
 }
+
+export const MessageBubble = React.memo(MessageBubbleInner)

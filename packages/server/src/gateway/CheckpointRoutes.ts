@@ -1,11 +1,10 @@
-import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
 import type { CheckpointId } from "@template/domain/ids"
-import { Effect, Layer, Schema, Stream } from "effect"
-import * as Sse from "effect/unstable/encoding/Sse"
+import { CheckpointDecision } from "@template/domain/status"
+import { Effect, Layer, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
-import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
+import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,30 +14,6 @@ const extractParam = (inputUrl: string, index: number): string => {
   const url = new URL(inputUrl, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
   return parts[index] ?? ""
-}
-
-const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
-
-const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
-  _tag: "Event",
-  event: event.type,
-  id: String(event.sequence),
-  data: encodeToJson(event)
-})
-
-const toFailedTurnEvent = (error: unknown): TurnFailedEvent => {
-  const identity = toTurnFailureIdentity(error)
-  const message = toTurnFailureMessage(error, "Replay stream failed unexpectedly")
-  const errorCode = toTurnFailureCode(error, message)
-
-  return {
-    type: "turn.failed",
-    sequence: Number.MAX_SAFE_INTEGER,
-    turnId: identity.turnId || "unknown",
-    sessionId: identity.sessionId || "unknown",
-    errorCode,
-    message
-  }
 }
 
 const badRequest = (message: string) =>
@@ -51,7 +26,7 @@ const badRequest = (message: string) =>
   )
 
 const DecideCheckpointRequest = Schema.Struct({
-  decision: Schema.Literals(["Approved", "Rejected", "Deferred"]),
+  decision: CheckpointDecision,
   decidedBy: Schema.String
 })
 const decodeDecideCheckpointRequest = Schema.decodeUnknownOption(DecideCheckpointRequest)
@@ -157,11 +132,10 @@ const decideCheckpoint = HttpRouter.add(
       }
 
       // Approved with replay stream — return SSE
-      const sseStream = result.stream.pipe(
-        Stream.catch((error) => Stream.make(toFailedTurnEvent(error))),
-        Stream.map(toSseEvent),
-        Stream.pipeThroughChannel(Sse.encode()),
-        Stream.encodeText
+      const sseStream = toSseTextStream(
+        withFailedTurnEvent(result.stream, {
+          fallbackMessage: "Replay stream failed unexpectedly"
+        })
       )
 
       return HttpServerResponse.stream(sseStream, {

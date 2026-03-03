@@ -187,6 +187,12 @@ export const GovernanceAction = Schema.Literals([
 ])
 export type GovernanceAction = typeof GovernanceAction.Type
 
+export const CheckpointAction = Schema.Literals([
+  "InvokeTool",
+  "ReadMemory"
+])
+export type CheckpointAction = typeof CheckpointAction.Type
+
 export const CheckpointStatus = Schema.Literals([
   "Pending",
   "Approved",
@@ -196,6 +202,24 @@ export const CheckpointStatus = Schema.Literals([
   "Consumed"
 ])
 export type CheckpointStatus = typeof CheckpointStatus.Type
+
+export const CheckpointDecision = Schema.Literals([
+  "Approved",
+  "Rejected",
+  "Deferred"
+])
+export type CheckpointDecision = typeof CheckpointDecision.Type
+
+export const TurnAuditReasonCode = Schema.Literals([
+  "turn_processing_accepted",
+  "turn_processing_policy_denied",
+  "turn_processing_requires_approval",
+  "turn_processing_checkpoint_required",
+  "turn_processing_token_budget_exceeded",
+  "turn_processing_provider_credit_exhausted",
+  "turn_processing_model_error"
+])
+export type TurnAuditReasonCode = typeof TurnAuditReasonCode.Type
 
 export const SubroutineTriggerType = Schema.Literals([
   "PostTurn",

@@ -1,4 +1,4 @@
-import type { TurnStreamEvent } from "@template/domain/events"
+import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
 import { Effect, Layer, ServiceMap, Stream } from "effect"
 import * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
 import {
@@ -7,6 +7,7 @@ import {
   type TurnProcessingError,
   TurnProcessingWorkflow
 } from "./TurnProcessingWorkflow.js"
+import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "./TurnFailureMapping.js"
 
 export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRuntime>()(
   "server/TurnProcessingRuntime",
@@ -14,25 +15,24 @@ export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRunt
     make: Effect.gen(function*() {
       const workflowEngine = yield* WorkflowEngine.WorkflowEngine
 
-      const processTurn = (input: ProcessTurnPayload): Effect.Effect<ProcessTurnResult, TurnProcessingError> =>
-        Effect.gen(function*() {
-          const withEngine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            effect.pipe(
-              Effect.provideService(WorkflowEngine.WorkflowEngine, workflowEngine)
-            )
+      const withEngine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(WorkflowEngine.WorkflowEngine, workflowEngine)
+        )
 
-          const executionId = yield* makeExecutionId(input.turnId)
-          const existing = yield* withEngine(TurnProcessingWorkflow.poll(executionId))
+      const processTurn = Effect.fn("TurnProcessingRuntime.processTurn")(function*(input: ProcessTurnPayload) {
+        const executionId = yield* makeExecutionId(input.turnId)
+        const existing = yield* withEngine(TurnProcessingWorkflow.poll(executionId))
 
-          if (existing !== undefined) {
-            if (existing._tag === "Complete") {
-              return yield* existing.exit
-            }
-            return yield* withEngine(TurnProcessingWorkflow.execute(input))
+        if (existing !== undefined) {
+          if (existing._tag === "Complete") {
+            return yield* existing.exit
           }
-
           return yield* withEngine(TurnProcessingWorkflow.execute(input))
-        })
+        }
+
+        return yield* withEngine(TurnProcessingWorkflow.execute(input))
+      })
 
       const processTurnStream = (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent, TurnProcessingError> => {
         const startedEvent: TurnStreamEvent = {
@@ -45,10 +45,13 @@ export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRunt
 
         const tail = Stream.fromEffect(processTurn(input)).pipe(
           Stream.map((result) => toSuccessEvents(input, result)),
-          Stream.flatMap(Stream.fromIterable)
+          Stream.flatMap(Stream.fromIterable),
+          Stream.catch((error) => Stream.make(toFailedEvent(input, error)))
         )
 
-        return Stream.concat(Stream.make(startedEvent), tail)
+        return Stream.concat(Stream.make(startedEvent), tail).pipe(
+          Stream.withSpan("TurnProcessingRuntime.processTurnStream")
+        )
       }
 
       return {
@@ -90,10 +93,16 @@ const toSuccessEvents = (
             toolCallId: block.toolCallId, toolName: block.toolName, inputJson: block.inputJson
           }]
         case "ToolResultBlock":
+          if (block.isError || isRecoveredToolErrorOutput(block.outputJson)) {
+            return [{
+              type: "tool.error" as const, ...base, sequence: 0,
+              toolCallId: block.toolCallId, toolName: block.toolName, outputJson: block.outputJson
+            }]
+          }
           return [{
             type: "tool.result" as const, ...base, sequence: 0,
             toolCallId: block.toolCallId, toolName: block.toolName,
-            outputJson: block.outputJson, isError: block.isError
+            outputJson: block.outputJson, isError: false
           }]
         case "ImageBlock":
           return []
@@ -101,13 +110,16 @@ const toSuccessEvents = (
     }
   )
 
-  const checkpointEvent: TurnStreamEvent | null = result.checkpointId !== undefined
+  const checkpointEvent: TurnStreamEvent | null = (
+    result.checkpointId !== undefined
+    && result.checkpointAction !== undefined
+  )
     ? {
       type: "turn.checkpoint_required" as const,
       ...base,
       sequence: 0,
       checkpointId: result.checkpointId,
-      action: result.checkpointAction ?? "unknown",
+      action: result.checkpointAction,
       reason: result.checkpointReason ?? "checkpoint required"
     }
     : null
@@ -134,16 +146,61 @@ const toSuccessEvents = (
   return allEvents.map((event, i) => ({ ...event, sequence: i + 2 }))
 }
 
-const makeExecutionId = (idempotencyKey: string) =>
-  Effect.map(
-    Effect.promise(() =>
-      crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(`TurnProcessingWorkflow-${idempotencyKey}`)
-      )
-    ),
-    (buffer) => {
-      const hex = Array.from(new Uint8Array(buffer).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("")
-      return hex
-    }
+const toFailedEvent = (
+  input: ProcessTurnPayload,
+  error: TurnProcessingError
+): TurnFailedEvent => {
+  const identity = toTurnFailureIdentity(error)
+  const message = toTurnFailureMessage(error, "Turn processing failed unexpectedly")
+  const errorCode = toTurnFailureCode(error, message)
+
+  return {
+    type: "turn.failed",
+    sequence: 2,
+    turnId: identity.turnId.length > 0 ? identity.turnId : input.turnId,
+    sessionId: identity.sessionId.length > 0 ? identity.sessionId : input.sessionId,
+    errorCode,
+    message
+  }
+}
+
+/** @internal — exported for testing */
+export const _test = {
+  toSuccessEvents,
+  toFailedEvent
+}
+
+const isRecoveredToolErrorOutput = (outputJson: string): boolean => {
+  try {
+    const parsed = JSON.parse(outputJson)
+    return isToolErrorPayload(parsed)
+  } catch {
+    return false
+  }
+}
+
+const isToolErrorPayload = (value: unknown): value is {
+  readonly ok: false
+  readonly errorCode: string
+  readonly message: string
+} =>
+  typeof value === "object"
+  && value !== null
+  && "ok" in value
+  && (value as { readonly ok?: unknown }).ok === false
+  && "errorCode" in value
+  && typeof (value as { readonly errorCode?: unknown }).errorCode === "string"
+  && "message" in value
+  && typeof (value as { readonly message?: unknown }).message === "string"
+
+const makeExecutionId = Effect.fn("TurnProcessingRuntime.makeExecutionId")(function*(idempotencyKey: string) {
+  const buffer = yield* Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`TurnProcessingWorkflow-${idempotencyKey}`)
+    )
   )
+
+  const hex = Array.from(new Uint8Array(buffer).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("")
+  return hex
+})

@@ -12,15 +12,13 @@
  *   5. Server streams: turn events as JSON frames
  */
 import { AiProviderName } from "@template/domain/config"
-import { TurnFailedEvent } from "@template/domain/events"
-import type { TurnStreamEvent } from "@template/domain/events"
 import { Cause, Effect, Option, Schema, Stream } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import type * as Socket from "effect/unstable/socket/Socket"
 import { WebChatAdapterEntity } from "../entities/WebChatAdapterEntity.js"
-import { toTurnFailureCode, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
+import { encodeTurnEventJson, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 // ---------------------------------------------------------------------------
 // Frame Schemas
@@ -65,7 +63,6 @@ const decodeClientFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Clien
 const encodeConnected = Schema.encodeSync(Schema.fromJsonString(ConnectedFrame))
 const encodeInitialized = Schema.encodeSync(Schema.fromJsonString(InitializedFrame))
 const encodeErrorFrame = Schema.encodeSync(Schema.fromJsonString(ErrorFrameSchema))
-const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,8 +120,6 @@ export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
     generationConfig: frame.generationConfig
   }
 }
-
-const turnEventToFrame = (event: TurnStreamEvent): string => encodeToJson(event)
 
 /** @internal — exported for testing. Transport-level errors only (not message processing). */
 export const errorFrame = (code: string, message: string): string =>
@@ -200,25 +195,25 @@ const wsChat = HttpRouter.add(
             )
           }
           const client = makeClient(channelId)
-          return client.receiveMessage({
-            content: frame.content,
-            userId,
-            ...frame.model ? { modelOverride: frame.model } : {},
-            ...frame.generationConfig ? { generationConfigOverride: frame.generationConfig } : {}
-          }).pipe(
-            Stream.runForEach((event) => writeFn(turnEventToFrame(event))),
-            Effect.catchCause((cause) => {
-              const message = toTurnFailureMessage(Cause.squash(cause), Cause.pretty(cause))
-              const failedEvent = new TurnFailedEvent({
-                type: "turn.failed",
-                sequence: Number.MAX_SAFE_INTEGER,
-                turnId: "",
-                sessionId: "",
-                errorCode: toTurnFailureCode(Cause.squash(cause), message),
-                message
-              })
-              return writeFn(encodeToJson(failedEvent)).pipe(Effect.ignore)
-            })
+          return withFailedTurnEvent(
+            client.receiveMessage({
+              content: frame.content,
+              userId,
+              ...frame.model ? { modelOverride: frame.model } : {},
+              ...frame.generationConfig ? { generationConfigOverride: frame.generationConfig } : {}
+            }),
+            {
+              fallbackMessage: "Message stream failed unexpectedly",
+              defaultTurnId: "",
+              defaultSessionId: ""
+            }
+          ).pipe(
+            Stream.runForEach((event) => writeFn(encodeTurnEventJson(event))),
+            Effect.catchCause((cause) =>
+              writeFn(errorFrame("MESSAGE_STREAM_FAILED", Cause.pretty(cause))).pipe(
+                Effect.ignore
+              )
+            )
           )
         }
 
