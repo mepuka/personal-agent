@@ -5,9 +5,7 @@ import { RegistryContext } from "@effect/atom-react"
 import { BunHttpClient } from "@effect/platform-bun"
 import { Effect } from "effect"
 import { AtomRegistry } from "effect/unstable/reactivity"
-// @ts-expect-error -- @opentui/core .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { createCliRenderer, SyntaxStyle } from "@opentui/core"
-// @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { createRoot } from "@opentui/react"
 import { App } from "./App.js"
 import { SyntaxStyleContext } from "./components/SyntaxStyleContext.js"

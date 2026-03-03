@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react"
-// @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { useKeyboard } from "@opentui/react"
 import * as React from "react"
 import { inputHistoryAtom, isStreamingAtom, pendingCheckpointAtom } from "../atoms/session.js"
@@ -37,7 +36,7 @@ export function InputBar({
 
   // Checkpoint decision keyboard handler
   useKeyboard(
-    (key: { name: string }) => {
+    (key) => {
       if (!focused || !checkpoint || !onDecision) return
       switch (key.name.toLowerCase()) {
         case "y":
@@ -56,7 +55,7 @@ export function InputBar({
 
   // History navigation — disabled during checkpoint
   useKeyboard(
-    (key: { name: string }) => {
+    (key) => {
       if (!focused || isStreaming) return
       if (inputHistory.length === 0) return
 

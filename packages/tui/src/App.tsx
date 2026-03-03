@@ -2,7 +2,6 @@ import { ChatClient } from "@template/client/ChatClient"
 import { RegistryContext, useAtomValue } from "@effect/atom-react"
 import { Effect, ServiceMap } from "effect"
 import * as React from "react"
-// @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import {
   availableChannelsAtom,
@@ -119,7 +118,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     Effect.runFork(program)
   }, [registry, client, activeChannelId])
 
-  useKeyboard((key: { name: string; ctrl: boolean }) => {
+  useKeyboard((key) => {
     if (key.ctrl && key.name === "c") {
       process.exit(0)
     }
