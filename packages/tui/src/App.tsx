@@ -2,6 +2,8 @@ import { ChatClient } from "@template/client/ChatClient"
 import { RegistryContext, useAtomValue } from "@effect/atom-react"
 import { Effect, ServiceMap } from "effect"
 import * as React from "react"
+// @ts-expect-error -- @opentui/core .d.ts uses extensionless re-exports incompatible with NodeNext resolution
+import { SyntaxStyle } from "@opentui/core"
 // @ts-expect-error -- @opentui/react .d.ts uses extensionless re-exports incompatible with NodeNext resolution
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import {
@@ -14,6 +16,7 @@ import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
 import { ModalLayer } from "./components/ModalLayer.js"
 import { StatusBar } from "./components/StatusBar.js"
+import { SyntaxStyleContext } from "./components/SyntaxStyleContext.js"
 import { ToolPane } from "./components/ToolPane.js"
 import { useDecideCheckpoint } from "./hooks/useDecideCheckpoint.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
@@ -26,6 +29,7 @@ type FocusTarget = "input" | "tools"
 
 const DEFAULT_AGENT_ID = "agent:bootstrap"
 
+const defaultSyntaxStyle = SyntaxStyle.fromStyles({})
 
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
@@ -253,30 +257,32 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   }, [registry, client])
 
   return (
-    <ModalLayer
-      activeModal={activeModal}
-      onClose={closeModal}
-      sessionPicker={{
-        channels: availableChannels,
-        activeChannelId,
-        selectedIndex: sessionPickerIndex
-      }}
-    >
-      <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
-        <box flexDirection="row" flexGrow={1}>
-          <ChatPane />
-          {showToolPane && (
-            <ToolPane focused={focusTarget === "tools" && activeModal === null} />
-          )}
+    <SyntaxStyleContext.Provider value={defaultSyntaxStyle}>
+      <ModalLayer
+        activeModal={activeModal}
+        onClose={closeModal}
+        sessionPicker={{
+          channels: availableChannels,
+          activeChannelId,
+          selectedIndex: sessionPickerIndex
+        }}
+      >
+        <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
+          <box flexDirection="row" flexGrow={1}>
+            <ChatPane />
+            {showToolPane && (
+              <ToolPane focused={focusTarget === "tools" && activeModal === null} />
+            )}
+          </box>
+          <InputBar
+            onSubmit={sendMessage}
+            onDecision={decideCheckpoint}
+            focused={focusTarget === "input" && activeModal === null}
+            inputRef={inputRef}
+          />
+          <StatusBar />
         </box>
-        <InputBar
-          onSubmit={sendMessage}
-          onDecision={decideCheckpoint}
-          focused={focusTarget === "input" && activeModal === null}
-          inputRef={inputRef}
-        />
-        <StatusBar />
-      </box>
-    </ModalLayer>
+      </ModalLayer>
+    </SyntaxStyleContext.Provider>
   )
 }
