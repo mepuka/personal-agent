@@ -1,4 +1,5 @@
 import type { PostCommitTaskId } from "@template/domain/ids"
+import type { PostCommitResult } from "@template/domain/ports"
 import {
   POST_COMMIT_CLAIM_BATCH_SIZE,
   POST_COMMIT_CLAIM_LEASE_SECONDS,
@@ -8,7 +9,6 @@ import {
 import { Cause, DateTime, Duration, Effect, Layer, Schedule, ServiceMap } from "effect"
 import { POST_COMMIT_COMMAND_LANE_ID } from "../CommandLanes.js"
 import { TurnPostCommitPortTag } from "../PortTags.js"
-import type { PostCommitResult } from "./PostCommitExecutor.js"
 import { TurnPostCommitCommandEntity } from "./TurnPostCommitCommandEntity.js"
 
 // ---------------------------------------------------------------------------

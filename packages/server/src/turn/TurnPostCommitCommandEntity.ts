@@ -1,40 +1,21 @@
-import { Effect, Schema } from "effect"
+import {
+  ExecutePostCommitPayload as ExecutePostCommitPayloadSchema,
+  PostCommitResult as PostCommitResultSchema,
+  type ExecutePostCommitPayload,
+  type PostCommitResult
+} from "@template/domain/ports"
+import { Effect } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import {
-  PostCommitExecutor,
-  type ExecutePostCommitPayload
-} from "./PostCommitExecutor.js"
+import { PostCommitExecutor } from "./PostCommitExecutor.js"
 
 // ---------------------------------------------------------------------------
 // RPC Schema
 // ---------------------------------------------------------------------------
 
-const PostCommitPayloadFields = {
-  taskId: Schema.String,
-  turnId: Schema.String,
-  agentId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String
-} as const
-
-const SubroutineOutcome = Schema.Struct({
-  subroutineId: Schema.String,
-  success: Schema.Boolean,
-  errorTag: Schema.Union([Schema.String, Schema.Null])
-})
-
-const PostCommitResult = Schema.Struct({
-  subroutines: Schema.Array(SubroutineOutcome),
-  projectionSuccess: Schema.Boolean,
-  projectionError: Schema.Union([Schema.String, Schema.Null])
-})
-
-export type PostCommitResult = typeof PostCommitResult.Type
-
 const ExecutePostCommitRpc = Rpc.make("executePostCommit", {
-  payload: PostCommitPayloadFields,
-  success: PostCommitResult,
+  payload: ExecutePostCommitPayloadSchema.fields,
+  success: PostCommitResultSchema,
   primaryKey: ({ taskId }) => String(taskId)
 }).annotate(ClusterSchema.Persisted, true)
 

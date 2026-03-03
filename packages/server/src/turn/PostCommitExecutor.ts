@@ -1,28 +1,12 @@
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type {
+  ExecutePostCommitPayload,
+  PostCommitResult,
+  PostCommitSubroutineOutcome
+} from "@template/domain/ports"
 import { Cause, DateTime, Effect, Layer, ServiceMap } from "effect"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
 import { SubroutineRunner, type SubroutineContext } from "../memory/SubroutineRunner.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
-
-export interface ExecutePostCommitPayload {
-  readonly taskId: string
-  readonly turnId: string
-  readonly agentId: string
-  readonly sessionId: string
-  readonly conversationId: string
-}
-
-export interface SubroutineOutcome {
-  readonly subroutineId: string
-  readonly success: boolean
-  readonly errorTag: string | null
-}
-
-export interface PostCommitResult {
-  readonly subroutines: ReadonlyArray<SubroutineOutcome>
-  readonly projectionSuccess: boolean
-  readonly projectionError: string | null
-}
 
 export interface PostCommitExecutorService {
   readonly execute: (payload: ExecutePostCommitPayload) => Effect.Effect<PostCommitResult>
@@ -44,22 +28,18 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
             sessionId: payload.sessionId
           })
 
-          const agentId = payload.agentId as AgentId
-          const sessionId = payload.sessionId as SessionId
-          const conversationId = payload.conversationId as ConversationId
-          const turnId = payload.turnId as TurnId
           const now = yield* DateTime.now
 
-          const postTurnSubs = yield* catalog.getByTrigger(agentId, "PostTurn")
-          const subroutineOutcomes: Array<SubroutineOutcome> = []
+          const postTurnSubs = yield* catalog.getByTrigger(payload.agentId, "PostTurn")
+          const subroutineOutcomes: Array<PostCommitSubroutineOutcome> = []
 
           for (const sub of postTurnSubs) {
             const runId = `subrun:${payload.taskId}:${sub.config.id}`
             const context: SubroutineContext = {
-              agentId,
-              sessionId,
-              conversationId,
-              turnId,
+              agentId: payload.agentId,
+              sessionId: payload.sessionId,
+              conversationId: payload.conversationId,
+              turnId: payload.turnId,
               triggerType: "PostTurn",
               triggerReason: `post-commit task ${payload.taskId}`,
               now,
@@ -89,7 +69,7 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
 
           let projectionSuccess = true
           let projectionError: string | null = null
-          yield* projector.projectFromStore(agentId, sessionId).pipe(
+          yield* projector.projectFromStore(payload.agentId, payload.sessionId).pipe(
             Effect.catchCause((cause) =>
               Effect.sync(() => {
                 projectionSuccess = false

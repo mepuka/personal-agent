@@ -651,6 +651,29 @@ export interface CompactionCheckpointPort {
 // Turn Post-Commit Outbox
 // ---------------------------------------------------------------------------
 
+export const ExecutePostCommitPayload = Schema.Struct({
+  taskId: PostCommitTaskId,
+  turnId: TurnId,
+  agentId: AgentId,
+  sessionId: SessionId,
+  conversationId: ConversationId
+})
+export type ExecutePostCommitPayload = typeof ExecutePostCommitPayload.Type
+
+export const PostCommitSubroutineOutcome = Schema.Struct({
+  subroutineId: Schema.String,
+  success: Schema.Boolean,
+  errorTag: Schema.Union([Schema.String, Schema.Null])
+})
+export type PostCommitSubroutineOutcome = typeof PostCommitSubroutineOutcome.Type
+
+export const PostCommitResult = Schema.Struct({
+  subroutines: Schema.Array(PostCommitSubroutineOutcome),
+  projectionSuccess: Schema.Boolean,
+  projectionError: Schema.Union([Schema.String, Schema.Null])
+})
+export type PostCommitResult = typeof PostCommitResult.Type
+
 export interface PostCommitTaskRecord {
   readonly taskId: PostCommitTaskId
   readonly turnId: TurnId
