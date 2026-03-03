@@ -1,5 +1,6 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
 import {
+  ChannelHistoryResponse,
   DecideCheckpointErrorResponse,
   ListChannelsResponse,
   type InitializeChannelRequest
@@ -100,6 +101,10 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         HttpClientRequest.get(`${baseUrl}/channels/${channelId}/history`)
       ).pipe(
         Effect.flatMap((response) => response.json),
+        Effect.map((body) => {
+          const decoded = Schema.decodeUnknownOption(ChannelHistoryResponse)(body)
+          return Option.isSome(decoded) ? decoded.value : []
+        }),
         Effect.scoped
       )
 

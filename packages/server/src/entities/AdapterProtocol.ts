@@ -4,11 +4,11 @@
  * Both CLIAdapterEntity and WebChatAdapterEntity consume these RPCs so that
  * any client can talk to any adapter through a single, consistent contract.
  */
-import { AiProviderName } from "@template/domain/config"
+import { GenerationConfigOverrideSchema, ModelOverrideSchema } from "@template/domain/config"
 import { ChannelNotFound, ChannelTypeMismatch, SessionNotFound } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
-import { TurnRecord } from "@template/domain/ports"
-import { ChannelCapability, ChannelType } from "@template/domain/status"
+import { ChannelAttachTarget, ChannelHistoryResponse, ChannelStatus } from "@template/domain/ports"
+import { ChannelType } from "@template/domain/status"
 import { Schema } from "effect"
 import { ClusterSchema } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
@@ -17,33 +17,6 @@ import { TurnProcessingError } from "../turn/TurnProcessingWorkflow.js"
 // ---------------------------------------------------------------------------
 // Shared schemas
 // ---------------------------------------------------------------------------
-
-const ModelOverrideFields = Schema.Struct({
-  provider: AiProviderName,
-  modelId: Schema.String
-})
-
-const GenerationConfigOverrideFields = Schema.Struct({
-  temperature: Schema.optionalKey(Schema.Number),
-  maxOutputTokens: Schema.optionalKey(Schema.Number),
-  topP: Schema.optionalKey(Schema.Number)
-})
-
-const AttachToFields = Schema.Struct({
-  sessionId: Schema.String
-})
-
-/** Status snapshot returned by `GetStatusRpc`. */
-export const ChannelStatusSchema = Schema.Struct({
-  channelId: Schema.String,
-  channelType: ChannelType,
-  capabilities: Schema.Array(ChannelCapability),
-  activeSessionId: Schema.String,
-  activeConversationId: Schema.String,
-  modelOverride: Schema.Union([ModelOverrideFields, Schema.Null]),
-  generationConfigOverride: Schema.Union([GenerationConfigOverrideFields, Schema.Null]),
-  createdAt: Schema.DateTimeUtcFromString
-})
 
 // ---------------------------------------------------------------------------
 // RPCs
@@ -61,7 +34,7 @@ export const InitializeRpc = Rpc.make("initialize", {
     channelType: ChannelType,
     agentId: Schema.String,
     userId: Schema.String,
-    attachTo: Schema.optionalKey(AttachToFields)
+    attachTo: Schema.optionalKey(ChannelAttachTarget)
   },
   success: Schema.Void,
   error: Schema.Union([ChannelTypeMismatch, SessionNotFound]),
@@ -75,8 +48,8 @@ export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
   payload: {
     content: Schema.String,
     userId: Schema.String,
-    modelOverride: Schema.optionalKey(ModelOverrideFields),
-    generationConfigOverride: Schema.optionalKey(GenerationConfigOverrideFields)
+    modelOverride: Schema.optionalKey(ModelOverrideSchema),
+    generationConfigOverride: Schema.optionalKey(GenerationConfigOverrideSchema)
   },
   success: TurnStreamEvent,
   error: Schema.Union([ChannelNotFound, TurnProcessingError]),
@@ -88,7 +61,7 @@ export const ReceiveMessageRpc = Rpc.make("receiveMessage", {
  */
 export const GetHistoryRpc = Rpc.make("getHistory", {
   payload: {},
-  success: Schema.Array(TurnRecord),
+  success: ChannelHistoryResponse,
   error: ChannelNotFound
 })
 
@@ -97,14 +70,14 @@ export const GetHistoryRpc = Rpc.make("getHistory", {
  */
 export const GetStatusRpc = Rpc.make("getStatus", {
   payload: {},
-  success: ChannelStatusSchema,
+  success: ChannelStatus,
   error: ChannelNotFound
 })
 
 export const SetModelPreferenceRpc = Rpc.make("setModelPreference", {
   payload: {
-    modelOverride: Schema.optionalKey(Schema.Union([ModelOverrideFields, Schema.Null])),
-    generationConfigOverride: Schema.optionalKey(Schema.Union([GenerationConfigOverrideFields, Schema.Null]))
+    modelOverride: Schema.optionalKey(Schema.Union([ModelOverrideSchema, Schema.Null])),
+    generationConfigOverride: Schema.optionalKey(Schema.Union([GenerationConfigOverrideSchema, Schema.Null]))
   },
   success: Schema.Void,
   error: ChannelNotFound

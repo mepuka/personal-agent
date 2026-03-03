@@ -32,7 +32,6 @@ import {
 } from "./config.js"
 import type {
   AuthorizationDecision,
-  ChannelCapability,
   CheckpointAction,
   ComplianceStatus,
   ConcurrencyPolicy,
@@ -53,6 +52,7 @@ import type {
 } from "./status.js"
 import {
   AgentRole,
+  ChannelCapability,
   ChannelType,
   CheckpointDecision,
   CheckpointStatus,
@@ -546,6 +546,21 @@ export const SendChannelMessageRequest = Schema.Struct({
   generationConfig: Schema.optionalKey(GenerationConfigOverrideSchema)
 })
 export type SendChannelMessageRequest = typeof SendChannelMessageRequest.Type
+
+export const ChannelHistoryResponse = Schema.Array(TurnRecord)
+export type ChannelHistoryResponse = typeof ChannelHistoryResponse.Type
+
+export const ChannelStatus = Schema.Struct({
+  channelId: Schema.String,
+  channelType: ChannelType,
+  capabilities: Schema.Array(ChannelCapability),
+  activeSessionId: Schema.String,
+  activeConversationId: Schema.String,
+  modelOverride: Schema.Union([ModelOverrideSchema, Schema.Null]),
+  generationConfigOverride: Schema.Union([GenerationConfigOverrideSchema, Schema.Null]),
+  createdAt: Schema.DateTimeUtcFromString
+})
+export type ChannelStatus = typeof ChannelStatus.Type
 
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
