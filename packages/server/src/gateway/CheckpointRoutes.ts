@@ -1,5 +1,5 @@
 import type { CheckpointId } from "@template/domain/ids"
-import { DecideCheckpointRequest } from "@template/domain/ports"
+import { DecideCheckpointRequest, type OkResponse } from "@template/domain/ports"
 import { Effect, Layer, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -101,7 +101,8 @@ const decideCheckpoint = HttpRouter.add(
       })
 
       if (result.kind === "ack") {
-        return yield* HttpServerResponse.json({ ok: true })
+        const response: OkResponse = { ok: true }
+        return yield* HttpServerResponse.json(response)
       }
 
       // Approved with replay stream — return SSE

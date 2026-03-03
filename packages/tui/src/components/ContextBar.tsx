@@ -33,12 +33,11 @@ export function ContextBar() {
   return (
     <box flexDirection="column">
       <text content={` Context (${totalPct}%)`} fg={theme.accent} />
-      {SEGMENTS.map(({ key, label }, i) => {
+      {SEGMENTS.filter(({ key }) => (usage[key] as number) > 0).map(({ key, label }, i, visible) => {
         const pct = usage[key] as number
-        if (pct === 0) return null
         const filled = Math.round((pct / 100) * (barWidth - 2))
         const empty = (barWidth - 2) - filled
-        const prefix = i < SEGMENTS.length - 1 ? " \u251C" : " \u2514"
+        const prefix = i < visible.length - 1 ? " \u251C" : " \u2514"
         return (
           <text
             key={key}

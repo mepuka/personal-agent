@@ -517,6 +517,11 @@ export const ListChannelsResponse = Schema.Struct({
 })
 export type ListChannelsResponse = typeof ListChannelsResponse.Type
 
+export const OkResponse = Schema.Struct({
+  ok: Schema.Literal(true)
+})
+export type OkResponse = typeof OkResponse.Type
+
 export const ChannelAttachTarget = Schema.Struct({
   sessionId: Schema.String
 })

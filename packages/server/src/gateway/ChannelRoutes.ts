@@ -2,6 +2,7 @@ import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import {
   InitializeChannelRequest,
+  type OkResponse,
   SendChannelMessageRequest,
   SetChannelModelPreferenceRequest
 } from "@template/domain/ports"
@@ -107,7 +108,8 @@ const initializeChannel = HttpRouter.add(
           : {})
       })
 
-      return yield* HttpServerResponse.json({ ok: true })
+      const response: OkResponse = { ok: true }
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.initializeChannel"),
       Effect.catchTag("SessionNotFound", (error) =>
@@ -222,7 +224,8 @@ const deleteChannel = HttpRouter.add(
         return yield* badRequest("Missing channelId")
       }
       yield* channelCore.deleteChannel(channelId as ChannelId)
-      return yield* HttpServerResponse.json({ ok: true })
+      const response: OkResponse = { ok: true }
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.deleteChannel"),
       Effect.catchTag("ChannelNotFound", (error) =>
@@ -254,7 +257,8 @@ const setModelPreference = HttpRouter.add(
         ...(decodedBody.value.model !== undefined ? { modelOverride: decodedBody.value.model } : {}),
         ...(decodedBody.value.generationConfig !== undefined ? { generationConfigOverride: decodedBody.value.generationConfig } : {})
       })
-      return yield* HttpServerResponse.json({ ok: true })
+      const response: OkResponse = { ok: true }
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.setModelPreference"),
       Effect.catchTag("ChannelNotFound", (error) =>
