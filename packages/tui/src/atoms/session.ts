@@ -21,15 +21,6 @@ export const availableChannelsAtom = Atom.make<ReadonlyArray<ChannelSummary>>([]
 
 // --- Derived atoms (computed) ---
 
-export const lastMessageAtom = Atom.make((get: Atom.Context) => {
-  const msgs = get(messagesAtom)
-  return msgs.length > 0 ? msgs[msgs.length - 1] ?? null : null
-})
-
-export const activeToolsAtom = Atom.make((get: Atom.Context) =>
-  get(toolEventsAtom).filter((t) => t.status === "called")
-)
-
 export const messageCountAtom = Atom.make((get: Atom.Context) => get(messagesAtom).length)
 
 export const pendingCheckpointAtom = Atom.make((get: Atom.Context): PendingCheckpoint | null => {
@@ -56,6 +47,7 @@ export interface ContextUsage {
   readonly capacityTokens: number
 }
 
+/** Writable atom — will be set from server-provided token metrics once available. */
 export const contextUsageAtom = Atom.make<ContextUsage>({
   system: 12,
   persona: 4,

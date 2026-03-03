@@ -6,7 +6,6 @@ export const theme = {
   borderFocus: "#7aa2f7",
   text: "#c0caf5",
   textMuted: "#565f89",
-  userText: "#9ece6a",
   accent: "#7dcfff",
   error: "#f7768e",
   streaming: "#e0af68",
