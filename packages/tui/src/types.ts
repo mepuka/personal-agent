@@ -1,3 +1,4 @@
+import type { ChannelSummary as DomainChannelSummary } from "@template/domain/ports"
 import type {
   CheckpointAction as DomainCheckpointAction,
   CheckpointDecision as DomainCheckpointDecision,
@@ -17,6 +18,7 @@ export type ToolEventStatus = "called" | "completed"
 export type CheckpointAction = DomainCheckpointAction
 export type CheckpointDecision = DomainCheckpointDecision
 export type IterationFinishReason = DomainModelFinishReason
+export type ChannelSummary = DomainChannelSummary
 
 export interface PendingCheckpoint {
   readonly checkpointId: string
@@ -57,14 +59,3 @@ export type ModalId =
   | "settings"
   | "memory-search"
   | "tool-inspector"
-
-export interface ChannelSummary {
-  readonly channelId: string
-  readonly channelType: string
-  readonly agentId: string
-  readonly activeSessionId: string
-  readonly activeConversationId: string
-  readonly createdAt: string
-  readonly lastTurnAt: string | null
-  readonly messageCount: number
-}

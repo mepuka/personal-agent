@@ -492,6 +492,24 @@ export interface ChannelSummaryRecord {
   readonly messageCount: number
 }
 
+export const ChannelSummary = Schema.Struct({
+  channelId: Schema.String,
+  channelType: Schema.String,
+  agentId: Schema.String,
+  activeSessionId: Schema.String,
+  activeConversationId: Schema.String,
+  createdAt: Schema.String,
+  lastTurnAt: Schema.Union([Schema.String, Schema.Null]),
+  messageCount: Schema.Number
+})
+export type ChannelSummary = typeof ChannelSummary.Type
+
+export const ListChannelsResponse = Schema.Struct({
+  items: Schema.Array(ChannelSummary),
+  totalCount: Schema.Number
+})
+export type ListChannelsResponse = typeof ListChannelsResponse.Type
+
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>

@@ -1,10 +1,11 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
+import { ListChannelsResponse } from "@template/domain/ports"
 import type { CheckpointDecision } from "@template/domain/status"
 import {
   classifyTurnFailureText,
   toTurnFailureMessageFromUnknown
 } from "@template/domain/turnFailure"
-import { Config, Effect, Layer, ServiceMap, Stream } from "effect"
+import { Config, Effect, Layer, Option, Schema, ServiceMap, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -32,17 +33,6 @@ export class CheckpointDecisionError extends Error {
   readonly status: number
   readonly errorCode: TurnFailureCode | null
   readonly body: unknown
-}
-
-export interface ChannelSummary {
-  readonly channelId: string
-  readonly channelType: string
-  readonly agentId: string
-  readonly activeSessionId: string
-  readonly activeConversationId: string
-  readonly createdAt: string
-  readonly lastTurnAt: string | null
-  readonly messageCount: number
 }
 
 export interface ChannelInitializeOptions {
@@ -112,7 +102,10 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         HttpClientRequest.get(`${baseUrl}/channels${query}`)
       ).pipe(
         Effect.flatMap((response) => response.json),
-        Effect.map((body: any) => Array.isArray(body?.items) ? body.items as ReadonlyArray<ChannelSummary> : []),
+        Effect.map((body) => {
+          const decoded = Schema.decodeUnknownOption(ListChannelsResponse)(body)
+          return Option.isSome(decoded) ? decoded.value.items : []
+        }),
         Effect.scoped
       )
     }
