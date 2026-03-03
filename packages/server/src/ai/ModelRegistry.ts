@@ -4,6 +4,7 @@ import { Config, Effect, Layer, type Redacted, ServiceMap } from "effect"
 import type * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import { AgentConfig } from "./AgentConfig.js"
+import * as DeterministicTestLanguageModel from "./DeterministicTestLanguageModel.js"
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 const GOOGLE_GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -21,6 +22,7 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
     make: Effect.gen(function*() {
       const agentConfig = yield* AgentConfig
       const cache = new Map<string, Layer.Layer<LanguageModel.LanguageModel>>()
+      const useDeterministicStubModel = process.env.PA_TEST_MODEL_STUB === "1"
 
       const resolveApiKey = (provider: string): Effect.Effect<Redacted.Redacted<string>> => {
         const providerConfig = agentConfig.providers.get(provider)
@@ -64,6 +66,18 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
         })
 
       const get: ModelRegistryService["get"] = (provider, modelId) => {
+        if (useDeterministicStubModel) {
+          const stubKey = "stub:test-model"
+          const cachedStub = cache.get(stubKey)
+          if (cachedStub) {
+            return Effect.succeed(cachedStub)
+          }
+
+          const stubLayer = DeterministicTestLanguageModel.layer
+          cache.set(stubKey, stubLayer)
+          return Effect.succeed(stubLayer)
+        }
+
         const key = `${provider}:${modelId}`
         const cached = cache.get(key)
         if (cached) return Effect.succeed(cached)
