@@ -7,6 +7,7 @@ import { AgentStatePortSqlite } from "./AgentStatePortSqlite.js"
 import { AgentConfig, type AgentConfigService } from "./ai/AgentConfig.js"
 import * as ChatPersistence from "./ai/ChatPersistence.js"
 import { ModelRegistry } from "./ai/ModelRegistry.js"
+import { PromptCatalog } from "./ai/PromptCatalog.js"
 import { ToolRegistry } from "./ai/ToolRegistry.js"
 import { layer as CliRuntimeLocalLayer } from "./tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "./tools/command/CommandBackendLocal.js"
@@ -21,8 +22,11 @@ import { SessionIdleMonitor } from "./memory/SessionIdleMonitor.js"
 import { SubroutineCatalog } from "./memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "./memory/SubroutineControlPlane.js"
 import { SubroutineRunner } from "./memory/SubroutineRunner.js"
+import { CompactionCoordinator } from "./memory/compaction/CompactionCoordinator.js"
+import { layer as CompactionWorkflowLayer } from "./memory/compaction/CompactionWorkflow.js"
 import { TraceWriter } from "./memory/TraceWriter.js"
 import { TranscriptProjector } from "./memory/TranscriptProjector.js"
+import { CompactionRunStatePortSqlite } from "./CompactionRunStatePortSqlite.js"
 import { ChannelCore } from "./ChannelCore.js"
 import { CheckpointPortSqlite } from "./CheckpointPortSqlite.js"
 import { CompactionCheckpointPortSqlite } from "./CompactionCheckpointPortSqlite.js"
@@ -216,6 +220,11 @@ const modelRegistryLayer = ModelRegistry.layer.pipe(
   Layer.provide(agentConfigLayer)
 )
 
+const promptCatalogLayer = PromptCatalog.layer.pipe(
+  Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer)),
+  Layer.orDie
+)
+
 const chatPersistenceLayer = sqliteBackedLayer(ChatPersistence.layer)
 
 const storageLayoutLayer = StorageLayout.layer.pipe(
@@ -260,6 +269,10 @@ const sessionMetricsPortTagLayer = exposeAsPortTagLayer(
   SessionMetricsPortTag,
   SessionMetricsPortSqlite,
   sessionMetricsPortSqliteLayer
+)
+
+const compactionRunStatePortSqliteLayer = sqliteBackedLayer(
+  CompactionRunStatePortSqlite.layer
 )
 
 const withConfigLayer = <A, E, R, CE, CR>(
@@ -345,7 +358,8 @@ const toolRegistryLayer = ToolRegistry.layer.pipe(
 )
 
 const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
-  Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer))
+  Layer.provide(promptCatalogLayer),
+  Layer.provide(agentConfigLayer)
 )
 
 const traceWriterLayer = TraceWriter.layer.pipe(
@@ -363,6 +377,7 @@ const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
     toolRegistryLayer,
     chatPersistenceLayer,
     agentConfigLayer,
+    promptCatalogLayer,
     modelRegistryLayer,
     governancePortTagLayer,
     traceWriterLayer,
@@ -411,12 +426,24 @@ const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
   ))
 )
 
+const compactionCoordinatorLayer = CompactionCoordinator.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    chatPersistenceLayer,
+    agentConfigLayer,
+    promptCatalogLayer,
+    sessionArtifactPortTagLayer,
+    governancePortTagLayer,
+    artifactStorePortTagLayer,
+    compactionCheckpointPortTagLayer,
+    sessionMetricsPortTagLayer
+  ))
+)
+
 const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
   Layer.provide(Layer.mergeAll(
     agentConfigLayer,
     sessionTurnPortTagLayer,
     sessionMetricsPortTagLayer,
-    subroutineControlPlaneLayer,
     subroutineCatalogLayer,
     subroutineRunnerLayer,
     transcriptProjectorLayer
@@ -427,6 +454,16 @@ const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
   Layer.provide(Layer.mergeAll(
     workflowEngineLayer,
     postCommitExecutorLayer
+  ))
+)
+
+const compactionWorkflowLayer = CompactionWorkflowLayer.pipe(
+  Layer.provide(Layer.mergeAll(
+    workflowEngineLayer,
+    compactionRunStatePortSqliteLayer,
+    compactionCoordinatorLayer,
+    governancePortTagLayer,
+    compactionCheckpointPortTagLayer
   ))
 )
 
@@ -449,10 +486,9 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     toolRegistryLayer,
     chatPersistenceLayer,
     agentConfigLayer,
+    promptCatalogLayer,
     modelRegistryLayer,
-    checkpointPortTagLayer,
-    subroutineControlPlaneLayer,
-    subroutineCatalogLayer
+    checkpointPortTagLayer
   ))
 )
 
@@ -541,7 +577,8 @@ const schedulerLayer = schedulerTickLayer.pipe(
 
 const workflowLayer = turnProcessingRuntimeLayer.pipe(
   Layer.provideMerge(turnProcessingWorkflowLayer),
-  Layer.provideMerge(postCommitWorkflowLayer)
+  Layer.provideMerge(postCommitWorkflowLayer),
+  Layer.provideMerge(compactionWorkflowLayer)
 )
 
 const entityLayer = cliAdapterEntityLayer.pipe(

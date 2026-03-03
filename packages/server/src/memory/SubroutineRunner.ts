@@ -18,6 +18,7 @@ import type * as Response from "effect/unstable/ai/Response"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
+import { PromptCatalog } from "../ai/PromptCatalog.js"
 import { type CheckpointSignal, ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
 import {
   CompactionCheckpointPortTag,
@@ -94,6 +95,7 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
       const chatPersistence = yield* Chat.Persistence
       const agentConfig = yield* AgentConfig
       const modelRegistry = yield* ModelRegistry
+      const promptCatalog = yield* PromptCatalog
       const governancePort = yield* GovernancePortTag
       const compactionCheckpointPort = yield* CompactionCheckpointPortTag
       const sessionMetricsPort = yield* SessionMetricsPortTag
@@ -122,6 +124,9 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
           const modelProvider = subroutine.config.model?.provider ?? profile.model.provider
           const modelId = subroutine.config.model?.modelId ?? profile.model.modelId
           const lmLayer = yield* modelRegistry.get(modelProvider, modelId)
+          const promptBindings = yield* promptCatalog.getAgentBindings(context.agentId).pipe(
+            Effect.orDie
+          )
 
           // Build generation config
           const effectiveGenerationConfig = {
@@ -133,11 +138,24 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
           // Set up isolated chat
           const chat = yield* chatPersistence.getOrCreate(chatSessionKey)
           const currentHistory = yield* Ref.get(chat.history)
-          const withSystem = Prompt.setSystem(currentHistory, subroutine.prompt)
+          const tierInstructionPrompt = yield* promptCatalog.get(
+            promptBindings.memory.tierInstructionRefs[subroutine.config.tier]
+          ).pipe(Effect.orDie)
+          const withSystem = Prompt.setSystem(
+            currentHistory,
+            composeSubroutineSystemPrompt(tierInstructionPrompt, subroutine.prompt)
+          )
           yield* Ref.set(chat.history, withSystem)
 
           // Build user prompt
-          const userPrompt = buildTriggerPrompt(context)
+          const userPrompt = yield* promptCatalog.render(
+            promptBindings.memory.triggerEnvelopeRef,
+            buildTriggerPromptTemplateVars(
+              context,
+              subroutine.config.id,
+              subroutine.config.tier
+            )
+          ).pipe(Effect.orDie)
 
           // Run bounded tool loop
           const loopResult = yield* subroutineToolLoop({
@@ -462,15 +480,26 @@ const writeSubroutineAudit = (
     createdAt: context.now
   })
 
-export const buildTriggerPrompt = (context: SubroutineContext): string => {
-  const parts = [
-    "Execute your memory routine.",
-    `Trigger: ${context.triggerType}`,
-    `Session: ${context.sessionId}`,
-    `Time: ${context.now.toJSON()}`
-  ]
-  if (context.triggerReason) {
-    parts.push(`Reason: ${context.triggerReason}`)
-  }
-  return parts.join(" | ")
-}
+export const buildTriggerPromptTemplateVars = (
+  context: SubroutineContext,
+  subroutineId: string,
+  memoryTier: string
+): Record<string, string> => ({
+  agent_id: String(context.agentId),
+  session_id: String(context.sessionId),
+  conversation_id: String(context.conversationId),
+  turn_id: context.turnId === null ? "" : String(context.turnId),
+  trigger_type: context.triggerType,
+  trigger_reason: context.triggerReason,
+  triggered_at_iso: DateTime.formatIso(context.now),
+  subroutine_id: subroutineId,
+  memory_tier: memoryTier
+})
+
+const composeSubroutineSystemPrompt = (
+  tierInstructionPrompt: string,
+  subroutinePrompt: string
+): string =>
+  [tierInstructionPrompt.trim(), subroutinePrompt.trim()]
+    .filter((part) => part.length > 0)
+    .join("\n\n")

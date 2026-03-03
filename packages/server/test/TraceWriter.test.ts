@@ -22,6 +22,7 @@ import {
 import { rmSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,7 +46,7 @@ const makeSubroutine = (): LoadedSubroutine => ({
     name: "Memory Consolidation",
     tier: "SemanticMemory",
     trigger: { type: "PostTurn" },
-    promptFile: "prompts/consolidation.md",
+    promptRef: "prompts/consolidation.md",
     maxIterations: 5,
     toolConcurrency: 1,
     dedupeWindowSeconds: 30
@@ -123,11 +124,32 @@ const makeContentParts = (): ReadonlyArray<Response.Part<any>> => [
 const testDir = () => join(tmpdir(), `trace-writer-test-${crypto.randomUUID()}`)
 
 const makeTestLayer = (traceDir: string, enabled = true) => {
-  const agentConfigLayer = AgentConfig.layerFromParsed({
+  const agentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 4096 },
         memoryRoutines: {
@@ -137,7 +159,7 @@ const makeTestLayer = (traceDir: string, enabled = true) => {
       }
     },
     server: { port: 3000 }
-  })
+  }))
   const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
     putJson: () =>
       Effect.succeed({
@@ -180,17 +202,38 @@ const makeTestLayer = (traceDir: string, enabled = true) => {
 }
 
 const makeTestLayerNoConfig = () => {
-  const agentConfigLayer = AgentConfig.layerFromParsed({
+  const agentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 4096 }
       }
     },
     server: { port: 3000 }
-  })
+  }))
   const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
     putJson: () =>
       Effect.succeed({

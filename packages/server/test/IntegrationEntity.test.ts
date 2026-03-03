@@ -11,14 +11,36 @@ import { IntegrationPortSqlite } from "../src/IntegrationPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { IntegrationPortTag } from "../src/PortTags.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
-const testConfig = {
+const testConfig = withTestPromptsConfig({
   providers: {
     anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
   },
   agents: {
     default: {
-      persona: { name: "Test", systemPrompt: "test" },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
       generation: { temperature: 0.7, maxOutputTokens: 4096 }
     }
@@ -28,7 +50,7 @@ const testConfig = {
   integrations: [
     { serviceId: "svc:test", name: "Test", endpoint: "http://localhost:9999", transport: "stdio" }
   ]
-}
+})
 
 const agentConfigLayer = AgentConfig.layerFromParsed(testConfig)
 

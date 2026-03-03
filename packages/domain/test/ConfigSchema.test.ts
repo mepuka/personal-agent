@@ -11,6 +11,23 @@ import {
   RuntimeConfigSchema
 } from "../src/config.js"
 
+const promptCatalogInput = {
+  rootDir: "prompts",
+  entries: {
+    "core.turn.system.default": { file: "core/system-default.md" },
+    "core.turn.replay.continuation": { file: "core/replay-continuation.md" },
+    "memory.trigger.envelope": { file: "memory/trigger-envelope.md" },
+    "memory.tier.working": { file: "memory/tier-working.md" },
+    "memory.tier.episodic": { file: "memory/tier-episodic.md" },
+    "memory.tier.semantic": { file: "memory/tier-semantic.md" },
+    "memory.tier.procedural": { file: "memory/tier-procedural.md" },
+    "compaction.block.summary": { file: "compaction/block-summary.md" },
+    "compaction.block.artifacts": { file: "compaction/block-artifacts.md" },
+    "compaction.block.tools": { file: "compaction/block-tools.md" },
+    "compaction.block.kept": { file: "compaction/block-kept-context.md" }
+  }
+} as const
+
 describe("Config Schemas", () => {
   it("decodes a valid provider config", () => {
     const input = { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
@@ -20,7 +37,28 @@ describe("Config Schemas", () => {
 
   it("decodes a valid agent profile", () => {
     const input = {
-      persona: { name: "Test", systemPrompt: "You are helpful." },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
       generation: { temperature: 0.7, maxOutputTokens: 4096 }
     }
@@ -32,12 +70,34 @@ describe("Config Schemas", () => {
 
   it("decodes a full config file", () => {
     const input = {
+      prompts: promptCatalogInput,
       providers: {
         anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
       },
       agents: {
         default: {
-          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          persona: { name: "Assistant"  },
+          promptBindings: {
+            turn: {
+              systemPromptRef: "core.turn.system.default",
+              replayContinuationRef: "core.turn.replay.continuation"
+            },
+            memory: {
+              triggerEnvelopeRef: "memory.trigger.envelope",
+              tierInstructionRefs: {
+                WorkingMemory: "memory.tier.working",
+                EpisodicMemory: "memory.tier.episodic",
+                SemanticMemory: "memory.tier.semantic",
+                ProceduralMemory: "memory.tier.procedural"
+              }
+            },
+            compaction: {
+              summaryBlockRef: "compaction.block.summary",
+              artifactRefsBlockRef: "compaction.block.artifacts",
+              toolRefsBlockRef: "compaction.block.tools",
+              keptContextBlockRef: "compaction.block.kept"
+            }
+          },
           model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
           generation: { temperature: 0.7, maxOutputTokens: 4096 }
         }
@@ -51,7 +111,28 @@ describe("Config Schemas", () => {
 
   it("rejects invalid provider literal", () => {
     const input = {
-      persona: { name: "Test", systemPrompt: "x" },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "invalid-provider", modelId: "x" },
       generation: { temperature: 0.7, maxOutputTokens: 4096 }
     }
@@ -60,7 +141,28 @@ describe("Config Schemas", () => {
 
   it("allows optional generation fields to be omitted", () => {
     const input = {
-      persona: { name: "Test", systemPrompt: "x" },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "openai", modelId: "gpt-4o" },
       generation: { temperature: 0.5, maxOutputTokens: 2048 }
     }
@@ -99,12 +201,34 @@ describe("Config Schemas", () => {
 
   it("defaults channels when omitted from full config", () => {
     const input = {
+      prompts: promptCatalogInput,
       providers: {
         anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
       },
       agents: {
         default: {
-          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          persona: { name: "Assistant"  },
+          promptBindings: {
+            turn: {
+              systemPromptRef: "core.turn.system.default",
+              replayContinuationRef: "core.turn.replay.continuation"
+            },
+            memory: {
+              triggerEnvelopeRef: "memory.trigger.envelope",
+              tierInstructionRefs: {
+                WorkingMemory: "memory.tier.working",
+                EpisodicMemory: "memory.tier.episodic",
+                SemanticMemory: "memory.tier.semantic",
+                ProceduralMemory: "memory.tier.procedural"
+              }
+            },
+            compaction: {
+              summaryBlockRef: "compaction.block.summary",
+              artifactRefsBlockRef: "compaction.block.artifacts",
+              toolRefsBlockRef: "compaction.block.tools",
+              keptContextBlockRef: "compaction.block.kept"
+            }
+          },
           model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
           generation: { temperature: 0.7, maxOutputTokens: 4096 }
         }
@@ -118,12 +242,34 @@ describe("Config Schemas", () => {
 
   it("decodes full config with explicit channels", () => {
     const input = {
+      prompts: promptCatalogInput,
       providers: {
         anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
       },
       agents: {
         default: {
-          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          persona: { name: "Assistant"  },
+          promptBindings: {
+            turn: {
+              systemPromptRef: "core.turn.system.default",
+              replayContinuationRef: "core.turn.replay.continuation"
+            },
+            memory: {
+              triggerEnvelopeRef: "memory.trigger.envelope",
+              tierInstructionRefs: {
+                WorkingMemory: "memory.tier.working",
+                EpisodicMemory: "memory.tier.episodic",
+                SemanticMemory: "memory.tier.semantic",
+                ProceduralMemory: "memory.tier.procedural"
+              }
+            },
+            compaction: {
+              summaryBlockRef: "compaction.block.summary",
+              artifactRefsBlockRef: "compaction.block.artifacts",
+              toolRefsBlockRef: "compaction.block.tools",
+              keptContextBlockRef: "compaction.block.kept"
+            }
+          },
           model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
           generation: { temperature: 0.7, maxOutputTokens: 4096 }
         }
@@ -141,12 +287,34 @@ describe("Config Schemas", () => {
 
   it("defaults integrations to empty array when omitted", () => {
     const input = {
+      prompts: promptCatalogInput,
       providers: {
         anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
       },
       agents: {
         default: {
-          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          persona: { name: "Assistant"  },
+          promptBindings: {
+            turn: {
+              systemPromptRef: "core.turn.system.default",
+              replayContinuationRef: "core.turn.replay.continuation"
+            },
+            memory: {
+              triggerEnvelopeRef: "memory.trigger.envelope",
+              tierInstructionRefs: {
+                WorkingMemory: "memory.tier.working",
+                EpisodicMemory: "memory.tier.episodic",
+                SemanticMemory: "memory.tier.semantic",
+                ProceduralMemory: "memory.tier.procedural"
+              }
+            },
+            compaction: {
+              summaryBlockRef: "compaction.block.summary",
+              artifactRefsBlockRef: "compaction.block.artifacts",
+              toolRefsBlockRef: "compaction.block.tools",
+              keptContextBlockRef: "compaction.block.kept"
+            }
+          },
           model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
           generation: { temperature: 0.7, maxOutputTokens: 4096 }
         }
@@ -159,12 +327,34 @@ describe("Config Schemas", () => {
 
   it("decodes config with integrations defined", () => {
     const input = {
+      prompts: promptCatalogInput,
       providers: {
         anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" }
       },
       agents: {
         default: {
-          persona: { name: "Assistant", systemPrompt: "You are helpful." },
+          persona: { name: "Assistant"  },
+          promptBindings: {
+            turn: {
+              systemPromptRef: "core.turn.system.default",
+              replayContinuationRef: "core.turn.replay.continuation"
+            },
+            memory: {
+              triggerEnvelopeRef: "memory.trigger.envelope",
+              tierInstructionRefs: {
+                WorkingMemory: "memory.tier.working",
+                EpisodicMemory: "memory.tier.episodic",
+                SemanticMemory: "memory.tier.semantic",
+                ProceduralMemory: "memory.tier.procedural"
+              }
+            },
+            compaction: {
+              summaryBlockRef: "compaction.block.summary",
+              artifactRefsBlockRef: "compaction.block.artifacts",
+              toolRefsBlockRef: "compaction.block.tools",
+              keptContextBlockRef: "compaction.block.kept"
+            }
+          },
           model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
           generation: { temperature: 0.7, maxOutputTokens: 4096 }
         }
@@ -216,7 +406,7 @@ describe("Config Schemas", () => {
     const result = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
     expect(result).toEqual({
       tokenBudget: 200_000,
-      maxToolIterations: 10,
+      maxToolIterations: 200,
       memory: {
         defaultRetrieveLimit: 10,
         maxRetrieveLimit: 50
@@ -230,7 +420,7 @@ describe("Config Schemas", () => {
       memory: { maxRetrieveLimit: 25 }
     })
     expect(result.tokenBudget).toBe(100_000)
-    expect(result.maxToolIterations).toBe(10)
+    expect(result.maxToolIterations).toBe(200)
     expect(result.memory.defaultRetrieveLimit).toBe(10)
     expect(result.memory.maxRetrieveLimit).toBe(25)
   })
@@ -245,14 +435,35 @@ describe("Config Schemas", () => {
 
   it("defaults runtime in AgentProfileSchema when omitted", () => {
     const input = {
-      persona: { name: "Test", systemPrompt: "x" },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "anthropic", modelId: "test" },
       generation: { temperature: 0.7, maxOutputTokens: 1024 }
     }
     const result = Schema.decodeUnknownSync(AgentProfileSchema)(input)
     expect(result.runtime).toEqual({
       tokenBudget: 200_000,
-      maxToolIterations: 10,
+      maxToolIterations: 200,
       memory: {
         defaultRetrieveLimit: 10,
         maxRetrieveLimit: 50

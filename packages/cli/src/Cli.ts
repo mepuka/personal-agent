@@ -111,7 +111,9 @@ const init = Command.make("init").pipe(
       }
       const template = yield* fs.readFileString("agent.yaml.example")
       yield* fs.writeFileString(path, template)
-      yield* Console.log(`Created ${path}. Edit agents.default.persona.systemPrompt to customize your agent.`)
+      yield* Console.log(
+        `Created ${path}. Edit prompts.entries and agents.default.promptBindings to customize prompting.`
+      )
     })
   )
 )

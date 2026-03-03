@@ -140,6 +140,77 @@ export interface SessionCompactionPolicy {
   readonly now: Instant
 }
 
+export interface ContextPruningMessage {
+  readonly messageId: string
+  readonly role: "system" | "user" | "assistant" | "tool"
+  readonly text: string
+}
+
+export interface ContextPruningArtifactReference {
+  readonly artifactId: ArtifactId
+  readonly sha256: string
+  readonly mediaType: string
+  readonly bytes: number
+  readonly purpose: ArtifactPurpose
+  readonly turnId: TurnId | null
+  readonly toolInvocationId: ToolInvocationId | null
+  readonly runId: string | null
+  readonly previewText: string | null
+  readonly createdAt: Instant
+}
+
+export interface ContextPruningToolReference {
+  readonly toolInvocationId: ToolInvocationId
+  readonly toolName: ToolName
+  readonly turnId: TurnId
+  readonly previewText: string
+  readonly invokedAt: Instant
+}
+
+export interface ContextPruningPolicy {
+  readonly keepRecentTurns: number
+  readonly includeArtifactRefs: boolean
+  readonly includeToolRefs: boolean
+  readonly maxReferenceItems: number
+  readonly summaryEnabled: boolean
+  readonly summaryMaxChars: number
+}
+
+export interface ContextPruningDecision {
+  readonly strategyId: string
+  readonly note: string
+}
+
+export interface ContextPruningInput {
+  readonly sessionId: SessionId
+  readonly messages: ReadonlyArray<ContextPruningMessage>
+  readonly artifactRefs: ReadonlyArray<ContextPruningArtifactReference>
+  readonly toolRefs: ReadonlyArray<ContextPruningToolReference>
+  readonly policy: ContextPruningPolicy
+  readonly pinnedMessageIds: ReadonlyArray<string>
+  readonly keptMessageIds: ReadonlyArray<string>
+  readonly droppedMessageIds: ReadonlyArray<string>
+  readonly insertedBlocks: ReadonlyArray<string>
+  readonly summary: string | null
+  readonly compactedPrompt: string
+  readonly decisions: ReadonlyArray<ContextPruningDecision>
+}
+
+export interface ContextPruningOutput extends ContextPruningInput {}
+
+export interface ContextPruningError {
+  readonly _tag: "ContextPruningError"
+  readonly strategyId: string
+  readonly message: string
+}
+
+export interface ContextPruningStrategy {
+  readonly strategyId: string
+  readonly apply: (
+    input: ContextPruningInput
+  ) => Effect.Effect<ContextPruningOutput, ContextPruningError>
+}
+
 export const TextBlock = Schema.Struct({
   contentBlockType: Schema.Literal("TextBlock"),
   text: Schema.String
@@ -977,6 +1048,25 @@ export const ExecutePostCommitPayload = Schema.Struct({
   conversationId: ConversationId
 })
 export type ExecutePostCommitPayload = typeof ExecutePostCommitPayload.Type
+
+export const ExecuteCompactionPayload = Schema.Struct({
+  triggerSource: Schema.Literal("PostCommitMetrics"),
+  agentId: AgentId,
+  sessionId: SessionId,
+  conversationId: ConversationId,
+  turnId: TurnId,
+  triggeredAt: Instant
+})
+export type ExecuteCompactionPayload = typeof ExecuteCompactionPayload.Type
+
+export const CompactionWorkflowResult = Schema.Struct({
+  status: Schema.Literals(["Applied", "Coalesced", "NoOp", "Failed"]),
+  sessionId: SessionId,
+  turnId: TurnId,
+  detailsArtifactId: Schema.Union([ArtifactId, Schema.Null]),
+  message: Schema.Union([Schema.String, Schema.Null])
+})
+export type CompactionWorkflowResult = typeof CompactionWorkflowResult.Type
 
 export const PostCommitSubroutineOutcome = Schema.Struct({
   subroutineId: Schema.String,

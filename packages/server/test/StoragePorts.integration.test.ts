@@ -14,6 +14,7 @@ import { SessionMetricsPortSqlite } from "../src/SessionMetricsPortSqlite.js"
 import { ArtifactStoreFsCas } from "../src/storage/ArtifactStoreFsCas.js"
 import { SessionFileStore } from "../src/storage/SessionFileStore.js"
 import { StorageLayout } from "../src/storage/StorageLayout.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 const TEST_SESSION_ID = "session:storage-test" as SessionId
 const textEncoder = new TextEncoder()
@@ -29,11 +30,32 @@ const cleanupBaseDir = (baseDir: string) =>
   Effect.sync(() => rmSync(baseDir, { recursive: true, force: true }))
 
 const makeAgentConfigLayer = (baseDir: string) =>
-  AgentConfig.layerFromParsed({
+  AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 4096 },
         runtime: {
@@ -67,7 +89,7 @@ const makeAgentConfigLayer = (baseDir: string) =>
         }
       }
     }
-  })
+  }))
 
 const makeSqlInfrastructureLayer = (dbPath: string) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })

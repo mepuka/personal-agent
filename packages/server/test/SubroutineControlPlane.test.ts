@@ -61,7 +61,7 @@ const makeLoadedSubroutine = (overrides?: {
     name: "Memory Consolidation",
     tier: "SemanticMemory",
     trigger: { type: "PostTurn" },
-    promptFile: "prompts/consolidation.md",
+    promptRef: "prompts/consolidation.md",
     maxIterations: 5,
     toolConcurrency: 1,
     dedupeWindowSeconds: overrides?.dedupeWindowSeconds ?? 30

@@ -11,6 +11,7 @@ import { StorageLayout } from "../src/storage/StorageLayout.js"
 import { rmSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,11 +119,32 @@ const makeStubSessionTurnPort = (
   } as SessionTurnPort)
 
 const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArray<TurnRecord> = []) => {
-  const agentConfigLayer = AgentConfig.layerFromParsed({
+  const agentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 4096 },
         memoryRoutines: {
@@ -137,7 +159,7 @@ const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArr
         rootDir: join(transcriptDir, "state")
       }
     }
-  })
+  }))
   const storageLayoutLayer = StorageLayout.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodePath.layer,
@@ -163,11 +185,32 @@ const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArr
 
 const makeTestLayerNoConfig = () => {
   const dir = testDir()
-  const agentConfigLayer = AgentConfig.layerFromParsed({
+  const agentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 4096 }
       }
@@ -178,7 +221,7 @@ const makeTestLayerNoConfig = () => {
         rootDir: join(dir, "state")
       }
     }
-  })
+  }))
   const storageLayoutLayer = StorageLayout.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodePath.layer,

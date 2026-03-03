@@ -13,6 +13,7 @@ import {
 } from "../src/memory/SubroutineControlPlane.js"
 import { SessionIdleMonitor } from "../src/memory/SessionIdleMonitor.js"
 import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -27,17 +28,38 @@ const AGENT_ID = "agent:default" as AgentId
 const TICK_INTERVAL = "60 seconds"
 
 const makeAgentConfigLayer = () =>
-  AgentConfig.layerFromParsed({
+  AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 1024 }
       }
     },
     server: { port: 3000 }
-  })
+  }))
 
 const makePostSessionSub = (overrides?: {
   readonly id?: string
@@ -48,7 +70,7 @@ const makePostSessionSub = (overrides?: {
     name: "Session Summary",
     tier: "EpisodicMemory",
     trigger: { type: "PostSession", idleTimeoutSeconds: overrides?.idleTimeoutSeconds ?? 300 },
-    promptFile: "prompts/summary.md",
+    promptRef: "prompts/summary.md",
     maxIterations: 3,
     toolConcurrency: 1,
     dedupeWindowSeconds: 30

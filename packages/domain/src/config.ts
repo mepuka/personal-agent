@@ -2,13 +2,10 @@
  * Effect Schema definitions for agent.yaml configuration.
  *
  * Ontology alignment:
- *   PersonaSchema          → pao:Persona (hasContent = systemPrompt)
+ *   PersonaSchema          → pao:Persona (agent identity metadata)
  *   ModelRefSchema         → pao:FoundationModel (hasModelId, hasProvider)
  *   GenerationConfigSchema → pao:GenerationConfiguration (hasTemperature, hasMaxOutputTokens, hasTopP, hasSeed)
  *   ProviderConfigSchema   → pao:ModelProvider (credentials)
- *
- * Future slices will add: operatesInMode, hasAvailableTool, hasIntegration,
- * hasExternalService, hasHook — per PAO AIAgent SHACL constraints.
  */
 import { Schema } from "effect"
 
@@ -19,13 +16,20 @@ import {
   DEFAULT_COMPACTION_ARTIFACT_BYTES,
   DEFAULT_COMPACTION_COOLDOWN_SECONDS,
   DEFAULT_COMPACTION_FILE_TOUCHES,
+  DEFAULT_COMPACTION_PRUNING_INCLUDE_ARTIFACT_REFS,
+  DEFAULT_COMPACTION_PRUNING_INCLUDE_TOOL_REFS,
+  DEFAULT_COMPACTION_PRUNING_KEEP_RECENT_TURNS,
+  DEFAULT_COMPACTION_PRUNING_MAX_REFERENCE_ITEMS,
+  DEFAULT_COMPACTION_PRUNING_SUMMARY_ENABLED,
+  DEFAULT_COMPACTION_PRUNING_SUMMARY_MAX_CHARS,
   DEFAULT_COMPACTION_TOKEN_PRESSURE_RATIO,
   DEFAULT_COMPACTION_TOOL_RESULT_BYTES,
   DEFAULT_INLINE_TOOL_RESULT_MAX_BYTES,
-  DEFAULT_TOKEN_CAPACITY,
   DEFAULT_MAX_TOOL_ITERATIONS,
   DEFAULT_MEMORY_RETRIEVE_LIMIT,
+  DEFAULT_PROMPT_ROOT_DIR,
   DEFAULT_STORAGE_ROOT_DIR,
+  DEFAULT_TOKEN_CAPACITY,
   MAX_MEMORY_RETRIEVE_LIMIT
 } from "./system-defaults.js"
 
@@ -42,11 +46,58 @@ export const ProviderConfigSchema = Schema.Struct({
 })
 export type ProviderConfig = typeof ProviderConfigSchema.Type
 
+export const PromptCatalogEntrySchema = Schema.Struct({
+  file: Schema.String
+})
+export type PromptCatalogEntry = typeof PromptCatalogEntrySchema.Type
+
+export const PromptsConfigSchema = Schema.Struct({
+  rootDir: Schema.String.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_PROMPT_ROOT_DIR)
+  ),
+  entries: Schema.Record(Schema.String, PromptCatalogEntrySchema)
+})
+export type PromptsConfig = typeof PromptsConfigSchema.Type
+
 export const PersonaSchema = Schema.Struct({
-  name: Schema.String,
-  systemPrompt: Schema.String
+  name: Schema.String
 })
 export type Persona = typeof PersonaSchema.Type
+
+export const TurnPromptBindingsSchema = Schema.Struct({
+  systemPromptRef: Schema.String,
+  replayContinuationRef: Schema.String
+})
+export type TurnPromptBindings = typeof TurnPromptBindingsSchema.Type
+
+export const MemoryTierPromptBindingsSchema = Schema.Struct({
+  WorkingMemory: Schema.String,
+  EpisodicMemory: Schema.String,
+  SemanticMemory: Schema.String,
+  ProceduralMemory: Schema.String
+})
+export type MemoryTierPromptBindings = typeof MemoryTierPromptBindingsSchema.Type
+
+export const MemoryPromptBindingsSchema = Schema.Struct({
+  triggerEnvelopeRef: Schema.String,
+  tierInstructionRefs: MemoryTierPromptBindingsSchema
+})
+export type MemoryPromptBindings = typeof MemoryPromptBindingsSchema.Type
+
+export const CompactionPromptBindingsSchema = Schema.Struct({
+  summaryBlockRef: Schema.String,
+  artifactRefsBlockRef: Schema.String,
+  toolRefsBlockRef: Schema.String,
+  keptContextBlockRef: Schema.String
+})
+export type CompactionPromptBindings = typeof CompactionPromptBindingsSchema.Type
+
+export const AgentPromptBindingsSchema = Schema.Struct({
+  turn: TurnPromptBindingsSchema,
+  memory: MemoryPromptBindingsSchema,
+  compaction: CompactionPromptBindingsSchema
+})
+export type AgentPromptBindings = typeof AgentPromptBindingsSchema.Type
 
 export const ModelRefSchema = Schema.Struct({
   provider: AiProviderName,
@@ -104,6 +155,7 @@ const defaultRuntimeConfig = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
 
 export const AgentProfileSchema = Schema.Struct({
   persona: PersonaSchema,
+  promptBindings: AgentPromptBindingsSchema,
   model: ModelRefSchema,
   generation: GenerationConfigSchema,
   runtime: RuntimeConfigSchema.pipe(
@@ -153,12 +205,42 @@ const defaultServerStorageCompactionThresholds = Schema.decodeUnknownSync(
   ServerStorageCompactionThresholdsSchema
 )({})
 
+export const ServerStorageCompactionPruningConfigSchema = Schema.Struct({
+  keepRecentTurns: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_KEEP_RECENT_TURNS)
+  ),
+  includeArtifactRefs: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_INCLUDE_ARTIFACT_REFS)
+  ),
+  includeToolRefs: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_INCLUDE_TOOL_REFS)
+  ),
+  maxReferenceItems: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_MAX_REFERENCE_ITEMS)
+  ),
+  summaryEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_SUMMARY_ENABLED)
+  ),
+  summaryMaxChars: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_PRUNING_SUMMARY_MAX_CHARS)
+  )
+})
+export type ServerStorageCompactionPruningConfig =
+  typeof ServerStorageCompactionPruningConfigSchema.Type
+
+const defaultServerStorageCompactionPruningConfig = Schema.decodeUnknownSync(
+  ServerStorageCompactionPruningConfigSchema
+)({})
+
 export const ServerStorageCompactionConfigSchema = Schema.Struct({
   cooldownSeconds: Schema.Number.pipe(
     Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_COOLDOWN_SECONDS)
   ),
   thresholds: ServerStorageCompactionThresholdsSchema.pipe(
     Schema.withDecodingDefaultKey(() => defaultServerStorageCompactionThresholds)
+  ),
+  pruning: ServerStorageCompactionPruningConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultServerStorageCompactionPruningConfig)
   )
 })
 export type ServerStorageCompactionConfig = typeof ServerStorageCompactionConfigSchema.Type
@@ -224,6 +306,7 @@ export const IntegrationsConfigSchema = Schema.Array(IntegrationConfigSchema)
 export type IntegrationsConfig = typeof IntegrationsConfigSchema.Type
 
 export const AgentConfigFileSchema = Schema.Struct({
+  prompts: PromptsConfigSchema,
   providers: Schema.Record(Schema.String, ProviderConfigSchema),
   agents: Schema.Record(Schema.String, AgentProfileSchema),
   server: ServerConfigSchema,

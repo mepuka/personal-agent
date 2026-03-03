@@ -24,6 +24,7 @@ import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
+import { PromptCatalog } from "../src/ai/PromptCatalog.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
@@ -48,7 +49,11 @@ import { FileHooksDefaultLayer } from "../src/tools/file/hooks/FileHooksDefault.
 import { ToolExecution } from "../src/tools/ToolExecution.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { SubroutineRunner, buildTriggerPrompt, type SubroutineContext } from "../src/memory/SubroutineRunner.js"
+import {
+  SubroutineRunner,
+  buildTriggerPromptTemplateVars,
+  type SubroutineContext
+} from "../src/memory/SubroutineRunner.js"
 import { TraceWriter } from "../src/memory/TraceWriter.js"
 import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
 
@@ -61,6 +66,61 @@ const CONVERSATION_ID = "conversation:sub-test" as ConversationId
 const AGENT_ID = "agent:default" as AgentId
 const instant = (input: string): Instant => DateTime.fromDateUnsafe(new Date(input))
 const NOW = instant("2026-03-01T12:00:00.000Z")
+
+const TEST_PROMPTS: Record<string, string> = {
+  "core.turn.system.default": "You are a test agent.",
+  "core.turn.replay.continuation": "Continue from approved tool result.",
+  "memory.trigger.envelope":
+    "Trigger={{trigger_type}} Session={{session_id}} Reason={{trigger_reason}} Tier={{memory_tier}}",
+  "memory.tier.working": "working tier instructions",
+  "memory.tier.episodic": "episodic tier instructions",
+  "memory.tier.semantic": "semantic tier instructions",
+  "memory.tier.procedural": "procedural tier instructions",
+  "compaction.block.summary": "summary {{summary}}",
+  "compaction.block.artifacts": "artifacts {{items_markdown}}",
+  "compaction.block.tools": "tools {{items_markdown}}",
+  "compaction.block.kept": "kept {{kept_context_markdown}}",
+  "memory.routine.reflect": "Reflect and consolidate memory."
+}
+
+const TEST_PROMPT_BINDINGS = {
+  turn: {
+    systemPromptRef: "core.turn.system.default",
+    replayContinuationRef: "core.turn.replay.continuation"
+  },
+  memory: {
+    triggerEnvelopeRef: "memory.trigger.envelope",
+    tierInstructionRefs: {
+      WorkingMemory: "memory.tier.working",
+      EpisodicMemory: "memory.tier.episodic",
+      SemanticMemory: "memory.tier.semantic",
+      ProceduralMemory: "memory.tier.procedural"
+    }
+  },
+  compaction: {
+    summaryBlockRef: "compaction.block.summary",
+    artifactRefsBlockRef: "compaction.block.artifacts",
+    toolRefsBlockRef: "compaction.block.tools",
+    keptContextBlockRef: "compaction.block.kept"
+  }
+} as const
+
+const promptCatalogLayer = Layer.succeed(PromptCatalog, {
+  get: (ref: string) =>
+    TEST_PROMPTS[ref] === undefined
+      ? Effect.die(new Error(`Missing prompt ref in test: ${ref}`))
+      : Effect.succeed(TEST_PROMPTS[ref]!),
+  getAgentBindings: () => Effect.succeed(TEST_PROMPT_BINDINGS),
+  render: (ref: string, vars: Record<string, string>) =>
+    (TEST_PROMPTS[ref] === undefined
+      ? Effect.die(new Error(`Missing prompt ref in test: ${ref}`))
+      : Effect.succeed(
+        TEST_PROMPTS[ref]!.replace(
+          /{{\s*([a-zA-Z0-9_]+)\s*}}/g,
+          (_match, name: string) => vars[name] ?? ""
+        )
+      ))
+} as any)
 
 // ---------------------------------------------------------------------------
 // Mock Language Model
@@ -149,10 +209,17 @@ const makeMockLanguageModel = (
 // ---------------------------------------------------------------------------
 
 const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+  prompts: {
+    rootDir: "prompts",
+    entries: Object.fromEntries(
+      Object.keys(TEST_PROMPTS).map((ref) => [ref, { file: `${ref}.md` }])
+    )
+  },
   providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
   agents: {
     default: {
-      persona: { name: "Test Agent", systemPrompt: "You are a test agent." },
+      persona: { name: "Test Agent" },
+      promptBindings: TEST_PROMPT_BINDINGS,
       model: { provider: "anthropic", modelId: "test-model" },
       generation: { temperature: 0.7, maxOutputTokens: 1024 }
     }
@@ -228,7 +295,7 @@ const makeLoadedSubroutine = (overrides?: {
     name: "Memory Consolidation",
     tier: "SemanticMemory",
     trigger: { type: "PostTurn" },
-    promptFile: "prompts/consolidation.md",
+    promptRef: "memory.routine.reflect",
     maxIterations: overrides?.maxIterations ?? 5,
     toolConcurrency: 1,
     dedupeWindowSeconds: 30
@@ -374,6 +441,7 @@ const makeTestLayer = (
     Layer.provide(toolRegistryLayer),
     Layer.provide(chatPersistenceLayer),
     Layer.provide(mockAgentConfigLayer),
+    Layer.provide(promptCatalogLayer),
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(governanceTagLayer),
     Layer.provide(traceWriterLayer),
@@ -381,63 +449,63 @@ const makeTestLayer = (
     Layer.provide(sessionMetricsLayer)
   )
 
-  return Layer.mergeAll(
-    sqlInfrastructureLayer,
+  const supportLayer = Layer.mergeAll(
     AgentStatePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer)),
     governanceSqliteLayer,
-    governanceTagLayer,
-    memoryPortSqliteLayer,
-    memoryPortTagLayer,
-    subroutineRunnerLayer
+    memoryPortSqliteLayer
+  )
+
+  return subroutineRunnerLayer.pipe(
+    Layer.provideMerge(supportLayer)
   )
 }
 
 // ---------------------------------------------------------------------------
-// Unit Tests: buildTriggerPrompt
+// Unit Tests: buildTriggerPromptTemplateVars
 // ---------------------------------------------------------------------------
 
-describe("buildTriggerPrompt", () => {
-  it("produces prompt for PostTurn trigger", () => {
+describe("buildTriggerPromptTemplateVars", () => {
+  it("populates core variables for PostTurn", () => {
     const ctx = makeSubroutineContext({ triggerType: "PostTurn", triggerReason: "End of user turn" })
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Execute your memory routine.")
-    expect(prompt).toContain("Trigger: PostTurn")
-    expect(prompt).toContain(`Session: ${SESSION_ID}`)
-    expect(prompt).toContain("Reason: End of user turn")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.trigger_type).toBe("PostTurn")
+    expect(vars.session_id).toBe(String(SESSION_ID))
+    expect(vars.trigger_reason).toBe("End of user turn")
+    expect(vars.subroutine_id).toBe("sub:id")
+    expect(vars.memory_tier).toBe("SemanticMemory")
   })
 
-  it("produces prompt for PostSession trigger", () => {
+  it("populates trigger type for PostSession", () => {
     const ctx = makeSubroutineContext({ triggerType: "PostSession", triggerReason: "Session idle timeout" })
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Trigger: PostSession")
-    expect(prompt).toContain("Reason: Session idle timeout")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.trigger_type).toBe("PostSession")
+    expect(vars.trigger_reason).toBe("Session idle timeout")
   })
 
-  it("produces prompt for Scheduled trigger", () => {
+  it("populates trigger type for Scheduled", () => {
     const ctx = makeSubroutineContext({ triggerType: "Scheduled", triggerReason: "Cron: 0 */6 * * *" })
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Trigger: Scheduled")
-    expect(prompt).toContain("Reason: Cron: 0 */6 * * *")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.trigger_type).toBe("Scheduled")
+    expect(vars.trigger_reason).toBe("Cron: 0 */6 * * *")
   })
 
-  it("produces prompt for ContextPressure trigger", () => {
+  it("populates trigger type for ContextPressure", () => {
     const ctx = makeSubroutineContext({ triggerType: "ContextPressure", triggerReason: "Token pressure at 90%" })
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Trigger: ContextPressure")
-    expect(prompt).toContain("Reason: Token pressure at 90%")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.trigger_type).toBe("ContextPressure")
+    expect(vars.trigger_reason).toBe("Token pressure at 90%")
   })
 
   it("includes ISO timestamp", () => {
     const ctx = makeSubroutineContext()
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Time:")
-    expect(prompt).toContain("2026")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.triggered_at_iso).toContain("2026")
   })
 
-  it("handles null turnId context", () => {
+  it("maps null turnId to empty string", () => {
     const ctx = makeSubroutineContext({ turnId: null })
-    const prompt = buildTriggerPrompt(ctx)
-    expect(prompt).toContain("Execute your memory routine.")
+    const vars = buildTriggerPromptTemplateVars(ctx, "sub:id", "SemanticMemory")
+    expect(vars.turn_id).toBe("")
   })
 })
 
@@ -858,6 +926,7 @@ describe("SubroutineRunner checkpoint", () => {
       Layer.provide(toolRegistryLayer),
       Layer.provide(chatPersistenceLayer),
       Layer.provide(mockAgentConfigLayer),
+      Layer.provide(promptCatalogLayer),
       Layer.provide(mockModelRegistryLayer),
       Layer.provide(governanceTagLayer),
       Layer.provide(traceWriterLayer),

@@ -4,15 +4,22 @@ import type {
   PostCommitSubroutineOutcome
 } from "@template/domain/ports"
 import { Cause, DateTime, Effect, Layer, ServiceMap } from "effect"
+import type * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { SessionMetricsPortTag, SessionTurnPortTag } from "../PortTags.js"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
-import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import { SubroutineRunner, type SubroutineContext } from "../memory/SubroutineRunner.js"
+import { CompactionWorkflow } from "../memory/compaction/CompactionWorkflow.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 
 export interface PostCommitExecutorService {
-  readonly execute: (payload: ExecutePostCommitPayload) => Effect.Effect<PostCommitResult>
+  readonly execute: (
+    payload: ExecutePostCommitPayload
+  ) => Effect.Effect<
+    PostCommitResult,
+    never,
+    WorkflowEngine.WorkflowEngine | WorkflowEngine.WorkflowInstance
+  >
 }
 
 export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()(
@@ -25,7 +32,6 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
       const agentConfig = yield* AgentConfig
       const sessionTurnPort = yield* SessionTurnPortTag
       const sessionMetricsPort = yield* SessionMetricsPortTag
-      const subroutineControlPlane = yield* SubroutineControlPlane
 
       const execute: PostCommitExecutorService["execute"] = (payload) =>
         Effect.gen(function*() {
@@ -108,21 +114,30 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
               return
             }
 
-            const enqueueResults = yield* subroutineControlPlane.dispatchByTrigger(
-              "ContextPressure",
+            yield* CompactionWorkflow.execute(
               {
+                triggerSource: "PostCommitMetrics",
                 agentId: payload.agentId,
                 sessionId: payload.sessionId,
                 conversationId: payload.conversationId,
                 turnId: payload.turnId,
-                now
-              }
+                triggeredAt: now
+              },
+              { discard: true }
+            ).pipe(
+              Effect.tap((executionId) =>
+                Effect.log("compaction_workflow_dispatched", {
+                  turnId: payload.turnId,
+                  sessionId: payload.sessionId,
+                  executionId
+                })
+              ),
+              Effect.asVoid
             )
-            if (enqueueResults.some((result) => result.accepted)) {
-              yield* sessionMetricsPort.increment(payload.sessionId, {
-                lastCompactionAt: now
-              })
-            }
+
+            yield* sessionMetricsPort.increment(payload.sessionId, {
+              lastCompactionAt: now
+            })
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("post_commit_compaction_gate_failed", {

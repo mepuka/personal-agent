@@ -20,6 +20,7 @@ import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTa
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import type { ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 const makeMockTurnProcessingRuntime = () =>
   Layer.succeed(TurnProcessingRuntime, {
@@ -119,17 +120,38 @@ const makeTestLayer = (dbPath: string) => {
     executeApprovedCheckpointTool: () =>
       Effect.die("ToolRegistry.executeApprovedCheckpointTool not used in CLIAdapterEntity tests")
   } as any)
-  const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+  const mockAgentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "test" },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test-model" },
         generation: { temperature: 0.7, maxOutputTokens: 1024 }
       }
     },
     server: { port: 3000 }
-  })
+  }))
 
   const channelCoreLayer = ChannelCore.layer.pipe(
     Layer.provide(agentStateTagLayer),

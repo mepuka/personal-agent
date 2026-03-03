@@ -50,6 +50,7 @@ import {
   withAdditionalFileHooks
 } from "../src/tools/file/hooks/FileHooksDefault.js"
 import { ToolExecution } from "../src/tools/ToolExecution.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 const SESSION_ID = "session:tool-registry" as SessionId
 const CONVERSATION_ID = "conversation:tool-registry" as ConversationId
@@ -1076,17 +1077,38 @@ const encodeJsonUnknown = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 const encodeJson = (value: unknown): string => encodeJsonUnknown(value)
 
-const mockAgentConfigLayer = AgentConfig.layerFromParsed({
+const mockAgentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
   providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
   agents: {
     default: {
-      persona: { name: "Test", systemPrompt: "test" },
+      persona: { name: "Test"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "anthropic", modelId: "test-model" },
       generation: { temperature: 0.7, maxOutputTokens: 1024 }
     }
   },
   server: { port: 3000 }
-})
+}))
 
 const makeToolRegistryLayer = (
   dbPath: string,

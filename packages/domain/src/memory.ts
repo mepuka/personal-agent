@@ -103,7 +103,7 @@ export const MemorySubroutineConfig = Schema.Struct({
   name: Schema.String,
   tier: MemoryTier,
   trigger: SubroutineTrigger,
-  promptFile: Schema.String,
+  promptRef: Schema.String,
   maxIterations: Schema.Int.pipe(
     Schema.withDecodingDefaultKey(() => DEFAULT_SUBROUTINE_MAX_ITERATIONS)
   ),

@@ -24,12 +24,14 @@ export const PostCommitWorkflow = Workflow.make({
   idempotencyKey: (payload) => payload.turnId
 })
 
-const executeAttempt = (
+const executeAttempt = <R>(
   executor: {
-    readonly execute: (payload: ExecutePostCommitPayload) => Effect.Effect<PostCommitResult>
+    readonly execute: (
+      payload: ExecutePostCommitPayload
+    ) => Effect.Effect<PostCommitResult, never, R>
   },
   payload: ExecutePostCommitPayload
-): Effect.Effect<PostCommitResult> =>
+): Effect.Effect<PostCommitResult, never, R> =>
   executor.execute(payload).pipe(
     Effect.timeout(Duration.seconds(30)),
     Effect.catchCause((cause) =>
@@ -80,7 +82,9 @@ export const runPostCommitWithRetry = <
 >(options: {
   readonly payload: ExecutePostCommitPayload
   readonly executor: {
-    readonly execute: (payload: ExecutePostCommitPayload) => Effect.Effect<PostCommitResult>
+    readonly execute: (
+      payload: ExecutePostCommitPayload
+    ) => Effect.Effect<PostCommitResult, never, R>
   }
   readonly sleepForRetry?: SleepForRetry<R>
   readonly maxAttempts?: number

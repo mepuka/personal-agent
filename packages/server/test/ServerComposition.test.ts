@@ -20,6 +20,7 @@ import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
+import { PromptCatalog } from "../src/ai/PromptCatalog.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
@@ -90,12 +91,51 @@ const cleanupDatabase = (path: string) =>
     rmSync(path, { force: true })
   })
 
+const TEST_PROMPT_BINDINGS = {
+  turn: {
+    systemPromptRef: "core.turn.system.default",
+    replayContinuationRef: "core.turn.replay.continuation"
+  },
+  memory: {
+    triggerEnvelopeRef: "memory.trigger.envelope",
+    tierInstructionRefs: {
+      WorkingMemory: "memory.tier.working",
+      EpisodicMemory: "memory.tier.episodic",
+      SemanticMemory: "memory.tier.semantic",
+      ProceduralMemory: "memory.tier.procedural"
+    }
+  },
+  compaction: {
+    summaryBlockRef: "compaction.block.summary",
+    artifactRefsBlockRef: "compaction.block.artifacts",
+    toolRefsBlockRef: "compaction.block.tools",
+    keptContextBlockRef: "compaction.block.kept"
+  }
+} as const
+
 const makeAgentConfigLayer = () =>
   AgentConfig.layerFromParsed({
+    prompts: {
+      rootDir: "prompts",
+      entries: {
+        "core.turn.system.default": { file: "core/system-default.md" },
+        "core.turn.replay.continuation": { file: "core/replay-continuation.md" },
+        "memory.trigger.envelope": { file: "memory/trigger-envelope.md" },
+        "memory.tier.working": { file: "memory/tier-working.md" },
+        "memory.tier.episodic": { file: "memory/tier-episodic.md" },
+        "memory.tier.semantic": { file: "memory/tier-semantic.md" },
+        "memory.tier.procedural": { file: "memory/tier-procedural.md" },
+        "compaction.block.summary": { file: "compaction/block-summary.md" },
+        "compaction.block.artifacts": { file: "compaction/block-artifacts.md" },
+        "compaction.block.tools": { file: "compaction/block-tools.md" },
+        "compaction.block.kept": { file: "compaction/block-kept-context.md" }
+      }
+    },
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "Test." },
+        persona: { name: "Test"  },
+        promptBindings: TEST_PROMPT_BINDINGS,
         model: { provider: "anthropic", modelId: "test" },
         generation: { temperature: 0.7, maxOutputTokens: 1024 }
       }
@@ -207,6 +247,11 @@ const makePortsLiveLayer = (dbPath: string) => {
   ).pipe(Layer.provide(memoryPortSqliteLayer))
 
   const agentConfigLayer = makeAgentConfigLayer()
+  const promptCatalogLayer = Layer.succeed(PromptCatalog, {
+    get: (ref: string) => Effect.succeed(`prompt:${ref}`),
+    getAgentBindings: () => Effect.succeed(TEST_PROMPT_BINDINGS),
+    render: (ref: string) => Effect.succeed(`prompt:${ref}`)
+  } as any)
 
   const storageLayoutLayer = StorageLayout.layer.pipe(
     Layer.provide(Layer.mergeAll(agentConfigLayer, NodeServices.layer))
@@ -328,7 +373,7 @@ const makePortsLiveLayer = (dbPath: string) => {
   )
 
   const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
-    Layer.provide(Layer.mergeAll(agentConfigLayer, platformLayer))
+    Layer.provide(Layer.mergeAll(agentConfigLayer, promptCatalogLayer, platformLayer))
   )
 
   const traceWriterLayer = TraceWriter.layer.pipe(
@@ -354,6 +399,7 @@ const makePortsLiveLayer = (dbPath: string) => {
       toolRegistryLayer,
       chatPersistenceLayer,
       agentConfigLayer,
+      promptCatalogLayer,
       modelRegistryLayer,
       governancePortTagLayer,
       traceWriterLayer,
@@ -433,6 +479,7 @@ const makePortsLiveLayer = (dbPath: string) => {
       toolRegistryLayer,
       chatPersistenceLayer,
       agentConfigLayer,
+      promptCatalogLayer,
       modelRegistryLayer,
       checkpointPortTagLayer,
       sessionMetricsPortTagLayer,
@@ -489,6 +536,7 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provideMerge(modelRegistryLayer),
     Layer.provideMerge(chatPersistenceLayer),
     Layer.provideMerge(agentConfigLayer),
+    Layer.provideMerge(promptCatalogLayer),
     Layer.provideMerge(schedulerLayer),
     Layer.provideMerge(portTagsLayer),
     Layer.provideMerge(memoryPortSqliteLayer),

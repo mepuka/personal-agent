@@ -1,26 +1,69 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
-const testYaml = {
+const testYaml = withTestPromptsConfig({
   providers: {
     anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" },
     openai: { apiKeyEnv: "PA_OPENAI_API_KEY" }
   },
   agents: {
     default: {
-      persona: { name: "Test Assistant", systemPrompt: "You are helpful." },
+      persona: { name: "Test Assistant"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
       generation: { temperature: 0.7, maxOutputTokens: 4096 }
     },
     summarizer: {
-      persona: { name: "Summarizer", systemPrompt: "Summarize concisely." },
+      persona: { name: "Summarizer"  },
+      promptBindings: {
+        turn: {
+          systemPromptRef: "core.turn.system.default",
+          replayContinuationRef: "core.turn.replay.continuation"
+        },
+        memory: {
+          triggerEnvelopeRef: "memory.trigger.envelope",
+          tierInstructionRefs: {
+            WorkingMemory: "memory.tier.working",
+            EpisodicMemory: "memory.tier.episodic",
+            SemanticMemory: "memory.tier.semantic",
+            ProceduralMemory: "memory.tier.procedural"
+          }
+        },
+        compaction: {
+          summaryBlockRef: "compaction.block.summary",
+          artifactRefsBlockRef: "compaction.block.artifacts",
+          toolRefsBlockRef: "compaction.block.tools",
+          keptContextBlockRef: "compaction.block.kept"
+        }
+      },
       model: { provider: "openai", modelId: "gpt-4o-mini" },
       generation: { temperature: 0.2, maxOutputTokens: 1024 }
     }
   },
   server: { port: 3000 }
-}
+})
 
 const testLayer = AgentConfig.layerFromParsed(testYaml)
 

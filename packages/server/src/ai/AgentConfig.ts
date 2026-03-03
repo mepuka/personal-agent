@@ -2,6 +2,7 @@ import type {
   AgentProfile,
   ChannelsConfig,
   IntegrationsConfig,
+  PromptsConfig,
   ProviderConfig,
   ServerConfig
 } from "@template/domain/config"
@@ -16,6 +17,7 @@ export class AgentProfileNotFound extends Schema.ErrorClass<AgentProfileNotFound
 }) {}
 
 export interface AgentConfigService {
+  readonly prompts: PromptsConfig
   readonly providers: Map<string, ProviderConfig>
   readonly agents: Map<string, AgentProfile>
   readonly server: ServerConfig
@@ -47,6 +49,7 @@ const makeFromParsed = (raw: unknown): Effect.Effect<AgentConfigService> =>
     }
 
     return {
+      prompts: config.prompts,
       providers,
       agents,
       server: config.server,

@@ -11,6 +11,7 @@ import {
 } from "@template/domain/system-defaults"
 import { Effect, Schema } from "effect"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 const decodeFail = (schema: typeof SubroutineTrigger | typeof MemorySubroutineConfig | typeof MemoryRoutinesConfig) =>
   (input: unknown) => {
@@ -81,7 +82,7 @@ describe("MemorySubroutineConfig", () => {
     name: "Test Subroutine",
     tier: "SemanticMemory",
     trigger: { type: "PostTurn" },
-    promptFile: "prompts/test.md"
+    promptRef: "prompts/test.md"
   }
 
   it("decodes minimal config with defaults", () => {
@@ -163,7 +164,7 @@ describe("MemoryRoutinesConfig", () => {
         name: "Test",
         tier: "SemanticMemory",
         trigger: { type: "PostTurn" },
-        promptFile: "prompts/test.md"
+        promptRef: "prompts/test.md"
       }]
     })
     expect(result.subroutines).toHaveLength(1)
@@ -183,17 +184,38 @@ describe("MemoryRoutinesConfig", () => {
 })
 
 describe("AgentConfig memoryRoutines", () => {
-  const baseYaml = {
+  const baseYaml = withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
       default: {
-        persona: { name: "Test", systemPrompt: "test" },
+        persona: { name: "Test"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "test-model" },
         generation: { temperature: 0.7, maxOutputTokens: 1024 }
       }
     },
     server: { port: 3000 }
-  }
+  })
 
   it.effect("decodes profile without memoryRoutines", () =>
     Effect.gen(function*() {
@@ -212,7 +234,7 @@ describe("AgentConfig memoryRoutines", () => {
       expect(profile.memoryRoutines!.subroutines[0].maxIterations).toBe(DEFAULT_SUBROUTINE_MAX_ITERATIONS)
     }).pipe(
       Effect.provide(
-        AgentConfig.layerFromParsed({
+        AgentConfig.layerFromParsed(withTestPromptsConfig({
           ...baseYaml,
           agents: {
             default: {
@@ -223,12 +245,12 @@ describe("AgentConfig memoryRoutines", () => {
                   name: "Reflection",
                   tier: "EpisodicMemory",
                   trigger: { type: "PostTurn" },
-                  promptFile: "prompts/reflect.md"
+                  promptRef: "prompts/reflect.md"
                 }]
               }
             }
           }
-        })
+        }))
       )
     ))
 })

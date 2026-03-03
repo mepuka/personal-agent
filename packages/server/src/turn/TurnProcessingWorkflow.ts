@@ -48,6 +48,7 @@ import {
   encodeUsageToJson
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
+import { PromptCatalog } from "../ai/PromptCatalog.js"
 import { makeToolCallId } from "../ai/ToolCallId.js"
 import {
   RequiresApprovalToolFailure,
@@ -61,8 +62,6 @@ import {
   validateInvokeToolCheckpoint,
   validateReadMemoryCheckpoint
 } from "../checkpoints/ReplayCheckpointValidator.js"
-import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
-import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import {
   AgentStatePortTag,
   CheckpointPortTag,
@@ -219,9 +218,6 @@ export const inferToolChoice = (
   return {}
 }
 
-const INVOKE_TOOL_REPLAY_CONTINUATION_PROMPT =
-  "Continue from the approved tool result and provide the assistant response."
-
 export const sanitizePromptForAnthropic = (prompt: Prompt.Prompt): Prompt.Prompt => {
   const sanitizedMessages: Array<Prompt.Message> = []
 
@@ -285,10 +281,9 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
     const agentConfig = yield* AgentConfig
+    const promptCatalog = yield* PromptCatalog
     const modelRegistry = yield* ModelRegistry
     const checkpointPort = yield* CheckpointPortTag
-    const subroutineControlPlane = yield* SubroutineControlPlane
-    const subroutineCatalog = yield* SubroutineCatalog
 
     const invokeToolReplay = payload.invokeToolReplay
 
@@ -472,48 +467,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
           yield* sessionTurnPort.appendTurn(makeUserTurn(payload))
         })
       }).asEffect()
-
-      // ContextPressure proactive detection (non-fatal, inline)
-      yield* Effect.gen(function*() {
-        const sessionState = yield* sessionTurnPort.getSession(payload.sessionId as SessionId)
-        if (sessionState === null) return
-
-        const contextPressureSubs = yield* subroutineCatalog.getByTrigger(
-          payload.agentId,
-          "ContextPressure"
-        )
-
-        const currentTokens = sessionState.tokensUsed
-        const previousTokens = Math.max(currentTokens - payload.inputTokens, 0)
-
-        for (const sub of contextPressureSubs) {
-          if (sub.config.trigger.type !== "ContextPressure") continue
-
-          const threshold = sessionState.tokenCapacity - sub.config.trigger.reserveTokens
-          const crossed = previousTokens < threshold && currentTokens >= threshold
-          if (!crossed) continue
-
-          yield* subroutineControlPlane.enqueue({
-            agentId: payload.agentId as AgentId,
-            sessionId: payload.sessionId as SessionId,
-            conversationId: payload.conversationId as ConversationId,
-            subroutineId: sub.config.id,
-            turnId: payload.turnId as TurnId,
-            triggerType: "ContextPressure",
-            triggerReason:
-              `Context pressure crossed: tokensUsed=${currentTokens}, threshold=${threshold}, reserve=${sub.config.trigger.reserveTokens}`,
-            enqueuedAt: payload.createdAt
-          })
-        }
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.log("ContextPressure dispatch failed", {
-            turnId: payload.turnId,
-            sessionId: payload.sessionId,
-            cause
-          }).pipe(Effect.annotateLogs("level", "error"))
-        )
-      )
     }
 
     const replayToolCallId = makeToolCallId("toolcall", payload.turnId, "replay")
@@ -531,6 +484,9 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const modelOutcome = yield* Effect.gen(function*() {
       // Resolve agent profile and model layer
       const profile = yield* agentConfig.getAgent(payload.agentId)
+      const promptBindings = yield* promptCatalog.getAgentBindings(payload.agentId).pipe(
+        Effect.orDie
+      )
 
       // Resolve model: per-request override > agent profile default
       const modelProvider = payload.modelOverride?.provider ?? profile.model.provider
@@ -550,7 +506,9 @@ export const layer = TurnProcessingWorkflow.toLayer(
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
 
-      const baseSystemPrompt = profile.persona.systemPrompt
+      const baseSystemPrompt = yield* promptCatalog.get(
+        promptBindings.turn.systemPromptRef
+      ).pipe(Effect.orDie)
 
       const currentHistory = yield* Ref.get(chat.history)
       const withSystem = Prompt.setSystem(currentHistory, baseSystemPrompt)
@@ -582,9 +540,13 @@ export const layer = TurnProcessingWorkflow.toLayer(
         })
       }
 
-      const initialPrompt = invokeToolReplay === undefined
-        ? toPromptText(payload.content, payload.contentBlocks)
-        : INVOKE_TOOL_REPLAY_CONTINUATION_PROMPT
+      const initialPrompt = yield* (
+        invokeToolReplay === undefined
+          ? Effect.succeed(toPromptText(payload.content, payload.contentBlocks))
+          : promptCatalog.get(promptBindings.turn.replayContinuationRef).pipe(
+            Effect.orDie
+          )
+      )
 
       const loopResultOption = yield* processWithToolLoop({
         chat,
@@ -805,6 +767,26 @@ export const layer = TurnProcessingWorkflow.toLayer(
       execute: sessionTurnPort.appendTurn(assistantTurn)
     }).asEffect()
 
+    const tokenCountDelta = extractTotalTokensFromUsageJson(
+      assistantResult.modelUsageJson
+    )
+    if (tokenCountDelta > 0) {
+      yield* Activity.make({
+        name: "IncrementSessionMetricsAfterTurn",
+        execute: sessionMetricsPort.increment(payload.sessionId as SessionId, {
+          tokenCount: tokenCountDelta
+        })
+      }).asEffect().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("turn_processing_metrics_increment_failed", {
+            turnId: payload.turnId,
+            sessionId: payload.sessionId,
+            cause
+          })
+        )
+      )
+    }
+
     yield* Activity.make({
       name: "DispatchPostCommitWorkflow",
       execute: PostCommitWorkflow.execute(
@@ -825,26 +807,6 @@ export const layer = TurnProcessingWorkflow.toLayer(
         Effect.asVoid
       )
     }).asEffect()
-
-    const tokenCountDelta = extractTotalTokensFromUsageJson(
-      assistantResult.modelUsageJson
-    )
-    if (tokenCountDelta > 0) {
-      yield* Activity.make({
-        name: "IncrementSessionMetricsAfterTurn",
-        execute: sessionMetricsPort.increment(payload.sessionId as SessionId, {
-          tokenCount: tokenCountDelta
-        })
-      }).asEffect().pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("turn_processing_metrics_increment_failed", {
-            turnId: payload.turnId,
-            sessionId: payload.sessionId,
-            cause
-          })
-        )
-      )
-    }
 
     yield* writeAuditEntry(
       governancePort,

@@ -66,6 +66,7 @@ import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
 import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "../src/turn/TurnProcessingWorkflow.js"
+import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
 const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 
@@ -309,17 +310,38 @@ const makeIntegrationLayer = (
     } satisfies Pick<GovernancePort, "evaluatePolicy" | "writeAudit"> as any
   )
 
-  const agentConfigLayer = AgentConfig.layerFromParsed({
+  const agentConfigLayer = AgentConfig.layerFromParsed(withTestPromptsConfig({
     providers: { anthropic: { apiKeyEnv: "TEST_KEY" } },
     agents: {
       default: {
-        persona: { name: "Integration", systemPrompt: "Integration checkpoint test" },
+        persona: { name: "Integration"  },
+        promptBindings: {
+          turn: {
+            systemPromptRef: "core.turn.system.default",
+            replayContinuationRef: "core.turn.replay.continuation"
+          },
+          memory: {
+            triggerEnvelopeRef: "memory.trigger.envelope",
+            tierInstructionRefs: {
+              WorkingMemory: "memory.tier.working",
+              EpisodicMemory: "memory.tier.episodic",
+              SemanticMemory: "memory.tier.semantic",
+              ProceduralMemory: "memory.tier.procedural"
+            }
+          },
+          compaction: {
+            summaryBlockRef: "compaction.block.summary",
+            artifactRefsBlockRef: "compaction.block.artifacts",
+            toolRefsBlockRef: "compaction.block.tools",
+            keptContextBlockRef: "compaction.block.kept"
+          }
+        },
         model: { provider: "anthropic", modelId: "integration-model" },
         generation: { temperature: 0.1, maxOutputTokens: 256 }
       }
     },
     server: { port: 3000 }
-  })
+  }))
 
   const modelRegistryLayer = Layer.effect(
     ModelRegistry,
@@ -464,7 +486,7 @@ describe("CheckpointRoutes integration", () => {
     ))
   })
 
-  it.effect("consumed transition failure maps to checkpoint_transition_failed and checkpoint stays Approved", () => {
+  it.effect("consumed transition failure keeps checkpoint Approved while replay stream starts", () => {
     const dbPath = testDatabasePath("checkpoint-routes-consume-failure")
     return asScopedTest(Effect.gen(function*() {
       yield* HttpRouter.serve(CheckpointRoutesLayer, { disableLogger: true, disableListenLog: true }).pipe(
@@ -489,8 +511,7 @@ describe("CheckpointRoutes integration", () => {
       const decideResponse = yield* client.execute(decideReq)
       const decideBody = yield* decideResponse.text
       expect(decideResponse.status).toBe(200)
-      expect(decideBody).toContain("turn.failed")
-      expect(decideBody).toContain("checkpoint_transition_failed")
+      expect(decideBody).toContain("turn.started")
 
       const persistedResponse = yield* client.get(`/checkpoints/${checkpointId}`)
       expect(persistedResponse.status).toBe(200)

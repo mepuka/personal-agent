@@ -957,6 +957,28 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS scheduled_executions_schedule_id_idx
       ON scheduled_executions (schedule_id, created_at)
     `.unprepared
+  }),
+  "0023_session_compaction_state": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS session_compaction_state (
+        session_id TEXT PRIMARY KEY,
+        active_turn_id TEXT,
+        active_agent_id TEXT,
+        active_conversation_id TEXT,
+        pending_turn_id TEXT,
+        pending_agent_id TEXT,
+        pending_conversation_id TEXT,
+        pending_triggered_at TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS session_compaction_state_updated_idx
+      ON session_compaction_state (updated_at)
+    `.unprepared
   })
 })
 

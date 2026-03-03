@@ -1,8 +1,9 @@
 import type { MemorySubroutineConfig, SubroutineToolScope } from "@template/domain/memory"
 import type { SubroutineTriggerType } from "@template/domain/status"
 import { DEFAULT_SUBROUTINE_TOOL_SCOPE } from "@template/domain/system-defaults"
-import { Effect, FileSystem, Layer, Path, Schema, ServiceMap } from "effect"
+import { Effect, Layer, Schema, ServiceMap } from "effect"
 import { AgentConfig } from "../ai/AgentConfig.js"
+import { PromptCatalog } from "../ai/PromptCatalog.js"
 
 export interface LoadedSubroutine {
   readonly config: MemorySubroutineConfig
@@ -36,10 +37,7 @@ export class SubroutineCatalog extends ServiceMap.Service<SubroutineCatalog>()(
   {
     make: Effect.gen(function*() {
       const agentConfig = yield* AgentConfig
-      const fs = yield* FileSystem.FileSystem
-      const pathService = yield* Path.Path
-      const configPath = process.env.PA_CONFIG_PATH ?? "agent.yaml"
-      const configDir = pathService.dirname(pathService.resolve(configPath))
+      const promptCatalog = yield* PromptCatalog
 
       const byId = new Map<string, LoadedSubroutine>()
       const byTrigger = new Map<string, Map<string, ReadonlyArray<LoadedSubroutine>>>()
@@ -59,13 +57,11 @@ export class SubroutineCatalog extends ServiceMap.Service<SubroutineCatalog>()(
             )
           }
 
-          const promptPath = pathService.resolve(configDir, sub.promptFile)
-          const prompt = yield* fs.readFileString(promptPath).pipe(
-            Effect.mapError(() =>
+          const prompt = yield* promptCatalog.get(sub.promptRef).pipe(
+            Effect.mapError((error) =>
               new Error(
-                `Missing subroutine prompt file for '${sub.id}': could not read '${promptPath}' (promptFile: '${sub.promptFile}')`
-              )
-            ),
+                `Missing subroutine prompt for '${sub.id}' (promptRef='${sub.promptRef}'): ${error.message}`
+              )),
             Effect.orDie
           )
 

@@ -31,6 +31,7 @@ import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import * as ChatPersistence from "../src/ai/ChatPersistence.js"
 import { ModelRegistry } from "../src/ai/ModelRegistry.js"
+import { PromptCatalog } from "../src/ai/PromptCatalog.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
@@ -65,13 +66,50 @@ import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
 import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
-const TEST_SYSTEM_PROMPT = "You are a test bot. Always respond with 'Hello from test bot!'"
+const TEST_PROMPT_BINDINGS = {
+  turn: {
+    systemPromptRef: "core.turn.system.default",
+    replayContinuationRef: "core.turn.replay.continuation"
+  },
+  memory: {
+    triggerEnvelopeRef: "memory.trigger.envelope",
+    tierInstructionRefs: {
+      WorkingMemory: "memory.tier.working",
+      EpisodicMemory: "memory.tier.episodic",
+      SemanticMemory: "memory.tier.semantic",
+      ProceduralMemory: "memory.tier.procedural"
+    }
+  },
+  compaction: {
+    summaryBlockRef: "compaction.block.summary",
+    artifactRefsBlockRef: "compaction.block.artifacts",
+    toolRefsBlockRef: "compaction.block.tools",
+    keptContextBlockRef: "compaction.block.kept"
+  }
+} as const
 
 const testConfigData = {
+  prompts: {
+    rootDir: "prompts",
+    entries: {
+      "core.turn.system.default": { file: "core/system-default.md" },
+      "core.turn.replay.continuation": { file: "core/replay-continuation.md" },
+      "memory.trigger.envelope": { file: "memory/trigger-envelope.md" },
+      "memory.tier.working": { file: "memory/tier-working.md" },
+      "memory.tier.episodic": { file: "memory/tier-episodic.md" },
+      "memory.tier.semantic": { file: "memory/tier-semantic.md" },
+      "memory.tier.procedural": { file: "memory/tier-procedural.md" },
+      "compaction.block.summary": { file: "compaction/block-summary.md" },
+      "compaction.block.artifacts": { file: "compaction/block-artifacts.md" },
+      "compaction.block.tools": { file: "compaction/block-tools.md" },
+      "compaction.block.kept": { file: "compaction/block-kept-context.md" }
+    }
+  },
   providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
   agents: {
     default: {
-      persona: { name: "Test Bot", systemPrompt: TEST_SYSTEM_PROMPT },
+      persona: { name: "Test Bot"  },
+      promptBindings: TEST_PROMPT_BINDINGS,
       model: { provider: "anthropic", modelId: "test-model" },
       generation: { temperature: 0.0, maxOutputTokens: 100 }
     }
@@ -306,6 +344,11 @@ const makeChatFlowLayer = (
   ).pipe(Layer.provide(governanceSqliteLayer))
 
   const agentConfigLayer = AgentConfig.layerFromParsed(testConfigData)
+  const promptCatalogLayer = Layer.succeed(PromptCatalog, {
+    get: (ref: string) => Effect.succeed(`prompt:${ref}`),
+    getAgentBindings: () => Effect.succeed(TEST_PROMPT_BINDINGS),
+    render: (ref: string) => Effect.succeed(`prompt:${ref}`)
+  } as any)
 
   const mockModelRegistryLayer = Layer.effect(
     ModelRegistry,
@@ -458,6 +501,7 @@ const makeChatFlowLayer = (
       get: () => Effect.succeed(null),
       shouldTriggerCompaction: () => Effect.succeed(false)
     } as SessionMetricsPort)),
+    Layer.provide(promptCatalogLayer),
     Layer.provide(subroutineControlPlaneLayer),
     Layer.provide(transcriptProjectorLayer),
     Layer.provide(subroutineCatalogLayer)
