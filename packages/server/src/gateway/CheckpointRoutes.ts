@@ -1,5 +1,11 @@
 import type { CheckpointId } from "@template/domain/ids"
-import { DecideCheckpointRequest, type OkResponse } from "@template/domain/ports"
+import {
+  DecideCheckpointRequest,
+  type CheckpointNotFoundResponse,
+  type CheckpointRecordResponse,
+  type ListPendingCheckpointsResponse,
+  type OkResponse
+} from "@template/domain/ports"
 import { Effect, Layer, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -28,7 +34,11 @@ const listPending = HttpRouter.add(
       const url = new URL(request.url, "http://localhost")
       const agentId = url.searchParams.get("agentId") || undefined
       const checkpoints = yield* channelCore.listPendingCheckpoints(agentId as any)
-      return yield* HttpServerResponse.json({ items: checkpoints, totalCount: checkpoints.length })
+      const response: ListPendingCheckpointsResponse = {
+        items: checkpoints,
+        totalCount: checkpoints.length
+      }
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("CheckpointRoutes.listPending"),
       Effect.catchCause(() => internalServerError())
@@ -47,12 +57,17 @@ const getCheckpoint = HttpRouter.add(
       }
       const checkpoint = yield* channelCore.getCheckpoint(checkpointId)
       if (checkpoint === null) {
+        const response: CheckpointNotFoundResponse = {
+          error: "CheckpointNotFound",
+          checkpointId
+        }
         return yield* HttpServerResponse.json(
-          { error: "CheckpointNotFound", checkpointId },
+          response,
           { status: 404 }
         )
       }
-      return yield* HttpServerResponse.json(checkpoint)
+      const response: CheckpointRecordResponse = checkpoint
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("CheckpointRoutes.getCheckpoint"),
       Effect.catchCause(() => internalServerError())

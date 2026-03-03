@@ -32,7 +32,6 @@ import {
 } from "./config.js"
 import type {
   AuthorizationDecision,
-  CheckpointAction,
   ComplianceStatus,
   ConcurrencyPolicy,
   ExecutionOutcome,
@@ -54,6 +53,7 @@ import {
   AgentRole,
   ChannelCapability,
   ChannelType,
+  CheckpointAction,
   CheckpointDecision,
   CheckpointStatus,
   ModelFinishReason
@@ -602,6 +602,39 @@ export interface CheckpointRecord {
   readonly expiresAt: Instant | null
 }
 
+export const CheckpointRecordResponse = Schema.Struct({
+  checkpointId: Schema.String,
+  agentId: Schema.String,
+  sessionId: Schema.String,
+  channelId: Schema.String,
+  turnId: Schema.String,
+  action: CheckpointAction,
+  policyId: Schema.Union([Schema.String, Schema.Null]),
+  reason: Schema.String,
+  payloadJson: Schema.String,
+  payloadHash: Schema.String,
+  status: CheckpointStatus,
+  requestedAt: Instant,
+  decidedAt: Schema.Union([Instant, Schema.Null]),
+  decidedBy: Schema.Union([Schema.String, Schema.Null]),
+  consumedAt: Schema.Union([Instant, Schema.Null]),
+  consumedBy: Schema.Union([Schema.String, Schema.Null]),
+  expiresAt: Schema.Union([Instant, Schema.Null])
+})
+export type CheckpointRecordResponse = typeof CheckpointRecordResponse.Type
+
+export const ListPendingCheckpointsResponse = Schema.Struct({
+  items: Schema.Array(CheckpointRecordResponse),
+  totalCount: Schema.Number
+})
+export type ListPendingCheckpointsResponse = typeof ListPendingCheckpointsResponse.Type
+
+export const CheckpointNotFoundResponse = Schema.Struct({
+  error: Schema.Literal("CheckpointNotFound"),
+  checkpointId: Schema.String
+})
+export type CheckpointNotFoundResponse = typeof CheckpointNotFoundResponse.Type
+
 export const DecideCheckpointRequest = Schema.Struct({
   decision: CheckpointDecision,
   decidedBy: Schema.String
@@ -613,10 +646,7 @@ export const DecideCheckpointAckResponse = Schema.Struct({
 })
 export type DecideCheckpointAckResponse = typeof DecideCheckpointAckResponse.Type
 
-export const DecideCheckpointNotFoundResponse = Schema.Struct({
-  error: Schema.Literal("CheckpointNotFound"),
-  checkpointId: Schema.String
-})
+export const DecideCheckpointNotFoundResponse = CheckpointNotFoundResponse
 export type DecideCheckpointNotFoundResponse = typeof DecideCheckpointNotFoundResponse.Type
 
 export const DecideCheckpointAlreadyDecidedResponse = Schema.Struct({
