@@ -1,12 +1,15 @@
 import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import {
+  type ChannelHistoryResponse,
+  type ChannelStatus,
   InitializeChannelRequest,
+  type ListChannelsResponse,
   type OkResponse,
   SendChannelMessageRequest,
   SetChannelModelPreferenceRequest
 } from "@template/domain/ports"
-import { Effect, Layer, Option, Schema } from "effect"
+import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
@@ -60,10 +63,15 @@ const listChannels = HttpRouter.add(
       const url = new URL(request.url, "http://localhost")
       const agentId = url.searchParams.get("agentId") ?? undefined
       const items = yield* channelCore.listChannels(agentId as any)
-      return yield* HttpServerResponse.json({
-        items,
+      const response: ListChannelsResponse = {
+        items: items.map((item) => ({
+          ...item,
+          createdAt: DateTime.formatIso(item.createdAt),
+          lastTurnAt: item.lastTurnAt === null ? null : DateTime.formatIso(item.lastTurnAt)
+        })),
         totalCount: items.length
-      })
+      }
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.listChannels"),
       Effect.catchCause(() =>
@@ -173,7 +181,8 @@ const getHistory = HttpRouter.add(
 
       const turns = yield* client.getHistory({})
 
-      return yield* HttpServerResponse.json(turns)
+      const response: ChannelHistoryResponse = turns
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.getHistory"),
       Effect.catchTag("ChannelNotFound", (error) =>
@@ -196,7 +205,8 @@ const getStatus = HttpRouter.add(
 
       const status = yield* client.getStatus({})
 
-      return yield* HttpServerResponse.json(status)
+      const response: ChannelStatus = status
+      return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.getStatus"),
       Effect.catchTag("ChannelNotFound", (error) =>
