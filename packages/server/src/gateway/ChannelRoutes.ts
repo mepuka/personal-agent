@@ -1,7 +1,10 @@
 import { AiProviderName } from "@template/domain/config"
 import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
-import { InitializeChannelRequest } from "@template/domain/ports"
+import {
+  InitializeChannelRequest,
+  SetChannelModelPreferenceRequest
+} from "@template/domain/ports"
 import { Effect, Layer, Option, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -244,21 +247,7 @@ const deleteChannel = HttpRouter.add(
     )
 )
 
-const SetModelPreferenceRequest = Schema.Struct({
-  model: Schema.optionalKey(Schema.Union([
-    Schema.Struct({ provider: AiProviderName, modelId: Schema.String }),
-    Schema.Null
-  ])),
-  generationConfig: Schema.optionalKey(Schema.Union([
-    Schema.Struct({
-      temperature: Schema.optionalKey(Schema.Number),
-      maxOutputTokens: Schema.optionalKey(Schema.Number),
-      topP: Schema.optionalKey(Schema.Number)
-    }),
-    Schema.Null
-  ]))
-})
-const decodeSetModelPreferenceRequest = Schema.decodeUnknownOption(SetModelPreferenceRequest)
+const decodeSetModelPreferenceRequest = Schema.decodeUnknownOption(SetChannelModelPreferenceRequest)
 
 const setModelPreference = HttpRouter.add(
   "PATCH",

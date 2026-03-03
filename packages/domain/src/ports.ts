@@ -25,6 +25,11 @@ import type {
   ToolName
 } from "./ids.js"
 import type { ExternalServiceRecord, IntegrationRecord } from "./integration.js"
+import {
+  GenerationConfigOverrideSchema,
+  ModelOverrideSchema,
+  type AiProviderName
+} from "./config.js"
 import type {
   AuthorizationDecision,
   ChannelCapability,
@@ -46,7 +51,6 @@ import type {
   SensitivityLevel,
   ToolSourceKind
 } from "./status.js"
-import type { AiProviderName } from "./config.js"
 import {
   AgentRole,
   ChannelType,
@@ -524,6 +528,12 @@ export const InitializeChannelRequest = Schema.Struct({
   attachTo: Schema.optionalKey(ChannelAttachTarget)
 })
 export type InitializeChannelRequest = typeof InitializeChannelRequest.Type
+
+export const SetChannelModelPreferenceRequest = Schema.Struct({
+  model: Schema.optionalKey(Schema.Union([ModelOverrideSchema, Schema.Null])),
+  generationConfig: Schema.optionalKey(Schema.Union([GenerationConfigOverrideSchema, Schema.Null]))
+})
+export type SetChannelModelPreferenceRequest = typeof SetChannelModelPreferenceRequest.Type
 
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
