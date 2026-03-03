@@ -103,7 +103,7 @@ const testDir = () => join(tmpdir(), `transcript-projector-test-${crypto.randomU
 
 const makeStubSessionTurnPort = (
   turns: ReadonlyArray<TurnRecord> = []
-): Layer.Layer<typeof SessionTurnPortTag.Type> =>
+)=>
   Layer.succeed(SessionTurnPortTag, {
     startSession: () => Effect.void,
     appendTurn: () => Effect.void,
@@ -111,7 +111,7 @@ const makeStubSessionTurnPort = (
     deleteSession: () => Effect.void,
     updateContextWindow: () => Effect.void,
     getSession: () => Effect.succeed(null),
-    listTurns: () => Effect.succeed(turns)
+    listTurns: () => Effect.succeed([...turns])
   } as SessionTurnPort)
 
 const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArray<TurnRecord> = []) => {

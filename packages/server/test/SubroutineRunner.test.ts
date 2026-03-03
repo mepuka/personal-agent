@@ -435,7 +435,7 @@ describe("SubroutineRunner.execute", () => {
       expect(result.subroutineId).toBe("memory_consolidation")
       expect(result.iterationsUsed).toBeGreaterThanOrEqual(1)
       expect(result.assistantContent).toContain("Memory stored successfully.")
-      expect(result.errorMessage).toBeUndefined()
+      expect(result.error).toBeNull()
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))

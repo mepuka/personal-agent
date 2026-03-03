@@ -1,7 +1,6 @@
 import { Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
-import type { PostCommitTaskId } from "../../domain/src/ids.js"
 import type {
   Instant,
   PostCommitTaskRecord,
@@ -77,8 +76,6 @@ export class TurnPostCommitPortSqlite extends ServiceMap.Service<TurnPostCommitP
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
-
-      const TaskIdRequest = Schema.Struct({ taskId: Schema.String })
 
       const findDueTasks = SqlSchema.findAll({
         Request: Schema.Struct({

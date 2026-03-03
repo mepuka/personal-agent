@@ -8,15 +8,6 @@ import { AgentConfig } from "./AgentConfig.js"
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 const GOOGLE_GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-const withHttpClient = <A>(
-  modelLayer: Layer.Layer<A>,
-  clientLayer: Layer.Layer<any>
-): Layer.Layer<A> =>
-  modelLayer.pipe(
-    Layer.provide(clientLayer),
-    Layer.provide(FetchHttpClient.layer)
-  )
-
 export interface ModelRegistryService {
   readonly get: (
     provider: string,
@@ -48,9 +39,9 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
 
           switch (provider) {
             case "anthropic":
-              return withHttpClient(
-                Anthropic.AnthropicLanguageModel.layer({ model: modelId }),
-                Anthropic.AnthropicClient.layer({ apiKey })
+              return Anthropic.AnthropicLanguageModel.layer({ model: modelId }).pipe(
+                Layer.provide(Anthropic.AnthropicClient.layer({ apiKey })),
+                Layer.provide(FetchHttpClient.layer)
               )
 
             case "openai":
@@ -61,9 +52,9 @@ export class ModelRegistry extends ServiceMap.Service<ModelRegistry>()(
                 : provider === "google"
                 ? GOOGLE_GEMINI_API_URL
                 : undefined
-              return withHttpClient(
-                OpenAi.OpenAiLanguageModel.layer({ model: modelId }),
-                OpenAi.OpenAiClient.layer({ apiKey, apiUrl })
+              return OpenAi.OpenAiLanguageModel.layer({ model: modelId }).pipe(
+                Layer.provide(OpenAi.OpenAiClient.layer({ apiKey, apiUrl })),
+                Layer.provide(FetchHttpClient.layer)
               )
             }
 

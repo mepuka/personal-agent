@@ -1,13 +1,16 @@
 import type { AgentId, MemoryItemId, SessionId, TurnId } from "@template/domain/ids"
-import { DEFAULT_MEMORY_SEARCH_LIMIT, DEFAULT_SENSITIVITY_LEVEL } from "@template/domain/system-defaults"
 import type {
   Instant,
+  ListFilters,
   MemoryForgetFilters,
   MemoryItemRecord,
+  MemoryItemRow,
   MemoryPort,
-  MemorySearchResult
+  MemorySearchResult,
+  RetrieveFilters
 } from "@template/domain/ports"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
+import { DEFAULT_MEMORY_SEARCH_LIMIT, DEFAULT_SENSITIVITY_LEVEL } from "@template/domain/system-defaults"
 import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
@@ -32,38 +35,6 @@ interface StoreInput {
   readonly generatedByTurnId?: string | null
   readonly sessionId?: string | null
   readonly sensitivity?: SensitivityLevel
-}
-
-interface RetrieveFilters {
-  readonly query: string
-  readonly tier?: MemoryTier | undefined
-  readonly scope?: MemoryScope | undefined
-  readonly limit: number
-}
-
-interface ListFilters {
-  readonly tier?: MemoryTier | undefined
-  readonly scope?: MemoryScope | undefined
-  readonly limit: number
-}
-
-export interface MemoryItemRow {
-  readonly memoryItemId: string
-  readonly agentId: string
-  readonly tier: string
-  readonly scope: string
-  readonly source: string
-  readonly content: string
-  readonly metadataJson: string | null
-  readonly generatedByTurnId: string | null
-  readonly sessionId: string | null
-  readonly sensitivity: string
-  readonly wasGeneratedBy: string | null
-  readonly wasAttributedTo: string | null
-  readonly governedByRetention: string | null
-  readonly lastAccessTime: Instant | null
-  readonly createdAt: Instant
-  readonly updatedAt: Instant
 }
 
 export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
@@ -225,8 +196,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
         filters: MemoryForgetFilters
       ): Effect.Effect<number> =>
         Effect.gen(function*() {
-          const hasFilter =
-            filters.cutoffDate !== undefined
+          const hasFilter = filters.cutoffDate !== undefined
             || filters.scope !== undefined
             || (filters.itemIds !== undefined && filters.itemIds.length > 0)
 
@@ -313,26 +283,7 @@ const parseSearchRow = (row: any): MemoryItemRecord => ({
   updatedAt: decodeSqlInstant(row.updated_at)
 })
 
-const parseRow = (row: any): MemoryItemRow => ({
-  memoryItemId: row.memory_item_id as string,
-  agentId: row.agent_id as string,
-  tier: row.tier as string,
-  scope: row.scope as string,
-  source: row.source as string,
-  content: row.content as string,
-  metadataJson: row.metadata_json as string | null,
-  generatedByTurnId: row.generated_by_turn_id as string | null,
-  sessionId: row.session_id as string | null,
-  sensitivity: row.sensitivity as string,
-  wasGeneratedBy: row.was_generated_by as string | null,
-  wasAttributedTo: row.was_attributed_to as string | null,
-  governedByRetention: row.governed_by_retention as string | null,
-  lastAccessTime: row.last_access_time
-    ? DateTime.fromDateUnsafe(new Date(row.last_access_time as string))
-    : null,
-  createdAt: DateTime.fromDateUnsafe(new Date(row.created_at as string)),
-  updatedAt: DateTime.fromDateUnsafe(new Date(row.updated_at as string))
-})
+const parseRow = (row: any): MemoryItemRow => parseSearchRow(row)
 
 const encodeCursor = (createdAt: string, rowid: number): string =>
   Buffer.from(Schema.encodeSync(CursorFromJsonString)({ createdAt, rowid })).toString("base64url")

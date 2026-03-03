@@ -200,6 +200,8 @@ describe("SessionEntity", () => {
       const makeClient = yield* Entity.makeTestClient(SessionEntity, SessionEntityLayer)
       const sessionId = "session:entity-replay" as SessionId
       const client = yield* makeClient(sessionId)
+      const replayInputJson = "{\"command\":\"ls\"}"
+      const replayOutputJson = "{\"stdout\":\"file1.txt\\nfile2.txt\"}"
 
       const replayPayload = makeTurnPayload({
         turnId: "turn:entity-replay" as TurnId,
@@ -212,8 +214,8 @@ describe("SessionEntity", () => {
         invokeToolReplay: {
           replayPayloadVersion: CHECKPOINT_REPLAY_PAYLOAD_VERSION,
           toolName: "shell_execute",
-          inputJson: JSON.stringify({ command: "ls" }),
-          outputJson: JSON.stringify({ stdout: "file1.txt\nfile2.txt" }),
+          inputJson: replayInputJson,
+          outputJson: replayOutputJson,
           isError: false
         }
       })
@@ -226,8 +228,8 @@ describe("SessionEntity", () => {
       const received = capturedPayloads[0]!
       expect(received.invokeToolReplay).toBeDefined()
       expect(received.invokeToolReplay!.toolName).toBe("shell_execute")
-      expect(received.invokeToolReplay!.inputJson).toBe(JSON.stringify({ command: "ls" }))
-      expect(received.invokeToolReplay!.outputJson).toBe(JSON.stringify({ stdout: "file1.txt\nfile2.txt" }))
+      expect(received.invokeToolReplay!.inputJson).toBe(replayInputJson)
+      expect(received.invokeToolReplay!.outputJson).toBe(replayOutputJson)
       expect(received.invokeToolReplay!.isError).toBe(false)
       expect(received.invokeToolReplay!.replayPayloadVersion).toBe(CHECKPOINT_REPLAY_PAYLOAD_VERSION)
       expect(received.checkpointId).toBe("checkpoint:test-replay")

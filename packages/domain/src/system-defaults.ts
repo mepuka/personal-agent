@@ -5,7 +5,7 @@ import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "./
 export const MAX_TOOL_ITERATIONS_CAP = 200
 
 /** Timeout for the tool loop per turn (seconds). */
-export const TURN_LOOP_TIMEOUT_SECONDS = 15
+export const TURN_LOOP_TIMEOUT_SECONDS = 120
 
 /** Default pagination limit for governance/invocation HTTP queries. */
 export const DEFAULT_PAGINATION_LIMIT = 100
@@ -20,7 +20,7 @@ export const SCHEDULER_TICK_SECONDS = 10
 export const DEFAULT_TOKEN_CAPACITY = 200_000
 
 /** Default max tool iterations per turn. */
-export const DEFAULT_MAX_TOOL_ITERATIONS = 10
+export const DEFAULT_MAX_TOOL_ITERATIONS = 200
 
 /** Memory entity defaults by operation. */
 export const DEFAULT_MEMORY_SEARCH_LIMIT = 20

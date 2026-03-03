@@ -58,7 +58,16 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const rendered = renderTurn(turn)
           yield* appendFileWithDirs(fs, pathService, filePath, rendered)
-        })
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning({
+              event: "transcript_projector_append_failed",
+              agentId,
+              sessionId,
+              error: String(error)
+            })
+          )
+        )
 
       const projectSession: TranscriptProjectorService["projectSession"] = (agentId, sessionId, turns) =>
         Effect.gen(function*() {
@@ -68,7 +77,16 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 
           const content = renderTranscript(turns)
           yield* writeFileWithDirs(fs, pathService, filePath, content)
-        })
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning({
+              event: "transcript_projector_project_failed",
+              agentId,
+              sessionId,
+              error: String(error)
+            })
+          )
+        )
 
       const projectFromStore: TranscriptProjectorService["projectFromStore"] = (agentId, sessionId) =>
         Effect.gen(function*() {

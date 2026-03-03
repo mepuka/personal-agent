@@ -6,7 +6,6 @@ import type { SessionId, TurnId } from "../../domain/src/ids.js"
 import {
   ContentBlock as ContentBlockSchema,
   type Instant,
-  type PostCommitTaskRecord,
   type SessionState,
   type SessionTurnPort,
   type TurnRecord

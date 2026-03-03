@@ -1,37 +1,28 @@
 import * as Anthropic from "@effect/ai-anthropic"
 import * as OpenAi from "@effect/ai-openai"
-import type { SubroutineToolScope } from "@template/domain/memory"
-import type { CompactionCheckpointId } from "@template/domain/ids"
-import type { SubroutineTriggerType } from "@template/domain/status"
-import { DateTime, Effect, Layer, Ref, Schema, ServiceMap } from "effect"
-import * as Chat from "effect/unstable/ai/Chat"
-import * as Prompt from "effect/unstable/ai/Prompt"
-import * as Response from "effect/unstable/ai/Response"
 import type {
   AgentId,
   AuditEntryId,
+  CompactionCheckpointId,
   ConversationId,
   SessionId,
   TurnId
 } from "@template/domain/ids"
-import type {
-  AuditEntryRecord,
-  Instant
-} from "@template/domain/ports"
-import type { AuthorizationDecision } from "@template/domain/status"
+import type { SubroutineToolScope } from "@template/domain/memory"
+import type { AuditEntryRecord, Instant } from "@template/domain/ports"
+import type { AuthorizationDecision, SubroutineTriggerType } from "@template/domain/status"
+import { DateTime, Effect, Layer, Ref, Schema, ServiceMap } from "effect"
+import * as Chat from "effect/unstable/ai/Chat"
+import * as Prompt from "effect/unstable/ai/Prompt"
+import type * as Response from "effect/unstable/ai/Response"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
-import { ToolRegistry, type ToolRegistryService, type CheckpointSignal } from "../ai/ToolRegistry.js"
+import { type CheckpointSignal, ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
 import { CompactionCheckpointPortTag, GovernancePortTag } from "../PortTags.js"
+import { makeLoopCapResponse, mergeUsage, toProviderConfigOverride, zeroUsage } from "../turn/TurnProcessingWorkflow.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
 import { TraceWriter } from "./TraceWriter.js"
-import {
-  toProviderConfigOverride,
-  zeroUsage,
-  mergeUsage,
-  makeLoopCapResponse
-} from "../turn/TurnProcessingWorkflow.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,8 +96,6 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
 
       const execute: SubroutineRunnerService["execute"] = (subroutine, context) =>
         Effect.gen(function*() {
-          // originTurnId: audit/provenance correlation (originating turn or synthetic)
-          const originTurnId = context.turnId ?? (`turn:subroutine:${context.runId}` as TurnId)
           // executionTurnId: run-scoped for tool idempotency context (prevents collisions
           // when multiple subroutines share the same originating turn)
           const executionTurnId = `turn:subexec:${context.runId}` as TurnId
@@ -261,9 +250,9 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
               const message = error instanceof Error
                 ? error.message
                 : typeof error === "object" && error !== null && "message" in error
-                  && typeof (error as { message?: unknown }).message === "string"
-                  ? (error as { message: string }).message
-                  : String(error)
+                    && typeof (error as { message?: unknown }).message === "string"
+                ? (error as { message: string }).message
+                : String(error)
 
               const tag = classifySubroutineError(error)
               const typedError: SubroutineError = { tag, message }
@@ -388,8 +377,8 @@ const subroutineToolLoop = (params: {
       )
       const configuredEffect = Object.keys(providerOverrides).length > 0
         ? (params.resolvedProvider === "anthropic"
-            ? Anthropic.AnthropicLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect)
-            : OpenAi.OpenAiLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect))
+          ? Anthropic.AnthropicLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect)
+          : OpenAi.OpenAiLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect))
         : generateTextEffect
 
       const response = yield* configuredEffect.pipe(
