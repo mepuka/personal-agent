@@ -209,70 +209,6 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
           Effect.orDie
         )
 
-      const appendAssistantTurnWithPostCommitTask: SessionTurnPort["appendAssistantTurnWithPostCommitTask"] = (
-        turn,
-        task
-      ) =>
-        sql.withTransaction(
-          Effect.gen(function*() {
-            // Idempotent turn insert
-            const existing = yield* findTurnById({ turnId: turn.turnId }).pipe(
-              Effect.tapDefect(Effect.logError),
-              Effect.orDie
-            )
-            if (Option.isSome(existing)) {
-              return
-            }
-
-            const nextTurnIndex = yield* findNextTurnIndex({ sessionId: turn.sessionId }).pipe(
-              Effect.map((row) => row.next_turn_index),
-              Effect.tapDefect(Effect.logError),
-              Effect.orDie
-            )
-
-            yield* sql`
-              INSERT INTO turns (
-                turn_id, session_id, conversation_id, turn_index,
-                participant_role, participant_agent_id,
-                message_id, message_content, content_blocks_json,
-                model_finish_reason, model_usage_json, created_at
-              ) VALUES (
-                ${turn.turnId}, ${turn.sessionId}, ${turn.conversationId}, ${nextTurnIndex},
-                ${turn.participantRole}, ${turn.participantAgentId},
-                ${turn.message.messageId}, ${turn.message.content},
-                ${encodeContentBlocksJson(turn.message.contentBlocks)},
-                ${turn.modelFinishReason}, ${turn.modelUsageJson},
-                ${toSqlInstant(turn.createdAt)}
-              )
-            `.unprepared
-
-            // Idempotent outbox insert (turn_id UNIQUE constraint)
-            yield* sql`
-              INSERT INTO turn_post_commit_tasks (
-                task_id, turn_id, agent_id, session_id, conversation_id,
-                created_at, status, attempts, next_attempt_at,
-                claimed_at, claim_owner, completed_at,
-                last_error_code, last_error_message, payload_json
-              ) VALUES (
-                ${task.taskId}, ${task.turnId}, ${task.agentId},
-                ${task.sessionId}, ${task.conversationId},
-                ${toSqlInstant(task.createdAt)}, ${task.status}, ${task.attempts},
-                ${toSqlInstant(task.nextAttemptAt)},
-                ${task.claimedAt ? toSqlInstant(task.claimedAt) : null},
-                ${task.claimOwner},
-                ${task.completedAt ? toSqlInstant(task.completedAt) : null},
-                ${task.lastErrorCode}, ${task.lastErrorMessage},
-                ${task.payloadJson}
-              )
-              ON CONFLICT(turn_id) DO NOTHING
-            `.unprepared
-          })
-        ).pipe(
-          Effect.asVoid,
-          Effect.tapDefect(Effect.logError),
-          Effect.orDie
-        )
-
       const deleteSession: SessionTurnPort["deleteSession"] = (sessionId) =>
         sql.withTransaction(
           Effect.gen(function*() {
@@ -346,7 +282,6 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
       return {
         startSession,
         appendTurn,
-        appendAssistantTurnWithPostCommitTask,
         deleteSession,
         updateContextWindow,
         getSession,

@@ -62,6 +62,8 @@ import {
 } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
+import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
+import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "../src/turn/TurnProcessingWorkflow.js"
 
@@ -369,6 +371,18 @@ const makeIntegrationLayer = (
     Layer.provide(clusterLayer)
   )
 
+  const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
+    Layer.provide(workflowEngineLayer),
+    Layer.provide(Layer.succeed(PostCommitExecutor, {
+      execute: () =>
+        Effect.succeed({
+          subroutines: [],
+          projectionSuccess: true,
+          projectionError: null
+        })
+    } as any))
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -403,7 +417,8 @@ const makeIntegrationLayer = (
 
   return Layer.mergeAll(
     channelCoreLayer,
-    turnWorkflowLayer
+    turnWorkflowLayer,
+    postCommitWorkflowLayer
   )
 }
 

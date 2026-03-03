@@ -23,7 +23,7 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
       const execute: PostCommitExecutorService["execute"] = (payload) =>
         Effect.gen(function*() {
           yield* Effect.log("post_commit_execute_start", {
-            taskId: payload.taskId,
+            turnId: payload.turnId,
             agentId: payload.agentId,
             sessionId: payload.sessionId
           })
@@ -34,14 +34,14 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
           const subroutineOutcomes: Array<PostCommitSubroutineOutcome> = []
 
           for (const sub of postTurnSubs) {
-            const runId = `subrun:${payload.taskId}:${sub.config.id}`
+            const runId = `subrun:${payload.turnId}:${sub.config.id}`
             const context: SubroutineContext = {
               agentId: payload.agentId,
               sessionId: payload.sessionId,
               conversationId: payload.conversationId,
               turnId: payload.turnId,
               triggerType: "PostTurn",
-              triggerReason: `post-commit task ${payload.taskId}`,
+              triggerReason: `post-commit turn ${payload.turnId}`,
               now,
               runId
             }

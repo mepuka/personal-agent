@@ -228,12 +228,3 @@ export const SubroutineTriggerType = Schema.Literals([
   "ContextPressure"
 ])
 export type SubroutineTriggerType = typeof SubroutineTriggerType.Type
-
-export const PostCommitTaskStatus = Schema.Literals([
-  "Pending",
-  "Claimed",
-  "Succeeded",
-  "Retry",
-  "FailedPermanent"
-])
-export type PostCommitTaskStatus = typeof PostCommitTaskStatus.Type

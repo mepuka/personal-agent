@@ -52,8 +52,7 @@ import {
   IntegrationPortTag,
   MemoryPortTag,
   SchedulePortTag,
-  SessionTurnPortTag,
-  TurnPostCommitPortTag
+  SessionTurnPortTag
 } from "./PortTags.js"
 import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
 import { SchedulerActionExecutor } from "./scheduler/SchedulerActionExecutor.js"
@@ -62,10 +61,8 @@ import { SchedulerDispatchLoop } from "./scheduler/SchedulerDispatchLoop.js"
 import { SchedulerTickService } from "./scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
-import { TurnPostCommitPortSqlite } from "./TurnPostCommitPortSqlite.js"
 import { PostCommitExecutor } from "./turn/PostCommitExecutor.js"
-import { layer as TurnPostCommitCommandLayer } from "./turn/TurnPostCommitCommandEntity.js"
-import { TurnPostCommitDispatchLoop } from "./turn/TurnPostCommitDispatchLoop.js"
+import { layer as PostCommitWorkflowLayer } from "./turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "./turn/TurnProcessingWorkflow.js"
 
@@ -157,14 +154,6 @@ const integrationPortTagLayer = exposeAsPortTagLayer(
   IntegrationPortTag,
   IntegrationPortSqlite,
   integrationPortSqliteLayer
-)
-
-const postCommitPortSqliteLayer = sqliteBackedLayer(TurnPostCommitPortSqlite.layer)
-
-const postCommitPortTagLayer = exposeAsPortTagLayer(
-  TurnPostCommitPortTag,
-  TurnPostCommitPortSqlite,
-  postCommitPortSqliteLayer
 )
 
 const schedulerRuntimeLayer = SchedulerRuntime.layer.pipe(
@@ -364,17 +353,10 @@ const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
   ))
 )
 
-const postCommitCommandLayer = TurnPostCommitCommandLayer.pipe(
+const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
   Layer.provide(Layer.mergeAll(
-    clusterLayer,
+    workflowEngineLayer,
     postCommitExecutorLayer
-  ))
-)
-
-const postCommitDispatchLayer = TurnPostCommitDispatchLoop.layer.pipe(
-  Layer.provide(Layer.mergeAll(
-    postCommitPortTagLayer,
-    postCommitCommandLayer
   ))
 )
 
@@ -474,8 +456,7 @@ const portTagsLayer = Layer.mergeAll(
   checkpointPortTagLayer,
   compactionCheckpointPortTagLayer,
   channelPortTagLayer,
-  integrationPortTagLayer,
-  postCommitPortTagLayer
+  integrationPortTagLayer
 )
 
 const schedulerLayer = schedulerTickLayer.pipe(
@@ -485,7 +466,8 @@ const schedulerLayer = schedulerTickLayer.pipe(
 )
 
 const workflowLayer = turnProcessingRuntimeLayer.pipe(
-  Layer.provideMerge(turnProcessingWorkflowLayer)
+  Layer.provideMerge(turnProcessingWorkflowLayer),
+  Layer.provideMerge(postCommitWorkflowLayer)
 )
 
 const entityLayer = cliAdapterEntityLayer.pipe(
@@ -504,7 +486,6 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(chatPersistenceLayer),
   Layer.provideMerge(agentConfigLayer),
   Layer.provideMerge(schedulerLayer),
-  Layer.provideMerge(postCommitDispatchLayer),
   Layer.provideMerge(portTagsLayer),
   Layer.provideMerge(memoryPortSqliteLayer),
   Layer.provideMerge(subroutineCatalogLayer),

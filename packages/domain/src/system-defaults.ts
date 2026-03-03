@@ -56,8 +56,5 @@ export const DEFAULT_MEMORY_TIER: MemoryTier = "SemanticMemory"
 export const DEFAULT_MEMORY_SCOPE: MemoryScope = "GlobalScope"
 export const DEFAULT_MEMORY_SOURCE: MemorySource = "AgentSource"
 
-/** Post-commit outbox dispatch. */
-export const POST_COMMIT_TICK_SECONDS = 5
-export const POST_COMMIT_CLAIM_BATCH_SIZE = 10
-export const POST_COMMIT_CLAIM_LEASE_SECONDS = 60
+/** Post-commit workflow execution. */
 export const POST_COMMIT_MAX_ATTEMPTS = 5

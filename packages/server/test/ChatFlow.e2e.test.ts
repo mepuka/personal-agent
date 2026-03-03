@@ -39,6 +39,8 @@ import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
+import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
+import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { SubroutineCatalog } from "../src/memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
@@ -383,6 +385,18 @@ const makeChatFlowLayer = (
     } as any
   )
 
+  const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
+    Layer.provide(workflowEngineLayer),
+    Layer.provide(Layer.succeed(PostCommitExecutor, {
+      execute: () =>
+        Effect.succeed({
+          subroutines: [],
+          projectionSuccess: true,
+          projectionError: null
+        })
+    } as any))
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -404,6 +418,7 @@ const makeChatFlowLayer = (
 
   return turnRuntimeLayer.pipe(
     Layer.provideMerge(turnWorkflowLayer),
+    Layer.provideMerge(postCommitWorkflowLayer),
     Layer.provideMerge(workflowEngineLayer),
     Layer.provideMerge(Layer.mergeAll(
       toolRegistryLayer,

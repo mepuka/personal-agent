@@ -107,7 +107,6 @@ const makeStubSessionTurnPort = (
   Layer.succeed(SessionTurnPortTag, {
     startSession: () => Effect.void,
     appendTurn: () => Effect.void,
-    appendAssistantTurnWithPostCommitTask: () => Effect.void,
     deleteSession: () => Effect.void,
     updateContextWindow: () => Effect.void,
     getSession: () => Effect.succeed(null),

@@ -17,6 +17,7 @@ import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Response from "effect/unstable/ai/Response"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
+import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -41,6 +42,7 @@ import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
+import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
 import {
@@ -55,6 +57,9 @@ import {
   TranscriptProjector,
   type TranscriptProjectorService
 } from "../src/memory/TranscriptProjector.js"
+import {
+  layer as PostCommitWorkflowLayer
+} from "../src/turn/PostCommitWorkflow.js"
 import {
   layer as TurnProcessingWorkflowLayer,
   type ProcessTurnPayload,
@@ -117,6 +122,54 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(turns[1].participantRole).toBe("AssistantRole")
       expect(turns[1].message.content).toContain("assistant")
       expect(audits.some((entry) => entry.reason === "turn_processing_accepted")).toBe(true)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("runs without legacy outbox table after migration drop", () => {
+    const dbPath = testDatabasePath("turn-no-outbox-table")
+    const layer = makeTurnProcessingLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const sql = yield* SqlClient.SqlClient
+      const runtime = yield* TurnProcessingRuntime
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const now = instant("2026-03-03T09:00:00.000Z")
+
+      const outboxTables = yield* sql`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'turn_post_commit_tasks'
+      `.withoutTransform
+      expect(outboxTables).toHaveLength(0)
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:no-outbox" as AgentId,
+        tokenBudget: 100,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:no-outbox" as SessionId,
+        conversationId: "conversation:no-outbox" as ConversationId,
+        tokenCapacity: 200,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:no-outbox" as TurnId,
+        agentId: "agent:no-outbox" as AgentId,
+        sessionId: "session:no-outbox" as SessionId,
+        conversationId: "conversation:no-outbox" as ConversationId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "hello"
+      }))
+
+      expect(result.accepted).toBe(true)
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -1791,6 +1844,20 @@ const makeTurnProcessingLayer = (
     mockTranscriptProjector as any
   )
 
+  const postCommitExecutorLayer = Layer.succeed(PostCommitExecutor, {
+    execute: () =>
+      Effect.succeed({
+        subroutines: [],
+        projectionSuccess: true,
+        projectionError: null
+      })
+  } as any)
+
+  const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
+    Layer.provide(workflowEngineLayer),
+    Layer.provide(postCommitExecutorLayer)
+  )
+
   const turnWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(workflowEngineLayer),
     Layer.provide(agentStateTagLayer),
@@ -1812,6 +1879,7 @@ const makeTurnProcessingLayer = (
 
   return turnRuntimeLayer.pipe(
     Layer.provideMerge(turnWorkflowLayer),
+    Layer.provideMerge(postCommitWorkflowLayer),
     Layer.provideMerge(workflowEngineLayer),
     Layer.provideMerge(Layer.mergeAll(
       toolRegistryLayer,

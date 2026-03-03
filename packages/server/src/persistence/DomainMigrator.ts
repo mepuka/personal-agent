@@ -852,6 +852,21 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS schedules_action_kind_idx
       ON schedules (action_kind)
     `.unprepared
+  }),
+  "0019_drop_turn_post_commit_outbox": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      DROP INDEX IF EXISTS idx_post_commit_status_next_attempt
+    `.unprepared
+
+    yield* sql`
+      DROP INDEX IF EXISTS idx_post_commit_session_created
+    `.unprepared
+
+    yield* sql`
+      DROP TABLE IF EXISTS turn_post_commit_tasks
+    `.unprepared
   })
 })
 

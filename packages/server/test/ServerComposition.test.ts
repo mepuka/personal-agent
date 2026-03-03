@@ -59,6 +59,8 @@ import { layer as SchedulerCommandLayer } from "../src/scheduler/SchedulerComman
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
 import { SchedulerTickService } from "../src/scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
+import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
+import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "../src/turn/TurnProcessingWorkflow.js"
 import { join } from "node:path"
@@ -333,6 +335,21 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(clusterLayer)
   )
 
+  const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
+    Layer.provide(Layer.mergeAll(
+      subroutineCatalogLayer,
+      subroutineRunnerLayer,
+      transcriptProjectorLayer
+    ))
+  )
+
+  const postCommitWorkflowLayer = PostCommitWorkflowLayer.pipe(
+    Layer.provide(Layer.mergeAll(
+      workflowEngineLayer,
+      postCommitExecutorLayer
+    ))
+  )
+
   const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     Layer.provide(Layer.mergeAll(
       workflowEngineLayer,
@@ -384,7 +401,8 @@ const makePortsLiveLayer = (dbPath: string) => {
   )
 
   const workflowLayer = turnProcessingRuntimeLayer.pipe(
-    Layer.provideMerge(turnProcessingWorkflowLayer)
+    Layer.provideMerge(turnProcessingWorkflowLayer),
+    Layer.provideMerge(postCommitWorkflowLayer)
   )
 
   return workflowLayer.pipe(

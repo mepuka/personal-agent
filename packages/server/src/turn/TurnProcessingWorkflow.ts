@@ -25,7 +25,6 @@ import type {
   ConversationId,
   MessageId,
   PolicyId,
-  PostCommitTaskId,
   SessionId,
   TurnId
 } from "../../../domain/src/ids.js"
@@ -34,9 +33,7 @@ import {
   type AuditEntryRecord,
   type ContentBlock,
   ContentBlock as ContentBlockSchema,
-  ExecutePostCommitPayload as ExecutePostCommitPayloadSchema,
   type Instant,
-  type PostCommitTaskRecord,
   type TurnRecord
 } from "../../../domain/src/ports.js"
 import {
@@ -72,10 +69,7 @@ import {
   GovernancePortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
-
-const encodePostCommitPayload = Schema.encodeSync(
-  Schema.fromJsonString(ExecutePostCommitPayloadSchema)
-)
+import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
 
 const InvokeToolReplayExecution = Schema.Struct({
   replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
@@ -794,43 +788,40 @@ export const layer = TurnProcessingWorkflow.toLayer(
       } satisfies ProcessTurnResult
     }
 
+    const assistantTurn = makeAssistantTurn(payload, {
+      assistantContent: assistantResult.assistantContent,
+      assistantContentBlocks: invokeToolReplay === undefined
+        ? assistantResult.assistantContentBlocks
+        : assistantResult.assistantContentBlocks.slice(replayPrefixContentBlocks.length),
+      modelFinishReason,
+      modelUsageJson: assistantResult.modelUsageJson
+    })
+
     yield* Activity.make({
-      name: "PersistAssistantTurnAndPostCommitTask",
-      execute: Effect.gen(function*() {
-        const assistantTurn = makeAssistantTurn(payload, {
-          assistantContent: assistantResult.assistantContent,
-          assistantContentBlocks: invokeToolReplay === undefined
-            ? assistantResult.assistantContentBlocks
-            : assistantResult.assistantContentBlocks.slice(replayPrefixContentBlocks.length),
-          modelFinishReason,
-          modelUsageJson: assistantResult.modelUsageJson
-        })
-        const taskId = `postcommit:${payload.turnId}` as PostCommitTaskId
-        const task: PostCommitTaskRecord = {
-          taskId,
+      name: "PersistAssistantTurn",
+      error: PersistTurnError,
+      execute: sessionTurnPort.appendTurn(assistantTurn)
+    }).asEffect()
+
+    yield* Activity.make({
+      name: "DispatchPostCommitWorkflow",
+      execute: PostCommitWorkflow.execute(
+        {
           turnId: payload.turnId as TurnId,
           agentId: payload.agentId as AgentId,
           sessionId: payload.sessionId as SessionId,
-          conversationId: payload.conversationId as ConversationId,
-          createdAt: payload.createdAt,
-          status: "Pending",
-          attempts: 0,
-          nextAttemptAt: payload.createdAt,
-          claimedAt: null,
-          claimOwner: null,
-          completedAt: null,
-          lastErrorCode: null,
-          lastErrorMessage: null,
-          payloadJson: encodePostCommitPayload({
-            taskId,
-            turnId: payload.turnId as TurnId,
-            agentId: payload.agentId as AgentId,
-            sessionId: payload.sessionId as SessionId,
-            conversationId: payload.conversationId as ConversationId
+          conversationId: payload.conversationId as ConversationId
+        },
+        { discard: true }
+      ).pipe(
+        Effect.tap((executionId) =>
+          Effect.log("post_commit_workflow_dispatched", {
+            turnId: payload.turnId,
+            executionId
           })
-        }
-        yield* sessionTurnPort.appendAssistantTurnWithPostCommitTask(assistantTurn, task)
-      })
+        ),
+        Effect.asVoid
+      )
     }).asEffect()
 
     yield* writeAuditEntry(
