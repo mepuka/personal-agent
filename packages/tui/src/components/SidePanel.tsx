@@ -1,0 +1,68 @@
+import { useAtomValue } from "@effect/atom-react"
+import {
+  channelIdAtom,
+  connectionStatusAtom,
+  messageCountAtom,
+  toolEventsAtom
+} from "../atoms/session.js"
+import { theme } from "../theme.js"
+import { ContextBar } from "./ContextBar.js"
+
+const connectionDot = (status: string): { dot: string; color: string } => {
+  switch (status) {
+    case "connected": return { dot: "\u25CF", color: theme.statusConnected }
+    case "connecting": return { dot: "\u25CF", color: theme.statusPending }
+    case "error": return { dot: "\u25CF", color: theme.statusError }
+    default: return { dot: "\u25CB", color: theme.textMuted }
+  }
+}
+
+export function SidePanel() {
+  const channelId = useAtomValue(channelIdAtom)
+  const status = useAtomValue(connectionStatusAtom)
+  const msgCount = useAtomValue(messageCountAtom)
+  const toolEvents = useAtomValue(toolEventsAtom)
+  const { dot, color: dotColor } = connectionDot(status)
+  const shortId = channelId.length > 8 ? channelId.slice(0, 8) : channelId
+
+  return (
+    <box
+      flexDirection="column"
+      flexGrow={1}
+      border={["left"]}
+      borderStyle="single"
+      borderColor={theme.border}
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      {/* Session */}
+      <text content=" Session" fg={theme.accent} />
+      <text content={`  ${shortId}`} fg={theme.textMuted} />
+      <text content={`  ${dot} ${status}`} fg={dotColor} />
+      <text content={`  ${msgCount} msgs`} fg={theme.textMuted} />
+
+      {/* Tools */}
+      <box marginTop={1} flexDirection="column" flexGrow={1}>
+        <text content=" Tools" fg={theme.accent} />
+        {toolEvents.length === 0 ? (
+          <text content="  (none)" fg={theme.textMuted} />
+        ) : (
+          <scrollbox flexGrow={1} stickyScroll={true} stickyStart="bottom">
+            {toolEvents.map((tool) => (
+              <text
+                key={tool.toolCallId}
+                content={`  ${tool.status === "called" ? "\u23F3" : tool.isError ? "\u274C" : "\u2713"} ${tool.toolName}`}
+                fg={tool.isError ? theme.error : tool.status === "called" ? theme.streaming : theme.statusConnected}
+              />
+            ))}
+          </scrollbox>
+        )}
+      </box>
+
+      {/* Context */}
+      <box marginTop={1} flexDirection="column">
+        <ContextBar />
+      </box>
+    </box>
+  )
+}

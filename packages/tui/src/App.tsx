@@ -14,15 +14,13 @@ import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
 import { ModalLayer } from "./components/ModalLayer.js"
 import { StatusBar } from "./components/StatusBar.js"
-import { ToolPane } from "./components/ToolPane.js"
+import { SidePanel } from "./components/SidePanel.js"
 import { useDecideCheckpoint } from "./hooks/useDecideCheckpoint.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
 import { applyRestoredHistory, restoreHistory } from "./state/restoreHistory.js"
 import { theme } from "./theme.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
-
-type FocusTarget = "input" | "tools"
 
 const DEFAULT_AGENT_ID = "agent:bootstrap"
 
@@ -31,7 +29,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   const initializedRef = React.useRef(false)
   const sendMessage = useSendMessage(client)
   const decideCheckpoint = useDecideCheckpoint(client)
-  const [focusTarget, setFocusTarget] = React.useState<FocusTarget>("input")
   const [sessionPickerIndex, setSessionPickerIndex] = React.useState(0)
   const activeModal = useAtomValue(modalAtom)
   const activeChannelId = useAtomValue(channelIdAtom)
@@ -39,7 +36,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   const { width } = useTerminalDimensions()
   const inputRef = React.useRef(null)
 
-  const showToolPane = width >= 80
+  const showSidePanel = width >= 100
 
   const refreshChannels = React.useCallback(() => {
     const load = Effect.gen(function*() {
@@ -213,9 +210,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       return
     }
 
-    if (key.name === "tab" && activeModal === null) {
-      setFocusTarget((prev) => (prev === "input" ? "tools" : "input"))
-    }
   })
 
   const closeModal = React.useCallback(() => {
@@ -264,14 +258,12 @@ export function App({ client }: { readonly client: ChatClientShape }) {
         <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
           <box flexDirection="row" flexGrow={1}>
             <ChatPane />
-            {showToolPane && (
-              <ToolPane focused={focusTarget === "tools" && activeModal === null} />
-            )}
+            {showSidePanel && <SidePanel />}
           </box>
           <InputBar
             onSubmit={sendMessage}
             onDecision={decideCheckpoint}
-            focused={focusTarget === "input" && activeModal === null}
+            focused={activeModal === null}
             inputRef={inputRef}
           />
           <StatusBar />
