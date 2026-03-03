@@ -9,7 +9,7 @@ const MessageBubbleInner = function MessageBubble({ message }: { readonly messag
   if (message.role === "user") {
     return (
       <box flexDirection="column">
-        <text content={`> ${message.content}`} fg={theme.userText} />
+        <text content={`> ${message.content}`} fg={theme.textMuted} />
       </box>
     )
   }
