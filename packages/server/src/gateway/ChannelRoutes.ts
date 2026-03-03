@@ -1,12 +1,16 @@
 import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import {
+  type ChannelNotFoundResponse,
   type ChannelHistoryResponse,
+  type ChannelTypeMismatchResponse,
   type ChannelStatus,
   InitializeChannelRequest,
+  type InternalServerErrorResponse,
   type ListChannelsResponse,
   type OkResponse,
   SendChannelMessageRequest,
+  type SessionNotFoundResponse,
   SetChannelModelPreferenceRequest
 } from "@template/domain/ports"
 import { DateTime, Effect, Layer, Option, Schema } from "effect"
@@ -74,11 +78,13 @@ const listChannels = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.listChannels"),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
+      Effect.catchCause(() => {
+        const response: InternalServerErrorResponse = { error: "InternalServerError" }
+        return HttpServerResponse.json(
+          response,
           { status: 500 }
         )
+      }
       )
     )
 )
@@ -115,21 +121,28 @@ const initializeChannel = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.initializeChannel"),
-      Effect.catchTag("SessionNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "SessionNotFound", sessionId: error.sessionId },
+      Effect.catchTag("SessionNotFound", (error) => {
+        const response: SessionNotFoundResponse = {
+          error: "SessionNotFound",
+          sessionId: error.sessionId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
-        )),
-      Effect.catchTag("ChannelTypeMismatch", (error) =>
-        HttpServerResponse.json(
-          {
-            error: "ChannelTypeMismatch",
-            channelId: error.channelId,
-            existingType: error.existingType,
-            requestedType: error.requestedType
-          },
+        )
+      }),
+      Effect.catchTag("ChannelTypeMismatch", (error) => {
+        const response: ChannelTypeMismatchResponse = {
+          error: "ChannelTypeMismatch",
+          channelId: error.channelId,
+          existingType: error.existingType,
+          requestedType: error.requestedType
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 409 }
-        )),
+        )
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )
@@ -185,11 +198,16 @@ const getHistory = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.getHistory"),
-      Effect.catchTag("ChannelNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "ChannelNotFound", channelId: error.channelId },
+      Effect.catchTag("ChannelNotFound", (error) => {
+        const response: ChannelNotFoundResponse = {
+          error: "ChannelNotFound",
+          channelId: error.channelId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
-        )),
+        )
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )
@@ -209,11 +227,16 @@ const getStatus = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.getStatus"),
-      Effect.catchTag("ChannelNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "ChannelNotFound", channelId: error.channelId },
+      Effect.catchTag("ChannelNotFound", (error) => {
+        const response: ChannelNotFoundResponse = {
+          error: "ChannelNotFound",
+          channelId: error.channelId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
-        )),
+        )
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )
@@ -233,11 +256,16 @@ const deleteChannel = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.deleteChannel"),
-      Effect.catchTag("ChannelNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "ChannelNotFound", channelId: error.channelId },
+      Effect.catchTag("ChannelNotFound", (error) => {
+        const response: ChannelNotFoundResponse = {
+          error: "ChannelNotFound",
+          channelId: error.channelId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
-        )),
+        )
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )
@@ -266,11 +294,16 @@ const setModelPreference = HttpRouter.add(
       return yield* HttpServerResponse.json(response)
     }).pipe(
       Effect.withSpan("ChannelRoutes.setModelPreference"),
-      Effect.catchTag("ChannelNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "ChannelNotFound", channelId: error.channelId },
+      Effect.catchTag("ChannelNotFound", (error) => {
+        const response: ChannelNotFoundResponse = {
+          error: "ChannelNotFound",
+          channelId: error.channelId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
-        )),
+        )
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )

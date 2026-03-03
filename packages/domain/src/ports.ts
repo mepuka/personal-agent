@@ -522,6 +522,31 @@ export const OkResponse = Schema.Struct({
 })
 export type OkResponse = typeof OkResponse.Type
 
+export const InternalServerErrorResponse = Schema.Struct({
+  error: Schema.Literal("InternalServerError")
+})
+export type InternalServerErrorResponse = typeof InternalServerErrorResponse.Type
+
+export const ChannelNotFoundResponse = Schema.Struct({
+  error: Schema.Literal("ChannelNotFound"),
+  channelId: Schema.String
+})
+export type ChannelNotFoundResponse = typeof ChannelNotFoundResponse.Type
+
+export const SessionNotFoundResponse = Schema.Struct({
+  error: Schema.Literal("SessionNotFound"),
+  sessionId: Schema.String
+})
+export type SessionNotFoundResponse = typeof SessionNotFoundResponse.Type
+
+export const ChannelTypeMismatchResponse = Schema.Struct({
+  error: Schema.Literal("ChannelTypeMismatch"),
+  channelId: Schema.String,
+  existingType: Schema.String,
+  requestedType: Schema.String
+})
+export type ChannelTypeMismatchResponse = typeof ChannelTypeMismatchResponse.Type
+
 export const ChannelAttachTarget = Schema.Struct({
   sessionId: Schema.String
 })
