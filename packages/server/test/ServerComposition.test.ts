@@ -337,7 +337,6 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(Layer.mergeAll(
       workflowEngineLayer,
       agentStatePortTagLayer,
-      sessionTurnPortTagLayer,
       governancePortTagLayer,
       toolRegistryLayer,
       chatPersistenceLayer,
@@ -347,6 +346,8 @@ const makePortsLiveLayer = (dbPath: string) => {
       subroutineControlPlaneLayer,
       transcriptProjectorLayer,
       subroutineCatalogLayer
+    ).pipe(
+      Layer.provideMerge(sessionTurnPortTagLayer)
     ))
   )
 

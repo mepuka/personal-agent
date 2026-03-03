@@ -63,6 +63,7 @@ import { SchedulerTickService } from "./scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "./SchedulerRuntime.js"
 import { SessionTurnPortSqlite } from "./SessionTurnPortSqlite.js"
 import { TurnPostCommitPortSqlite } from "./TurnPostCommitPortSqlite.js"
+import { PostCommitExecutor } from "./turn/PostCommitExecutor.js"
 import { layer as TurnPostCommitCommandLayer } from "./turn/TurnPostCommitCommandEntity.js"
 import { TurnPostCommitDispatchLoop } from "./turn/TurnPostCommitDispatchLoop.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
@@ -78,20 +79,20 @@ const sqlInfrastructureLayer = Layer.mergeAll(
   migrationLayer
 )
 
-const sqliteBackedLayer = <A>(
-  serviceLayer: Layer.Layer<A>
-): Layer.Layer<A> =>
+const sqliteBackedLayer = <A, E, R>(
+  serviceLayer: Layer.Layer<A, E, R>
+) =>
   serviceLayer.pipe(Layer.provide(sqlInfrastructureLayer))
 
-const exposeAsPortTagLayer = <Tag>(
-  tag: ServiceMap.Service<any, Tag>,
-  service: ServiceMap.Service<any, Tag>,
-  layer: Layer.Layer<any>
-): Layer.Layer<Tag> =>
+const exposeAsPortTagLayer = <Port, Impl, E, R>(
+  tag: ServiceMap.Service<any, Port>,
+  service: ServiceMap.Service<any, Impl>,
+  layer: Layer.Layer<any, E, R>
+): Layer.Layer<Port, E, R> =>
   Layer.effect(
     tag,
     Effect.gen(function*() {
-      return yield* (service as unknown as Effect.Effect<Tag>)
+      return (yield* service) as unknown as Port
     })
   ).pipe(Layer.provide(layer))
 
@@ -220,23 +221,28 @@ const modelRegistryLayer = ModelRegistry.layer.pipe(
 
 const chatPersistenceLayer = sqliteBackedLayer(ChatPersistence.layer)
 
-const withConfigLayer = <A>(
-  configLayer: Layer.Layer<any>,
-  build: (config: AgentConfigService) => Layer.Layer<A>
-): Layer.Layer<A> =>
+const withConfigLayer = <A, E, R, CE, CR>(
+  configLayer: Layer.Layer<any, CE, CR>,
+  build: (config: AgentConfigService) => Layer.Layer<A, E, R>
+): Layer.Layer<A, E | CE, R | CR> =>
   Layer.unwrap(
     Effect.gen(function*() {
       const config = yield* AgentConfig
       return build(config)
-    }).pipe(Effect.provide(configLayer))
+    }).pipe(
+      Effect.provide(configLayer)
+    )
   )
 
-const whenEnabled = <A>(
-  configLayer: Layer.Layer<any>,
+const whenEnabled = <A, E, R, CE, CR>(
+  configLayer: Layer.Layer<any, CE, CR>,
   isEnabled: (config: AgentConfigService) => boolean,
-  build: (config: AgentConfigService) => Layer.Layer<A>
-): Layer.Layer<A> =>
-  withConfigLayer(configLayer, (config) => isEnabled(config) ? build(config) : Layer.empty as Layer.Layer<A>)
+  build: (config: AgentConfigService) => Layer.Layer<A, E, R>
+): Layer.Layer<A, E | CE, R | CR> =>
+  withConfigLayer(
+    configLayer,
+    (config) => isEnabled(config) ? build(config) : Layer.empty as unknown as Layer.Layer<A, E, R>
+  )
 
 const commandHooksLayer = CommandHooksDefaultLayer
 
@@ -350,18 +356,23 @@ const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
   Layer.provide(Layer.mergeAll(memoryFileServicesLayer, sessionTurnPortTagLayer))
 )
 
-const postCommitCommandLayer = TurnPostCommitCommandLayer.pipe(
+const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
   Layer.provide(Layer.mergeAll(
-    clusterLayer,
     subroutineCatalogLayer,
     subroutineRunnerLayer,
     transcriptProjectorLayer
   ))
 )
 
-const postCommitDispatchLayer = TurnPostCommitDispatchLoop.layer.pipe(
+const postCommitCommandLayer = TurnPostCommitCommandLayer.pipe(
   Layer.provide(Layer.mergeAll(
     clusterLayer,
+    postCommitExecutorLayer
+  ))
+)
+
+const postCommitDispatchLayer = TurnPostCommitDispatchLoop.layer.pipe(
+  Layer.provide(Layer.mergeAll(
     postCommitPortTagLayer,
     postCommitCommandLayer
   ))
@@ -542,7 +553,10 @@ const HttpApiAndRoutesLive = Layer.mergeAll(
 
 const HttpServerLayer = withConfigLayer(
   agentConfigLayer,
-  (config) => BunHttpServer.layer({ port: config.server.port })
+  (config) => BunHttpServer.layer({
+    port: config.server.port,
+    idleTimeout: 120 // seconds — SSE tool loops need long idle windows
+  })
 )
 
 const HttpLive = HttpRouter.serve(
@@ -552,13 +566,16 @@ const HttpLive = HttpRouter.serve(
   Layer.provideMerge(HttpServerLayer)
 )
 
-Layer.launch(HttpLive).pipe(
-  Effect.provide(Layer.mergeAll(
-    Logger.layer([Logger.consoleJson]),
-    agentStatePortTagLayer,
-    governancePortTagLayer,
-    sessionTurnPortTagLayer,
-    channelCoreLayer
-  )),
-  BunRuntime.runMain
+const runtimeBootstrapLayer = Layer.mergeAll(
+  Logger.layer([Logger.consoleJson]),
+  agentStatePortTagLayer,
+  governancePortTagLayer,
+  sessionTurnPortTagLayer,
+  channelCoreLayer
 )
+
+const MainLive = HttpLive.pipe(
+  Layer.provide(runtimeBootstrapLayer)
+)
+
+Layer.launch(MainLive).pipe(BunRuntime.runMain)

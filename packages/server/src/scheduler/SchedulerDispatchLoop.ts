@@ -1,5 +1,6 @@
 import type { Instant } from "@template/domain/ports"
 import { DateTime, Effect, Layer, ServiceMap } from "effect"
+import { SCHEDULER_COMMAND_LANE_ID } from "../CommandLanes.js"
 import { SchedulerRuntime } from "../SchedulerRuntime.js"
 import { SchedulerActionExecutor } from "./SchedulerActionExecutor.js"
 import { SchedulerCommandEntity, type SchedulerExecutePayload } from "./SchedulerCommandEntity.js"
@@ -17,7 +18,7 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
       const runtime = yield* SchedulerRuntime
       const executor = yield* SchedulerActionExecutor
       const makeClient = yield* SchedulerCommandEntity.client
-      const client = makeClient("scheduler-command-lane")
+      const client = makeClient(SCHEDULER_COMMAND_LANE_ID)
 
       const dispatchDue = (now: Instant): Effect.Effect<SchedulerDispatchSummary> =>
         Effect.gen(function*() {

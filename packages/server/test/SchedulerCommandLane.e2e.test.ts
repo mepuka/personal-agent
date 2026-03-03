@@ -12,6 +12,7 @@ import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { GovernancePortTag, SchedulePortTag } from "../src/PortTags.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
+import { SCHEDULER_COMMAND_LANE_ID } from "../src/CommandLanes.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
@@ -74,7 +75,7 @@ describe("Scheduler command lane E2E", () => {
       const schedulePort = yield* SchedulePortSqlite
       const runtime = yield* SchedulerRuntime
       const makeClient = yield* SchedulerCommandEntity.client
-      const client = makeClient("scheduler-command-lane")
+      const client = makeClient(SCHEDULER_COMMAND_LANE_ID)
 
       yield* schedulePort.upsertSchedule(schedule)
       const ticket = yield* runtime.triggerNow(schedule, now)

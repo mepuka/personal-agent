@@ -5,12 +5,15 @@ import {
   POST_COMMIT_MAX_ATTEMPTS,
   POST_COMMIT_TICK_SECONDS
 } from "@template/domain/system-defaults"
-import { DateTime, Duration, Effect, Layer, Schedule, ServiceMap } from "effect"
+import { Cause, DateTime, Duration, Effect, Layer, Schedule, ServiceMap } from "effect"
+import { POST_COMMIT_COMMAND_LANE_ID } from "../CommandLanes.js"
 import { TurnPostCommitPortTag } from "../PortTags.js"
-import {
-  TurnPostCommitCommandEntity,
-  type PostCommitResult
-} from "./TurnPostCommitCommandEntity.js"
+import type { PostCommitResult } from "./PostCommitExecutor.js"
+import { TurnPostCommitCommandEntity } from "./TurnPostCommitCommandEntity.js"
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
 
 export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommitDispatchLoop>()(
   "server/turn/TurnPostCommitDispatchLoop",
@@ -18,6 +21,7 @@ export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommi
     make: Effect.gen(function*() {
       const postCommitPort = yield* TurnPostCommitPortTag
       const makeClient = yield* TurnPostCommitCommandEntity.client
+      const client = makeClient(POST_COMMIT_COMMAND_LANE_ID)
       const workerId = `worker:${crypto.randomUUID()}`
 
       const tick = Effect.gen(function*() {
@@ -29,9 +33,16 @@ export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommi
           POST_COMMIT_CLAIM_LEASE_SECONDS
         )
 
+        // Yield after claim to release any SQLite connection state
+        // before starting execution on this fiber
+        yield* Effect.sleep(0)
+
         for (const task of tasks) {
-          const lane = `turn-post-commit:${task.sessionId}`
-          const client = makeClient(lane)
+          yield* Effect.log("post_commit_dispatching", {
+            taskId: task.taskId,
+            turnId: task.turnId,
+            sessionId: task.sessionId
+          })
 
           const result = yield* client.executePostCommit({
             taskId: task.taskId,
@@ -40,11 +51,12 @@ export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommi
             sessionId: task.sessionId,
             conversationId: task.conversationId
           }).pipe(
-            Effect.catchAllCause((cause) =>
+            Effect.timeout(Duration.seconds(30)),
+            Effect.catchCause((cause) =>
               Effect.succeed({
                 subroutines: [],
                 projectionSuccess: false,
-                projectionError: `entity_error: ${cause}`
+                projectionError: `execution_error: ${Cause.pretty(cause)}`
               } satisfies PostCommitResult)
             )
           )
@@ -103,13 +115,23 @@ export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommi
         }
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.log("Post-commit tick failed", { cause }).pipe(
+          Effect.log("Post-commit tick failed", {
+            error: Cause.pretty(cause),
+            causeJson: stringifyCause(cause)
+          }).pipe(
             Effect.annotateLogs("level", "error")
           )
         )
       )
 
-      const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(POST_COMMIT_TICK_SECONDS)))
+      // Delay first tick to let the full layer graph finish construction,
+      // then yield between each tick so the fiber scheduler can run timeouts.
+      const loop = Effect.sleep(Duration.seconds(POST_COMMIT_TICK_SECONDS)).pipe(
+        Effect.andThen(Effect.repeat(
+          Effect.sleep(0).pipe(Effect.andThen(tick)),
+          Schedule.spaced(Duration.seconds(POST_COMMIT_TICK_SECONDS))
+        ))
+      )
       yield* Effect.forkScoped(loop)
 
       return {} as const
@@ -134,3 +156,23 @@ const summarizeFailure = (result: PostCommitResult): string => {
   }
   return parts.join("; ").slice(0, 500)
 }
+
+const stringifyCause = (cause: Cause.Cause<unknown>): string =>
+  JSON.stringify(cause.reasons.map((reason) => {
+    if (Cause.isFailReason(reason)) {
+      return { _tag: "Fail", error: String(reason.error) }
+    }
+    if (Cause.isDieReason(reason)) {
+      const defect = reason.defect
+      return {
+        _tag: "Die",
+        defect: defect instanceof Error
+          ? `${defect.name}: ${defect.message}${defect.stack ? `\n${defect.stack}` : ""}`
+          : String(defect)
+      }
+    }
+    return {
+      _tag: "Interrupt",
+      fiberId: String(reason.fiberId)
+    }
+  }))
