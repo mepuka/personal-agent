@@ -528,8 +528,12 @@ export const ChannelAttachTarget = Schema.Struct({
 export type ChannelAttachTarget = typeof ChannelAttachTarget.Type
 
 export const InitializeChannelRequest = Schema.Struct({
-  channelType: ChannelType,
-  agentId: Schema.String,
+  channelType: ChannelType.pipe(
+    Schema.withDecodingDefaultKey(() => "CLI")
+  ),
+  agentId: Schema.String.pipe(
+    Schema.withDecodingDefaultKey(() => "agent:bootstrap")
+  ),
   attachTo: Schema.optionalKey(ChannelAttachTarget)
 })
 export type InitializeChannelRequest = typeof InitializeChannelRequest.Type

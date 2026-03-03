@@ -87,12 +87,7 @@ const initializeChannel = HttpRouter.add(
         return yield* badRequest("Expected JSON object payload")
       }
 
-      const normalizedBody = {
-        channelType: rawBody.channelType ?? "CLI",
-        agentId: rawBody.agentId ?? "agent:bootstrap",
-        ...("attachTo" in rawBody ? { attachTo: rawBody.attachTo } : {})
-      }
-      const decodedBody = decodeInitializeChannelRequest(normalizedBody)
+      const decodedBody = decodeInitializeChannelRequest(rawBody)
       if (Option.isNone(decodedBody)) {
         return yield* badRequest("Invalid initialize channel payload")
       }
