@@ -5,12 +5,22 @@ import { ModalBox } from "./ModalBox.js"
 export function SessionPickerModal({
   channels,
   activeChannelId,
-  selectedIndex
+  selectedIndex,
+  onSelect,
+  onDelete: _onDelete
 }: {
   readonly channels: ReadonlyArray<ChannelSummary>
   readonly activeChannelId: string
   readonly selectedIndex: number
+  readonly onSelect: (channelId: string) => void
+  readonly onDelete: (channelId: string) => void
 }) {
+  const options = channels.map((ch) => ({
+    name: `${ch.channelId === activeChannelId ? "* " : "  "}${ch.channelId}`,
+    description: `${ch.messageCount} msgs | ${ch.channelType} | last: ${ch.lastTurnAt ?? "no turns"}`,
+    value: ch.channelId
+  }))
+
   return (
     <ModalBox title="Sessions" width="70%" height="70%">
       {channels.length === 0 ? (
@@ -20,29 +30,25 @@ export function SessionPickerModal({
         </box>
       ) : (
         <box flexDirection="column" flexGrow={1}>
-          <text content="Use ↑/↓ to select, Enter to switch, x to delete." fg={theme.textMuted} />
-          <scrollbox flexGrow={1} stickyScroll={true} stickyStart="top">
-            {channels.map((channel, index) => {
-              const isSelected = index === selectedIndex
-              const isActive = channel.channelId === activeChannelId
-              const marker = isSelected ? ">" : " "
-              const activeMarker = isActive ? " *" : ""
-              const lastTurnAt = channel.lastTurnAt ? channel.lastTurnAt : "no turns yet"
-              return (
-                <box key={channel.channelId} flexDirection="column">
-                  <text
-                    content={`${marker} ${channel.channelId}${activeMarker}`}
-                    fg={isSelected ? theme.accent : theme.text}
-                    bold={isSelected}
-                  />
-                  <text
-                    content={`   ${channel.messageCount} msgs | ${channel.channelType} | last: ${lastTurnAt}`}
-                    fg={theme.textMuted}
-                  />
-                </box>
-              )
-            })}
-          </scrollbox>
+          <text content=" ↑/↓ navigate, Enter select, x delete, Esc close" fg={theme.textMuted} />
+          <select
+            options={options}
+            selectedIndex={selectedIndex}
+            focused={true}
+            showDescription={true}
+            wrapSelection={true}
+            backgroundColor="transparent"
+            textColor={theme.text}
+            focusedBackgroundColor={theme.surface}
+            focusedTextColor={theme.accent}
+            selectedBackgroundColor={theme.surface}
+            selectedTextColor={theme.accent}
+            descriptionColor={theme.textMuted}
+            onSelect={(_index: number, option: { value?: string } | null) => {
+              if (option?.value) onSelect(option.value)
+            }}
+            flexGrow={1}
+          />
         </box>
       )}
     </ModalBox>

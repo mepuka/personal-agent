@@ -29,7 +29,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   const initializedRef = React.useRef(false)
   const sendMessage = useSendMessage(client)
   const decideCheckpoint = useDecideCheckpoint(client)
-  const [sessionPickerIndex, setSessionPickerIndex] = React.useState(0)
   const activeModal = useAtomValue(modalAtom)
   const activeChannelId = useAtomValue(channelIdAtom)
   const availableChannels = useAtomValue(availableChannelsAtom)
@@ -86,14 +85,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
 
       const channels = yield* client.listChannels(DEFAULT_AGENT_ID)
       registry.set(availableChannelsAtom, channels)
-      yield* Effect.sync(() => {
-        setSessionPickerIndex((previous) => {
-          if (channels.length === 0) {
-            return 0
-          }
-          return Math.min(previous, channels.length - 1)
-        })
-      })
 
       if (targetChannelId !== activeChannelId) {
         registry.set(connectionStatusAtom, "connected")
@@ -128,23 +119,6 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     Effect.runFork(program)
   }, [registry, client, activeChannelId])
 
-  React.useEffect(() => {
-    if (activeModal !== "session-picker") {
-      return
-    }
-
-    const activeIndex = availableChannels.findIndex((channel) => channel.channelId === activeChannelId)
-    setSessionPickerIndex((prev) => {
-      if (availableChannels.length === 0) {
-        return 0
-      }
-      if (activeIndex >= 0) {
-        return activeIndex
-      }
-      return Math.min(prev, availableChannels.length - 1)
-    })
-  }, [activeModal, availableChannels, activeChannelId])
-
   useKeyboard((key: { name: string; ctrl: boolean }) => {
     if (key.ctrl && key.name === "c") {
       process.exit(0)
@@ -155,49 +129,12 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       return
     }
 
-    if (activeModal === "session-picker") {
-      if (key.name === "up") {
-        setSessionPickerIndex((prev) => {
-          if (availableChannels.length === 0) {
-            return 0
-          }
-          return (prev - 1 + availableChannels.length) % availableChannels.length
-        })
-        return
-      }
-      if (key.name === "down") {
-        setSessionPickerIndex((prev) => {
-          if (availableChannels.length === 0) {
-            return 0
-          }
-          return (prev + 1) % availableChannels.length
-        })
-        return
-      }
-      if (key.name === "enter" || key.name === "return") {
-        const selected = availableChannels[sessionPickerIndex]
-        if (selected !== undefined) {
-          selectChannel(selected.channelId)
-        }
-        return
-      }
-      if (key.name === "x") {
-        const selected = availableChannels[sessionPickerIndex]
-        if (selected !== undefined) {
-          deleteSelectedChannel(selected.channelId)
-        }
-        return
-      }
-    }
-
     if (key.ctrl && key.name === "k") {
       registry.set(modalAtom, "command-palette")
       return
     }
     if (key.ctrl && key.name === "s") {
       refreshChannels()
-      const activeIndex = availableChannels.findIndex((channel) => channel.channelId === activeChannelId)
-      setSessionPickerIndex(activeIndex >= 0 ? activeIndex : 0)
       registry.set(modalAtom, "session-picker")
       return
     }
@@ -210,6 +147,10 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       return
     }
 
+    if (activeModal === "session-picker" && key.name === "x") {
+      deleteSelectedChannel()
+      return
+    }
   })
 
   const closeModal = React.useCallback(() => {
@@ -252,7 +193,9 @@ export function App({ client }: { readonly client: ChatClientShape }) {
         sessionPicker={{
           channels: availableChannels,
           activeChannelId,
-          selectedIndex: sessionPickerIndex
+          selectedIndex: 0,
+          onSelect: selectChannel,
+          onDelete: deleteSelectedChannel
         }}
       >
         <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>

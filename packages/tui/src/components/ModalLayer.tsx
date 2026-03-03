@@ -17,6 +17,8 @@ export function ModalLayer({
     readonly channels: ReadonlyArray<ChannelSummary>
     readonly activeChannelId: string
     readonly selectedIndex: number
+    readonly onSelect: (channelId: string) => void
+    readonly onDelete: (channelId: string) => void
   }
 }) {
   return (
@@ -49,6 +51,8 @@ function renderModal(modalId: ModalId, handlers: {
     readonly channels: ReadonlyArray<ChannelSummary>
     readonly activeChannelId: string
     readonly selectedIndex: number
+    readonly onSelect: (channelId: string) => void
+    readonly onDelete: (channelId: string) => void
   }
 }): React.ReactNode {
   // Placeholder modals — each will be replaced with a real component in later slices
@@ -66,6 +70,8 @@ function renderModal(modalId: ModalId, handlers: {
             channels={handlers.sessionPicker.channels}
             activeChannelId={handlers.sessionPicker.activeChannelId}
             selectedIndex={handlers.sessionPicker.selectedIndex}
+            onSelect={handlers.sessionPicker.onSelect}
+            onDelete={handlers.sessionPicker.onDelete}
           />
         )
         : (
