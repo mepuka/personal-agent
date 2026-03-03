@@ -948,6 +948,36 @@ describe("ChannelRoutes e2e", () => {
     )
   })
 
+  it.effect("initialize supports WebChat channel type and WebChat capabilities", () => {
+    const dbPath = testDatabasePath("e2e-create-webchat")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const createReq = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "WebChat", agentId: "agent:bootstrap" })
+      )
+      const createResponse = yield* client.execute(createReq)
+      expect(createResponse.status).toBe(200)
+
+      const statusResponse = yield* client.get(`/channels/${channelId}/status`)
+      expect(statusResponse.status).toBe(200)
+      const status = (yield* statusResponse.json) as {
+        readonly channelType: string
+        readonly capabilities: ReadonlyArray<string>
+      }
+      expect(status.channelType).toBe("WebChat")
+      expect(status.capabilities).toEqual(["SendText", "Typing", "StreamingDelivery"])
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("get history endpoint returns array for created channel", () => {
     const dbPath = testDatabasePath("e2e-history")
     return Effect.gen(function*() {

@@ -1,4 +1,4 @@
-import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
+import { TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
 import {
   ChannelHistoryResponse,
   CheckpointNotFoundResponse,
@@ -22,26 +22,15 @@ export type DecideCheckpointResult =
   | { readonly kind: "ack" }
   | { readonly kind: "stream"; readonly stream: Stream.Stream<TurnStreamEvent, unknown> }
 
-export class CheckpointDecisionError extends Error {
-  readonly _tag = "CheckpointDecisionError"
-
-  constructor(args: {
-    readonly status: number
-    readonly message: string
-    readonly errorCode: TurnFailureCode | null
-    readonly body: unknown
-  }) {
-    super(args.message)
-    this.name = "CheckpointDecisionError"
-    this.status = args.status
-    this.errorCode = args.errorCode
-    this.body = args.body
-  }
-
-  readonly status: number
-  readonly errorCode: TurnFailureCode | null
-  readonly body: unknown
-}
+export class CheckpointDecisionError extends Schema.ErrorClass<CheckpointDecisionError>(
+  "CheckpointDecisionError"
+)({
+  _tag: Schema.tag("CheckpointDecisionError"),
+  status: Schema.Number,
+  message: Schema.String,
+  errorCode: Schema.NullOr(TurnFailureCode),
+  body: Schema.Unknown
+}) {}
 
 export interface ChannelInitializeOptions {
   readonly attachTo?: {
@@ -211,14 +200,12 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         )
         const message = toCheckpointDecisionErrorMessage(response.status, body)
         const errorCode = toCheckpointDecisionErrorCode(body)
-        return yield* Effect.fail(
-          new CheckpointDecisionError({
-            status: response.status,
-            message,
-            errorCode,
-            body
-          })
-        )
+        return yield* new CheckpointDecisionError({
+          status: response.status,
+          message,
+          errorCode,
+          body
+        })
       })
 
     const health = httpClient.execute(

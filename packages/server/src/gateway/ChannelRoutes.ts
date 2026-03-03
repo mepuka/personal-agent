@@ -1,5 +1,5 @@
 import type { TurnFailureCode } from "@template/domain/events"
-import type { ChannelId } from "@template/domain/ids"
+import type { AgentId, ChannelId, SessionId } from "@template/domain/ids"
 import {
   type ChannelNotFoundResponse,
   type ChannelHistoryResponse,
@@ -13,11 +13,14 @@ import {
   type SessionNotFoundResponse,
   SetChannelModelPreferenceRequest
 } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Option, Schema } from "effect"
+import { DateTime, Effect, Layer, Option, Schema, Stream } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
-import { CLIAdapterEntity } from "../entities/CLIAdapterEntity.js"
+import {
+  channelCapabilitiesForType,
+  isSupportedChannelAdapterType
+} from "../entities/ChannelAdapterProfiles.js"
 import {
   badRequest,
   extractPathParam,
@@ -28,6 +31,7 @@ import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 const decodeInitializeChannelRequest = Schema.decodeUnknownOption(InitializeChannelRequest)
 const decodeSendMessageRequest = Schema.decodeUnknownOption(SendChannelMessageRequest)
+const decodeSetModelPreferenceRequest = Schema.decodeUnknownOption(SetChannelModelPreferenceRequest)
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -53,6 +57,8 @@ const mapChannelNotFoundFailure = (
 
   return null
 }
+
+const SUPPORTED_CHANNEL_TYPE_LABEL = "CLI|WebChat"
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -94,8 +100,8 @@ const initializeChannel = HttpRouter.add(
   "/channels/:channelId/initialize",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractPathParam(request.url, 1)
+      const channelCore = yield* ChannelCore
+      const channelId = extractPathParam(request.url, 1) as ChannelId
       const rawBody = yield* request.json
       if (!isRecord(rawBody)) {
         return yield* badRequest("Expected JSON object payload")
@@ -106,14 +112,22 @@ const initializeChannel = HttpRouter.add(
         return yield* badRequest("Invalid initialize channel payload")
       }
 
-      const client = makeClient(channelId)
+      const channelType = decodedBody.value.channelType
+      if (!isSupportedChannelAdapterType(channelType)) {
+        return yield* badRequest(`Unsupported channelType. Supported values: ${SUPPORTED_CHANNEL_TYPE_LABEL}`)
+      }
 
-      yield* client.initialize({
-        channelType: decodedBody.value.channelType,
-        agentId: decodedBody.value.agentId,
-        userId: "user:cli:local",
+      yield* channelCore.initializeChannel({
+        channelId,
+        channelType,
+        agentId: decodedBody.value.agentId as AgentId,
+        capabilities: channelCapabilitiesForType(channelType),
         ...(decodedBody.value.attachTo !== undefined
-          ? { attachTo: decodedBody.value.attachTo }
+          ? {
+              attachTo: {
+                sessionId: decodedBody.value.attachTo.sessionId as SessionId
+              }
+            }
           : {})
       })
 
@@ -152,24 +166,30 @@ const sendMessage = HttpRouter.add(
   "/channels/:channelId/messages",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractPathParam(request.url, 1)
+      const channelCore = yield* ChannelCore
+      const channelId = extractPathParam(request.url, 1) as ChannelId
       const rawBody = yield* request.json
       const decodedBody = decodeSendMessageRequest(rawBody)
       if (Option.isNone(decodedBody)) {
         return yield* badRequest("Invalid send message payload")
       }
 
-      const client = makeClient(channelId)
+      const channelStream = Stream.unwrap(
+        channelCore.buildTurnPayload({
+          channelId,
+          content: decodedBody.value.content,
+          contentBlocks: [{ contentBlockType: "TextBlock" as const, text: decodedBody.value.content }],
+          userId: "user:cli:local",
+          ...decodedBody.value.model ? { modelOverride: decodedBody.value.model } : {},
+          ...decodedBody.value.generationConfig ? { generationConfigOverride: decodedBody.value.generationConfig } : {}
+        }).pipe(
+          Effect.map((turnPayload) => channelCore.processTurn(turnPayload))
+        )
+      )
 
       const stream = toSseTextStream(
         withFailedTurnEvent(
-          client.receiveMessage({
-            content: decodedBody.value.content,
-            userId: "user:cli:local",
-            ...decodedBody.value.model ? { modelOverride: decodedBody.value.model } : {},
-            ...decodedBody.value.generationConfig ? { generationConfigOverride: decodedBody.value.generationConfig } : {}
-          }),
+          channelStream,
           {
             fallbackMessage: "Turn processing failed unexpectedly",
             mapKnownError: mapChannelNotFoundFailure
@@ -188,11 +208,9 @@ const getHistory = HttpRouter.add(
   "/channels/:channelId/history",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractPathParam(request.url, 1)
-      const client = makeClient(channelId)
-
-      const turns = yield* client.getHistory({})
+      const channelCore = yield* ChannelCore
+      const channelId = extractPathParam(request.url, 1) as ChannelId
+      const turns = yield* channelCore.getHistory(channelId)
 
       const response: ChannelHistoryResponse = turns
       return yield* HttpServerResponse.json(response)
@@ -217,14 +235,11 @@ const getStatus = HttpRouter.add(
   "/channels/:channelId/status",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractPathParam(request.url, 1)
-      const client = makeClient(channelId)
+      const channelCore = yield* ChannelCore
+      const channelId = extractPathParam(request.url, 1) as ChannelId
+      const status: ChannelStatus = yield* channelCore.getStatus(channelId)
 
-      const status = yield* client.getStatus({})
-
-      const response: ChannelStatus = status
-      return yield* HttpServerResponse.json(response)
+      return yield* HttpServerResponse.json(status)
     }).pipe(
       Effect.withSpan("ChannelRoutes.getStatus"),
       Effect.catchTag("ChannelNotFound", (error) => {
@@ -270,23 +285,21 @@ const deleteChannel = HttpRouter.add(
     )
 )
 
-const decodeSetModelPreferenceRequest = Schema.decodeUnknownOption(SetChannelModelPreferenceRequest)
-
 const setModelPreference = HttpRouter.add(
   "PATCH",
   "/channels/:channelId/model",
   (request) =>
     Effect.gen(function*() {
-      const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractPathParam(request.url, 1)
+      const channelCore = yield* ChannelCore
+      const channelId = extractPathParam(request.url, 1) as ChannelId
       const rawBody = yield* request.json
       const decodedBody = decodeSetModelPreferenceRequest(rawBody)
       if (Option.isNone(decodedBody)) {
         return yield* badRequest("Invalid model preference payload")
       }
 
-      const client = makeClient(channelId)
-      yield* client.setModelPreference({
+      yield* channelCore.setModelPreference({
+        channelId,
         ...(decodedBody.value.model !== undefined ? { modelOverride: decodedBody.value.model } : {}),
         ...(decodedBody.value.generationConfig !== undefined ? { generationConfigOverride: decodedBody.value.generationConfig } : {})
       })

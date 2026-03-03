@@ -5,6 +5,7 @@ import type { TurnStreamEvent } from "@template/domain/events"
 import type { AgentId, ChannelId, CheckpointId, ConversationId, SessionId } from "@template/domain/ids"
 import {
   type AgentState,
+  type ChannelStatus,
   type ChannelSummaryRecord,
   type CheckpointRecord,
   type ContentBlock,
@@ -444,6 +445,25 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
           return yield* sessionTurnPort.listTurns(channel.activeSessionId)
         })
 
+      const getStatus = (channelId: ChannelId) =>
+        Effect.gen(function*() {
+          const channel = yield* channelPort.get(channelId)
+          if (channel === null) {
+            return yield* new ChannelNotFound({ channelId })
+          }
+          const status: ChannelStatus = {
+            channelId: channel.channelId,
+            channelType: channel.channelType,
+            capabilities: [...channel.capabilities],
+            activeSessionId: channel.activeSessionId,
+            activeConversationId: channel.activeConversationId,
+            modelOverride: channel.modelOverride,
+            generationConfigOverride: channel.generationConfigOverride,
+            createdAt: channel.createdAt
+          }
+          return status
+        })
+
       const listChannels = (agentId?: AgentId) =>
         channelPort.list(agentId ? { agentId } : undefined)
 
@@ -748,6 +768,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         listChannels,
         deleteChannel,
         getHistory,
+        getStatus,
         setModelPreference,
         listPendingCheckpoints,
         getCheckpoint,
@@ -795,6 +816,10 @@ export type ChannelCoreService = {
   readonly getHistory: (
     channelId: ChannelId
   ) => Effect.Effect<ReadonlyArray<TurnRecord>, ChannelNotFound>
+
+  readonly getStatus: (
+    channelId: ChannelId
+  ) => Effect.Effect<ChannelStatus, ChannelNotFound>
 
   readonly setModelPreference: (params: {
     readonly channelId: ChannelId

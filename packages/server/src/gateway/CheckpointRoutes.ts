@@ -1,6 +1,9 @@
 import type { CheckpointId } from "@template/domain/ids"
 import {
   DecideCheckpointRequest,
+  type DecideCheckpointAlreadyDecidedResponse,
+  type DecideCheckpointExpiredResponse,
+  type DecideCheckpointNotFoundResponse,
   type CheckpointNotFoundResponse,
   type CheckpointRecordResponse,
   type ListPendingCheckpointsResponse,
@@ -130,24 +133,37 @@ const decideCheckpoint = HttpRouter.add(
       return sseStreamResponse(sseStream)
     }).pipe(
       Effect.withSpan("CheckpointRoutes.decideCheckpoint"),
-      Effect.catchTag("CheckpointNotFound", (error) =>
-        HttpServerResponse.json(
-          { error: "CheckpointNotFound", checkpointId: error.checkpointId },
+      Effect.catchTag("CheckpointNotFound", (error) => {
+        const response: DecideCheckpointNotFoundResponse = {
+          error: "CheckpointNotFound",
+          checkpointId: error.checkpointId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 404 }
         )
-      ),
-      Effect.catchTag("CheckpointAlreadyDecided", (error) =>
-        HttpServerResponse.json(
-          { error: "CheckpointAlreadyDecided", checkpointId: error.checkpointId, currentStatus: error.currentStatus },
+      }),
+      Effect.catchTag("CheckpointAlreadyDecided", (error) => {
+        const response: DecideCheckpointAlreadyDecidedResponse = {
+          error: "CheckpointAlreadyDecided",
+          checkpointId: error.checkpointId,
+          currentStatus: error.currentStatus as DecideCheckpointAlreadyDecidedResponse["currentStatus"]
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 409 }
         )
-      ),
-      Effect.catchTag("CheckpointExpired", (error) =>
-        HttpServerResponse.json(
-          { error: "CheckpointExpired", checkpointId: error.checkpointId },
+      }),
+      Effect.catchTag("CheckpointExpired", (error) => {
+        const response: DecideCheckpointExpiredResponse = {
+          error: "CheckpointExpired",
+          checkpointId: error.checkpointId
+        }
+        return HttpServerResponse.json(
+          response,
           { status: 410 }
         )
-      ),
+      }),
       Effect.catchCause(() => internalServerError())
     )
 )
