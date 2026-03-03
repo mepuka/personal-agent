@@ -1,5 +1,5 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
-import { ListChannelsResponse } from "@template/domain/ports"
+import { DecideCheckpointErrorResponse, ListChannelsResponse } from "@template/domain/ports"
 import type { CheckpointDecision } from "@template/domain/status"
 import {
   classifyTurnFailureText,
@@ -181,6 +181,17 @@ const getStringField = (value: unknown, key: string): string => {
 }
 
 const toCheckpointDecisionErrorCode = (body: unknown): TurnFailureCode | null => {
+  const structured = Schema.decodeUnknownOption(DecideCheckpointErrorResponse)(body)
+  if (Option.isSome(structured)) {
+    switch (structured.value.error) {
+      case "CheckpointNotFound":
+      case "CheckpointExpired":
+        return "checkpoint_payload_invalid"
+      case "CheckpointAlreadyDecided":
+        return "checkpoint_transition_failed"
+    }
+  }
+
   const explicit = getStringField(body, "errorCode")
   if (explicit.length > 0) {
     return classifyTurnFailureText(explicit)
@@ -195,6 +206,18 @@ const toCheckpointDecisionErrorCode = (body: unknown): TurnFailureCode | null =>
 }
 
 const toCheckpointDecisionErrorMessage = (status: number, body: unknown): string => {
+  const structured = Schema.decodeUnknownOption(DecideCheckpointErrorResponse)(body)
+  if (Option.isSome(structured)) {
+    switch (structured.value.error) {
+      case "CheckpointNotFound":
+        return `checkpoint_not_found:${structured.value.checkpointId}`
+      case "CheckpointExpired":
+        return `checkpoint_expired:${structured.value.checkpointId}`
+      case "CheckpointAlreadyDecided":
+        return `checkpoint_already_decided:${structured.value.currentStatus}`
+    }
+  }
+
   const message = toTurnFailureMessageFromUnknown(body, "")
   if (message.length > 0) {
     return message

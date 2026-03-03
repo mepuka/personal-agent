@@ -1,5 +1,5 @@
 import type { CheckpointId } from "@template/domain/ids"
-import { CheckpointDecision } from "@template/domain/status"
+import { DecideCheckpointRequest } from "@template/domain/ports"
 import { Effect, Layer, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -12,10 +12,6 @@ import {
 } from "./RouteCommon.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
-const DecideCheckpointRequest = Schema.Struct({
-  decision: CheckpointDecision,
-  decidedBy: Schema.String
-})
 const decodeDecideCheckpointRequest = Schema.decodeUnknownOption(DecideCheckpointRequest)
 const decodeJsonBody = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 

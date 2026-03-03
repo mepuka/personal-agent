@@ -30,8 +30,6 @@ import type {
   ChannelCapability,
   ChannelType,
   CheckpointAction,
-  CheckpointDecision,
-  CheckpointStatus,
   ComplianceStatus,
   ConcurrencyPolicy,
   ExecutionOutcome,
@@ -50,7 +48,7 @@ import type {
   ToolSourceKind
 } from "./status.js"
 import type { AiProviderName } from "./config.js"
-import { AgentRole, ModelFinishReason } from "./status.js"
+import { AgentRole, CheckpointDecision, CheckpointStatus, ModelFinishReason } from "./status.js"
 
 export const Instant = Schema.DateTimeUtc
 export type Instant = typeof Instant.Type
@@ -545,6 +543,44 @@ export interface CheckpointRecord {
   readonly consumedBy: string | null
   readonly expiresAt: Instant | null
 }
+
+export const DecideCheckpointRequest = Schema.Struct({
+  decision: CheckpointDecision,
+  decidedBy: Schema.String
+})
+export type DecideCheckpointRequest = typeof DecideCheckpointRequest.Type
+
+export const DecideCheckpointAckResponse = Schema.Struct({
+  ok: Schema.Literal(true)
+})
+export type DecideCheckpointAckResponse = typeof DecideCheckpointAckResponse.Type
+
+export const DecideCheckpointNotFoundResponse = Schema.Struct({
+  error: Schema.Literal("CheckpointNotFound"),
+  checkpointId: Schema.String
+})
+export type DecideCheckpointNotFoundResponse = typeof DecideCheckpointNotFoundResponse.Type
+
+export const DecideCheckpointAlreadyDecidedResponse = Schema.Struct({
+  error: Schema.Literal("CheckpointAlreadyDecided"),
+  checkpointId: Schema.String,
+  currentStatus: CheckpointStatus
+})
+export type DecideCheckpointAlreadyDecidedResponse =
+  typeof DecideCheckpointAlreadyDecidedResponse.Type
+
+export const DecideCheckpointExpiredResponse = Schema.Struct({
+  error: Schema.Literal("CheckpointExpired"),
+  checkpointId: Schema.String
+})
+export type DecideCheckpointExpiredResponse = typeof DecideCheckpointExpiredResponse.Type
+
+export const DecideCheckpointErrorResponse = Schema.Union([
+  DecideCheckpointNotFoundResponse,
+  DecideCheckpointAlreadyDecidedResponse,
+  DecideCheckpointExpiredResponse
+])
+export type DecideCheckpointErrorResponse = typeof DecideCheckpointErrorResponse.Type
 
 export const CheckpointReplayTurnContext = Schema.Struct({
   agentId: Schema.String,
