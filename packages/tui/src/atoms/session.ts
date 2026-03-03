@@ -43,3 +43,47 @@ export const pendingCheckpointAtom = Atom.make((get: Atom.Context): PendingCheck
     reason: last.checkpointReason ?? ""
   }
 })
+
+// --- Context usage ---
+
+export interface ContextUsage {
+  readonly system: number // percentage 0-100
+  readonly persona: number
+  readonly memory: number
+  readonly history: number
+  readonly tools: number
+  readonly totalTokens: number
+  readonly capacityTokens: number
+}
+
+export const contextUsageAtom = Atom.make<ContextUsage>({
+  system: 12,
+  persona: 4,
+  memory: 9,
+  history: 0,
+  tools: 0,
+  totalTokens: 0,
+  capacityTokens: 100000
+})
+
+export const estimatedContextAtom = Atom.make((get: Atom.Context): ContextUsage => {
+  const msgs = get(messagesAtom)
+  const tools = get(toolEventsAtom)
+  const capacity = 100000
+  const systemTokens = 12000
+  const personaTokens = 4000
+  const memoryTokens = 9000
+  const historyTokens = msgs.length * 800
+  const toolTokens = tools.length * 500
+  const total = systemTokens + personaTokens + memoryTokens + historyTokens + toolTokens
+  const pct = (n: number) => Math.round((n / capacity) * 100)
+  return {
+    system: pct(systemTokens),
+    persona: pct(personaTokens),
+    memory: pct(memoryTokens),
+    history: pct(historyTokens),
+    tools: pct(toolTokens),
+    totalTokens: total,
+    capacityTokens: capacity
+  }
+})
