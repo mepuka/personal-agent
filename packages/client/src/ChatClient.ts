@@ -1,7 +1,10 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
 import {
   ChannelHistoryResponse,
+  CheckpointNotFoundResponse,
+  CheckpointRecordResponse,
   DecideCheckpointErrorResponse,
+  ListPendingCheckpointsResponse,
   ListChannelsResponse,
   type InitializeChannelRequest
 } from "@template/domain/ports"
@@ -130,6 +133,54 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         Effect.scoped
       )
 
+    const listPendingCheckpoints = (agentId?: string) => {
+      const query = agentId !== undefined ? `?agentId=${encodeURIComponent(agentId)}` : ""
+      return httpClient.execute(
+        HttpClientRequest.get(`${baseUrl}/checkpoints/pending${query}`)
+      ).pipe(
+        Effect.flatMap((response) => response.json),
+        Effect.map((body) => {
+          const decoded = Schema.decodeUnknownOption(ListPendingCheckpointsResponse)(body)
+          return Option.isSome(decoded) ? decoded.value.items : []
+        }),
+        Effect.scoped
+      )
+    }
+
+    const getCheckpoint = (checkpointId: string) =>
+      Effect.gen(function*() {
+        const response = yield* rawHttpClient.execute(
+          HttpClientRequest.get(`${baseUrl}/checkpoints/${checkpointId}`)
+        )
+
+        const body = yield* response.json.pipe(
+          Effect.catchCause(() =>
+            response.text.pipe(
+              Effect.map((text) => ({ message: text })),
+              Effect.catchCause(() => Effect.succeed({}))
+            )
+          )
+        )
+
+        if (response.status === 404) {
+          const decodedMissing = Schema.decodeUnknownOption(CheckpointNotFoundResponse)(body)
+          if (Option.isSome(decodedMissing)) {
+            return null
+          }
+          return null
+        }
+
+        if (response.status < 200 || response.status >= 300) {
+          return null
+        }
+
+        const decoded = Schema.decodeUnknownOption(CheckpointRecordResponse)(body)
+        if (Option.isSome(decoded)) {
+          return decoded.value
+        }
+        return null
+      })
+
     const decideCheckpoint = (
       checkpointId: string,
       decision: CheckpointDecision
@@ -178,7 +229,17 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       Effect.scoped
     )
 
-    return { initialize, sendMessage, decideCheckpoint, getHistory, listChannels, deleteChannel, health } as const
+    return {
+      initialize,
+      sendMessage,
+      decideCheckpoint,
+      getHistory,
+      listChannels,
+      deleteChannel,
+      listPendingCheckpoints,
+      getCheckpoint,
+      health
+    } as const
   })
 }) {
   static layer = Layer.effect(this, this.make)

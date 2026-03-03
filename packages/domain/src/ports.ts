@@ -639,12 +639,12 @@ export const CheckpointRecordResponse = Schema.Struct({
   payloadJson: Schema.String,
   payloadHash: Schema.String,
   status: CheckpointStatus,
-  requestedAt: Instant,
-  decidedAt: Schema.Union([Instant, Schema.Null]),
+  requestedAt: Schema.DateTimeUtcFromString,
+  decidedAt: Schema.Union([Schema.DateTimeUtcFromString, Schema.Null]),
   decidedBy: Schema.Union([Schema.String, Schema.Null]),
-  consumedAt: Schema.Union([Instant, Schema.Null]),
+  consumedAt: Schema.Union([Schema.DateTimeUtcFromString, Schema.Null]),
   consumedBy: Schema.Union([Schema.String, Schema.Null]),
-  expiresAt: Schema.Union([Instant, Schema.Null])
+  expiresAt: Schema.Union([Schema.DateTimeUtcFromString, Schema.Null])
 })
 export type CheckpointRecordResponse = typeof CheckpointRecordResponse.Type
 
