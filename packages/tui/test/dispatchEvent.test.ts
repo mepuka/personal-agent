@@ -298,7 +298,8 @@ describe("dispatchEvent", () => {
     expect(tools[0]).toMatchObject({
       status: "completed",
       outputJson: "{\"result\": \"found\"}",
-      isError: false
+      isError: false,
+      inputJson: "{}"
     })
   })
 
@@ -327,7 +328,8 @@ describe("dispatchEvent", () => {
     expect(tools[0]).toMatchObject({
       status: "completed",
       outputJson: "{\"error\": \"boom\"}",
-      isError: true
+      isError: true,
+      inputJson: "{}"
     })
   })
 

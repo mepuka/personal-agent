@@ -15,7 +15,7 @@ export function StatusBar() {
   const checkpoint = useAtomValue(pendingCheckpointAtom)
   const { dot, color: dotColor } = connectionDot(status)
 
-  const shortId = channelId.length > 8 ? channelId.slice(0, 8) : channelId
+  const shortId = channelId.startsWith("channel:") ? channelId.slice(8, 16) : channelId.slice(0, 8)
   const shortcuts = checkpoint
     ? "^Y approve  ^N reject  ^D defer"
     : "^S sessions  ^M memory  ^K cmd"

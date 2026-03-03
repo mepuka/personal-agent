@@ -11,11 +11,11 @@ const SEGMENT_COLORS: Record<string, string> = {
 }
 
 const SEGMENTS: ReadonlyArray<{ key: keyof ContextUsage & string; label: string }> = [
-  { key: "system", label: "system" },
-  { key: "persona", label: "persona" },
-  { key: "memory", label: "memory" },
-  { key: "history", label: "history" },
-  { key: "tools", label: "tools" }
+  { key: "system", label: "sys" },
+  { key: "persona", label: "per" },
+  { key: "memory", label: "mem" },
+  { key: "history", label: "his" },
+  { key: "tools", label: "tls" }
 ]
 
 const formatTokens = (n: number): string =>
@@ -27,7 +27,7 @@ const summaryColor = (pct: number): string =>
 export function ContextBar() {
   const usage = useAtomValue(estimatedContextAtom)
   const totalPct = usage.system + usage.persona + usage.memory + usage.history + usage.tools
-  const barWidth = 12
+  const barWidth = 6
   const summaryFilled = Math.round((totalPct / 100) * barWidth)
 
   return (
@@ -35,24 +35,23 @@ export function ContextBar() {
       <text content={` Context (${totalPct}%)`} fg={theme.accent} />
       {SEGMENTS.filter(({ key }) => (usage[key] as number) > 0).map(({ key, label }, i, visible) => {
         const pct = usage[key] as number
-        const filled = Math.round((pct / 100) * (barWidth - 2))
-        const empty = (barWidth - 2) - filled
+        const filled = Math.round((pct / 100) * barWidth)
+        const empty = barWidth - filled
         const prefix = i < visible.length - 1 ? " \u251C" : " \u2514"
         return (
           <text
             key={key}
-            content={`${prefix} ${label.padEnd(9)}${"\u2588".repeat(filled)}${"\u2591".repeat(empty)} ${String(pct).padStart(2)}%`}
+            content={`${prefix} ${label} ${"\u2588".repeat(filled)}${"\u2591".repeat(empty)} ${pct}%`}
             fg={SEGMENT_COLORS[key] ?? theme.textMuted}
           />
         )
       })}
-      <text content={` ${"\u2500".repeat(barWidth + 6)}`} fg={theme.border} />
       <text
         content={`  ${"\u2588".repeat(summaryFilled)}${"\u2591".repeat(barWidth - summaryFilled)}`}
         fg={summaryColor(totalPct)}
       />
       <text
-        content={`  ${formatTokens(usage.totalTokens)} / ${formatTokens(usage.capacityTokens)} tokens`}
+        content={`  ${formatTokens(usage.totalTokens)} / ${formatTokens(usage.capacityTokens)}`}
         fg={theme.textMuted}
       />
     </box>

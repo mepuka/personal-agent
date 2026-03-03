@@ -42,7 +42,8 @@ const updateOrAppendToolEvent = (
   const next = [...events]
   next[index] = {
     ...previous,
-    ...event
+    ...event,
+    inputJson: event.inputJson || previous.inputJson
   }
   return next
 }

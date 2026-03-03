@@ -15,7 +15,7 @@ export function SidePanel() {
   const msgCount = useAtomValue(messageCountAtom)
   const toolEvents = useAtomValue(toolEventsAtom)
   const { dot, color: dotColor } = connectionDot(status)
-  const shortId = channelId.length > 8 ? channelId.slice(0, 8) : channelId
+  const shortId = channelId.startsWith("channel:") ? channelId.slice(8, 16) : channelId.slice(0, 8)
 
   return (
     <box

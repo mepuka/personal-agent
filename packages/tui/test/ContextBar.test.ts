@@ -13,7 +13,7 @@ import type { ChatMessage, ToolEvent } from "../src/types.js"
 const renderSegment = (label: string, pct: number, barWidth: number): string => {
   const filled = Math.round((pct / 100) * barWidth)
   const empty = barWidth - filled
-  return `${label.padEnd(10)}${"█".repeat(filled)}${"░".repeat(empty)}  ${pct}%`
+  return `${label} ${"█".repeat(filled)}${"░".repeat(empty)} ${pct}%`
 }
 
 const totalPct = (usage: ContextUsage): number =>
@@ -34,8 +34,8 @@ describe("ContextBar helpers", () => {
   }
 
   it("renders a segment bar", () => {
-    const result = renderSegment("system", 12, 8)
-    expect(result).toBe("system    █░░░░░░░  12%")
+    const result = renderSegment("sys", 12, 6)
+    expect(result).toBe("sys █░░░░░ 12%")
   })
 
   it("calculates total percentage", () => {
