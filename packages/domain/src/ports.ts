@@ -28,7 +28,6 @@ import type { ExternalServiceRecord, IntegrationRecord } from "./integration.js"
 import type {
   AuthorizationDecision,
   ChannelCapability,
-  ChannelType,
   CheckpointAction,
   ComplianceStatus,
   ConcurrencyPolicy,
@@ -48,7 +47,13 @@ import type {
   ToolSourceKind
 } from "./status.js"
 import type { AiProviderName } from "./config.js"
-import { AgentRole, CheckpointDecision, CheckpointStatus, ModelFinishReason } from "./status.js"
+import {
+  AgentRole,
+  ChannelType,
+  CheckpointDecision,
+  CheckpointStatus,
+  ModelFinishReason
+} from "./status.js"
 
 export const Instant = Schema.DateTimeUtc
 export type Instant = typeof Instant.Type
@@ -507,6 +512,18 @@ export const ListChannelsResponse = Schema.Struct({
   totalCount: Schema.Number
 })
 export type ListChannelsResponse = typeof ListChannelsResponse.Type
+
+export const ChannelAttachTarget = Schema.Struct({
+  sessionId: Schema.String
+})
+export type ChannelAttachTarget = typeof ChannelAttachTarget.Type
+
+export const InitializeChannelRequest = Schema.Struct({
+  channelType: ChannelType,
+  agentId: Schema.String,
+  attachTo: Schema.optionalKey(ChannelAttachTarget)
+})
+export type InitializeChannelRequest = typeof InitializeChannelRequest.Type
 
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>

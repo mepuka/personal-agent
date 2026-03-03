@@ -1,5 +1,9 @@
 import { type TurnFailureCode, TurnStreamEvent } from "@template/domain/events"
-import { DecideCheckpointErrorResponse, ListChannelsResponse } from "@template/domain/ports"
+import {
+  DecideCheckpointErrorResponse,
+  ListChannelsResponse,
+  type InitializeChannelRequest
+} from "@template/domain/ports"
 import type { CheckpointDecision } from "@template/domain/status"
 import {
   classifyTurnFailureText,
@@ -63,21 +67,24 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
       channelId: string,
       agentId: string,
       options?: ChannelInitializeOptions
-    ) =>
-      HttpClientRequest.bodyJsonUnsafe(
+    ) => {
+      const payload: InitializeChannelRequest = {
+        channelType: "CLI",
+        agentId,
+        ...(options?.attachTo !== undefined
+          ? { attachTo: options.attachTo }
+          : {})
+      }
+
+      return HttpClientRequest.bodyJsonUnsafe(
         HttpClientRequest.post(`${baseUrl}/channels/${channelId}/initialize`),
-        {
-          channelType: "CLI",
-          agentId,
-          ...(options?.attachTo !== undefined
-            ? { attachTo: options.attachTo }
-            : {})
-        }
+        payload
       ).pipe(
         (request) => httpClient.execute(request),
         Effect.asVoid,
         Effect.scoped
       )
+    }
 
     const sendMessage = (channelId: string, content: string) =>
       HttpClientRequest.bodyJsonUnsafe(

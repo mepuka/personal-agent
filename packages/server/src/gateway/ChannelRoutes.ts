@@ -1,7 +1,7 @@
 import { AiProviderName } from "@template/domain/config"
 import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
-import { ChannelType } from "@template/domain/status"
+import { InitializeChannelRequest } from "@template/domain/ports"
 import { Effect, Layer, Option, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -14,14 +14,6 @@ import {
   sseStreamResponse
 } from "./RouteCommon.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
-
-const InitializeChannelRequest = Schema.Struct({
-  channelType: Schema.Union([ChannelType, Schema.Undefined]),
-  agentId: Schema.Union([Schema.String, Schema.Undefined]),
-  attachTo: Schema.optionalKey(Schema.Struct({
-    sessionId: Schema.String
-  }))
-})
 
 const SendMessageRequest = Schema.Struct({
   content: Schema.String,
@@ -117,8 +109,8 @@ const initializeChannel = HttpRouter.add(
       const client = makeClient(channelId)
 
       yield* client.initialize({
-        channelType: decodedBody.value.channelType ?? "CLI",
-        agentId: decodedBody.value.agentId ?? "agent:bootstrap",
+        channelType: decodedBody.value.channelType,
+        agentId: decodedBody.value.agentId,
         userId: "user:cli:local",
         ...(decodedBody.value.attachTo !== undefined
           ? { attachTo: decodedBody.value.attachTo }
