@@ -1,8 +1,8 @@
-import { AiProviderName } from "@template/domain/config"
 import type { TurnFailureCode } from "@template/domain/events"
 import type { ChannelId } from "@template/domain/ids"
 import {
   InitializeChannelRequest,
+  SendChannelMessageRequest,
   SetChannelModelPreferenceRequest
 } from "@template/domain/ports"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -18,21 +18,8 @@ import {
 } from "./RouteCommon.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
-const SendMessageRequest = Schema.Struct({
-  content: Schema.String,
-  model: Schema.optionalKey(Schema.Struct({
-    provider: AiProviderName,
-    modelId: Schema.String
-  })),
-  generationConfig: Schema.optionalKey(Schema.Struct({
-    temperature: Schema.optionalKey(Schema.Number),
-    maxOutputTokens: Schema.optionalKey(Schema.Number),
-    topP: Schema.optionalKey(Schema.Number)
-  }))
-})
-
 const decodeInitializeChannelRequest = Schema.decodeUnknownOption(InitializeChannelRequest)
-const decodeSendMessageRequest = Schema.decodeUnknownOption(SendMessageRequest)
+const decodeSendMessageRequest = Schema.decodeUnknownOption(SendChannelMessageRequest)
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)

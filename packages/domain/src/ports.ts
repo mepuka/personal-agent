@@ -535,6 +535,13 @@ export const SetChannelModelPreferenceRequest = Schema.Struct({
 })
 export type SetChannelModelPreferenceRequest = typeof SetChannelModelPreferenceRequest.Type
 
+export const SendChannelMessageRequest = Schema.Struct({
+  content: Schema.String,
+  model: Schema.optionalKey(ModelOverrideSchema),
+  generationConfig: Schema.optionalKey(GenerationConfigOverrideSchema)
+})
+export type SendChannelMessageRequest = typeof SendChannelMessageRequest.Type
+
 export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
