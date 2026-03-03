@@ -17,7 +17,10 @@ import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 const InitializeChannelRequest = Schema.Struct({
   channelType: Schema.Union([ChannelType, Schema.Undefined]),
-  agentId: Schema.Union([Schema.String, Schema.Undefined])
+  agentId: Schema.Union([Schema.String, Schema.Undefined]),
+  attachTo: Schema.optionalKey(Schema.Struct({
+    sessionId: Schema.String
+  }))
 })
 
 const SendMessageRequest = Schema.Struct({
@@ -103,7 +106,8 @@ const initializeChannel = HttpRouter.add(
 
       const normalizedBody = {
         channelType: rawBody.channelType ?? "CLI",
-        agentId: rawBody.agentId ?? "agent:bootstrap"
+        agentId: rawBody.agentId ?? "agent:bootstrap",
+        ...("attachTo" in rawBody ? { attachTo: rawBody.attachTo } : {})
       }
       const decodedBody = decodeInitializeChannelRequest(normalizedBody)
       if (Option.isNone(decodedBody)) {
@@ -115,12 +119,30 @@ const initializeChannel = HttpRouter.add(
       yield* client.initialize({
         channelType: decodedBody.value.channelType ?? "CLI",
         agentId: decodedBody.value.agentId ?? "agent:bootstrap",
-        userId: "user:cli:local"
+        userId: "user:cli:local",
+        ...(decodedBody.value.attachTo !== undefined
+          ? { attachTo: decodedBody.value.attachTo }
+          : {})
       })
 
       return yield* HttpServerResponse.json({ ok: true })
     }).pipe(
       Effect.withSpan("ChannelRoutes.initializeChannel"),
+      Effect.catchTag("SessionNotFound", (error) =>
+        HttpServerResponse.json(
+          { error: "SessionNotFound", sessionId: error.sessionId },
+          { status: 404 }
+        )),
+      Effect.catchTag("ChannelTypeMismatch", (error) =>
+        HttpServerResponse.json(
+          {
+            error: "ChannelTypeMismatch",
+            channelId: error.channelId,
+            existingType: error.existingType,
+            requestedType: error.requestedType
+          },
+          { status: 409 }
+        )),
       Effect.catchCause(() => internalServerError())
     )
 )

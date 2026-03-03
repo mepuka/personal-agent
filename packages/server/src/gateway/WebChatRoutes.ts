@@ -6,7 +6,7 @@
  *
  * Protocol:
  *   1. Server sends: {"type":"connected"}
- *   2. Client sends: {"type":"init","agentId":"agent:bootstrap","userId":"user:web:anon"}
+ *   2. Client sends: {"type":"init","agentId":"agent:bootstrap","userId":"user:web:anon","attachTo":{"sessionId":"session:shared"}}
  *   3. Server sends: {"type":"initialized"}
  *   4. Client sends: {"type":"message","content":"hello","threadId":"optional"}
  *   5. Server streams: turn events as JSON frames
@@ -27,7 +27,10 @@ import { encodeTurnEventJson, withFailedTurnEvent } from "./TurnStreamTransport.
 const InitFrameSchema = Schema.Struct({
   type: Schema.Literal("init"),
   agentId: Schema.optional(Schema.String),
-  userId: Schema.optional(Schema.String)
+  userId: Schema.optional(Schema.String),
+  attachTo: Schema.optional(Schema.Struct({
+    sessionId: Schema.String
+  }))
 })
 
 const MessageFrameSchema = Schema.Struct({
@@ -83,6 +86,9 @@ interface InitFrame {
   readonly type: "init"
   readonly agentId: string
   readonly userId: string
+  readonly attachTo: {
+    readonly sessionId: string
+  } | undefined
 }
 
 interface MessageFrame {
@@ -109,7 +115,8 @@ export const parseFrame = (data: string | Uint8Array): ClientFrame | null => {
     return {
       type: "init" as const,
       agentId: frame.agentId ?? "agent:bootstrap",
-      userId: frame.userId ?? "user:web:anon"
+      userId: frame.userId ?? "user:web:anon",
+      attachTo: frame.attachTo
     }
   }
   return {
@@ -174,7 +181,10 @@ const wsChat = HttpRouter.add(
           return client.initialize({
             channelType: "WebChat",
             agentId: frame.agentId,
-            userId
+            userId,
+            ...(frame.attachTo !== undefined
+              ? { attachTo: frame.attachTo }
+              : {})
           }).pipe(
             Effect.andThen(() => {
               initialized = true

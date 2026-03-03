@@ -1,5 +1,5 @@
 import { ChannelNotFound } from "@template/domain/errors"
-import type { AgentId, ChannelId } from "@template/domain/ids"
+import type { AgentId, ChannelId, SessionId } from "@template/domain/ids"
 import { Effect, Stream } from "effect"
 import { Entity } from "effect/unstable/cluster"
 import { ChannelCore } from "../ChannelCore.js"
@@ -24,7 +24,14 @@ export const layer = CLIAdapterEntity.toLayer(Effect.gen(function*() {
         channelId: String(request.address.entityId) as ChannelId,
         channelType: "CLI",
         agentId: request.payload.agentId as AgentId,
-        capabilities: ["SendText"]
+        capabilities: ["SendText"],
+        ...(request.payload.attachTo
+          ? {
+              attachTo: {
+                sessionId: request.payload.attachTo.sessionId as SessionId
+              }
+            }
+          : {})
       }).pipe(
         Effect.withSpan("CLIAdapterEntity.initialize"),
         Effect.annotateLogs({ module: "CLIAdapterEntity", entityId: request.address.entityId })

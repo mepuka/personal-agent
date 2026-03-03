@@ -45,6 +45,12 @@ export interface ChannelSummary {
   readonly messageCount: number
 }
 
+export interface ChannelInitializeOptions {
+  readonly attachTo?: {
+    readonly sessionId: string
+  }
+}
+
 export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatClient", {
   make: Effect.gen(function*() {
     const baseUrl = yield* Config.string("PA_SERVER_URL").pipe(
@@ -63,10 +69,20 @@ export class ChatClient extends ServiceMap.Service<ChatClient>()("client/ChatCli
         Stream.map((event) => event.data)
       )
 
-    const initialize = (channelId: string, agentId: string) =>
+    const initialize = (
+      channelId: string,
+      agentId: string,
+      options?: ChannelInitializeOptions
+    ) =>
       HttpClientRequest.bodyJsonUnsafe(
         HttpClientRequest.post(`${baseUrl}/channels/${channelId}/initialize`),
-        { channelType: "CLI", agentId }
+        {
+          channelType: "CLI",
+          agentId,
+          ...(options?.attachTo !== undefined
+            ? { attachTo: options.attachTo }
+            : {})
+        }
       ).pipe(
         (request) => httpClient.execute(request),
         Effect.asVoid,

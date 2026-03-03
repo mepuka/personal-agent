@@ -237,6 +237,21 @@ describe("WebChatRoutes helpers", () => {
       })
     })
 
+    it("parses init frame with attachTo session", () => {
+      const result = parseFrame(JSON.stringify({
+        type: "init",
+        agentId: "agent:test",
+        userId: "user:test",
+        attachTo: { sessionId: "session:shared" }
+      }))
+      expect(result).toEqual({
+        type: "init",
+        agentId: "agent:test",
+        userId: "user:test",
+        attachTo: { sessionId: "session:shared" }
+      })
+    })
+
     it("parses init frame with defaults", () => {
       const result = parseFrame(JSON.stringify({ type: "init" }))
       expect(result).toEqual({

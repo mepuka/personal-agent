@@ -973,4 +973,95 @@ describe("ChannelRoutes e2e", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("initialize supports attachTo so channels can share session history", () => {
+    const dbPath = testDatabasePath("e2e-init-attach-to-session")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelA = `channel:${crypto.randomUUID()}` as ChannelId
+      const channelB = `channel:${crypto.randomUUID()}` as ChannelId
+
+      const initAReq = yield* HttpClientRequest.post(`/channels/${channelA}/initialize`).pipe(
+        HttpClientRequest.bodyJson({ channelType: "CLI", agentId: "agent:bootstrap" })
+      )
+      const initAResp = yield* client.execute(initAReq)
+      expect(initAResp.status).toBe(200)
+
+      const statusAResp = yield* client.get(`/channels/${channelA}/status`)
+      expect(statusAResp.status).toBe(200)
+      const statusA = (yield* statusAResp.json) as {
+        readonly activeSessionId: SessionId
+      }
+
+      const initBReq = yield* HttpClientRequest.post(`/channels/${channelB}/initialize`).pipe(
+        HttpClientRequest.bodyJson({
+          channelType: "CLI",
+          agentId: "agent:bootstrap",
+          attachTo: { sessionId: statusA.activeSessionId }
+        })
+      )
+      const initBResp = yield* client.execute(initBReq)
+      expect(initBResp.status).toBe(200)
+
+      const statusBResp = yield* client.get(`/channels/${channelB}/status`)
+      expect(statusBResp.status).toBe(200)
+      const statusB = (yield* statusBResp.json) as {
+        readonly activeSessionId: SessionId
+      }
+      expect(statusB.activeSessionId).toBe(statusA.activeSessionId)
+
+      const sendAReq = yield* HttpClientRequest.post(`/channels/${channelA}/messages`).pipe(
+        HttpClientRequest.bodyJson({ content: "shared history message a" })
+      )
+      const sendABody = yield* client.execute(sendAReq).pipe(
+        Effect.flatMap((response) => response.text)
+      )
+
+      const sendBReq = yield* HttpClientRequest.post(`/channels/${channelB}/messages`).pipe(
+        HttpClientRequest.bodyJson({ content: "shared history message b" })
+      )
+      const sendBBody = yield* client.execute(sendBReq).pipe(
+        Effect.flatMap((response) => response.text)
+      )
+
+      expect(sendABody).toContain(`"sessionId":"${statusA.activeSessionId}"`)
+      expect(sendBBody).toContain(`"sessionId":"${statusA.activeSessionId}"`)
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("initialize returns 404 when attachTo session does not exist", () => {
+    const dbPath = testDatabasePath("e2e-init-attach-missing-session")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const channelId = `channel:${crypto.randomUUID()}` as ChannelId
+      const missingSessionId = "session:missing-route-attach" as SessionId
+
+      const request = yield* HttpClientRequest.post(`/channels/${channelId}/initialize`).pipe(
+        HttpClientRequest.bodyJson({
+          channelType: "CLI",
+          agentId: "agent:bootstrap",
+          attachTo: { sessionId: missingSessionId }
+        })
+      )
+      const response = yield* client.execute(request)
+      expect(response.status).toBe(404)
+      const body = (yield* response.json) as Record<string, unknown>
+      expect(body.error).toBe("SessionNotFound")
+      expect(body.sessionId).toBe(missingSessionId)
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })

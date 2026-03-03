@@ -459,6 +459,9 @@ describe("ChannelCore", () => {
       }).pipe(Effect.flip)
 
       expect(error._tag).toBe("ChannelTypeMismatch")
+      if (error._tag !== "ChannelTypeMismatch") {
+        throw new Error(`unexpected error tag: ${error._tag}`)
+      }
       expect(error.channelId).toBe(channelId)
       expect(error.existingType).toBe("CLI")
       expect(error.requestedType).toBe("WebChat")
@@ -491,6 +494,9 @@ describe("ChannelCore", () => {
       }).pipe(Effect.flip)
 
       expect(error._tag).toBe("ChannelTypeMismatch")
+      if (error._tag !== "ChannelTypeMismatch") {
+        throw new Error(`unexpected error tag: ${error._tag}`)
+      }
       expect(error.channelId).toBe(channelId)
       expect(error.existingType).toBe("agent:a")
       expect(error.requestedType).toBe("agent:b")
@@ -534,6 +540,81 @@ describe("ChannelCore", () => {
 
       expect(historyA.length).toBeGreaterThan(0)
       expect(historyB.length).toBe(0) // No messages on channel B
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("initializeChannel can attach a second channel to an existing session", () => {
+    const dbPath = testDatabasePath("core-attach-session")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const channelPort = yield* ChannelPortSqlite
+      const channelA = "channel:attach:a" as ChannelId
+      const channelB = "channel:attach:b" as ChannelId
+
+      yield* core.initializeChannel({
+        channelId: channelA,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"]
+      })
+
+      const first = yield* channelPort.get(channelA)
+      expect(first).not.toBeNull()
+
+      yield* core.initializeChannel({
+        channelId: channelB,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"],
+        attachTo: { sessionId: first!.activeSessionId }
+      })
+
+      const second = yield* channelPort.get(channelB)
+      expect(second).not.toBeNull()
+      expect(second!.activeSessionId).toBe(first!.activeSessionId)
+      expect(second!.activeConversationId).toBe(first!.activeConversationId)
+
+      const payloadA = yield* core.buildTurnPayload({
+        channelId: channelA,
+        content: "shared history",
+        contentBlocks: [{ contentBlockType: "TextBlock" as const, text: "shared history" }],
+        userId: "user:cli:local"
+      })
+      yield* core.processTurn(payloadA).pipe(Stream.runCollect)
+
+      const historyA = yield* core.getHistory(channelA)
+      const historyB = yield* core.getHistory(channelB)
+
+      expect(historyA.length).toBeGreaterThan(0)
+      expect(historyB).toEqual(historyA)
+    }).pipe(
+      Effect.provide(makeTestLayer(dbPath)),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("initializeChannel attachTo fails when session does not exist", () => {
+    const dbPath = testDatabasePath("core-attach-missing-session")
+    return Effect.gen(function*() {
+      const core = yield* ChannelCore
+      const missingSessionId = "session:missing-attach-target" as SessionId
+
+      const error = yield* core.initializeChannel({
+        channelId: "channel:attach:missing" as ChannelId,
+        channelType: "CLI",
+        agentId: "agent:bootstrap" as AgentId,
+        capabilities: ["SendText"],
+        attachTo: { sessionId: missingSessionId }
+      }).pipe(Effect.flip)
+
+      expect(error._tag).toBe("SessionNotFound")
+      if (error._tag !== "SessionNotFound") {
+        throw new Error(`unexpected error tag: ${error._tag}`)
+      }
+      expect(error.sessionId).toBe(missingSessionId)
     }).pipe(
       Effect.provide(makeTestLayer(dbPath)),
       Effect.ensuring(cleanupDatabase(dbPath))

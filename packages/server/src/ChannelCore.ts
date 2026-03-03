@@ -1,4 +1,4 @@
-import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
+import { ChannelNotFound, ChannelTypeMismatch, SessionNotFound } from "@template/domain/errors"
 import { CheckpointAlreadyDecided } from "@template/domain/errors"
 import type { CheckpointExpired, CheckpointNotFound } from "@template/domain/errors"
 import type { TurnStreamEvent } from "@template/domain/events"
@@ -274,6 +274,9 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         readonly channelType: ChannelType
         readonly agentId: AgentId
         readonly capabilities: ReadonlyArray<ChannelCapability>
+        readonly attachTo?: {
+          readonly sessionId: SessionId
+        }
       }) =>
         Effect.gen(function*() {
           const existing = yield* channelPort.get(params.channelId)
@@ -296,19 +299,31 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
             return
           }
 
-          const sessionId = toSessionId(params.channelId)
-          const conversationId = toConversationId(params.channelId)
           const now = yield* DateTime.now
 
           yield* ensureAgentState(params.agentId)
 
-          const profile = yield* agentConfig.getAgent(params.agentId as string).pipe(Effect.orDie)
-          yield* sessionTurnPort.startSession({
-            sessionId,
-            conversationId,
-            tokenCapacity: profile.runtime.tokenBudget,
-            tokensUsed: 0
-          })
+          let sessionId: SessionId
+          let conversationId: ConversationId
+
+          if (params.attachTo !== undefined) {
+            const attachedSession = yield* sessionTurnPort.getSession(params.attachTo.sessionId)
+            if (attachedSession === null) {
+              return yield* new SessionNotFound({ sessionId: params.attachTo.sessionId })
+            }
+            sessionId = attachedSession.sessionId
+            conversationId = attachedSession.conversationId
+          } else {
+            sessionId = toSessionId(params.channelId)
+            conversationId = toConversationId(params.channelId)
+            const profile = yield* agentConfig.getAgent(params.agentId as string).pipe(Effect.orDie)
+            yield* sessionTurnPort.startSession({
+              sessionId,
+              conversationId,
+              tokenCapacity: profile.runtime.tokenBudget,
+              tokensUsed: 0
+            })
+          }
 
           yield* channelPort.create({
             channelId: params.channelId,

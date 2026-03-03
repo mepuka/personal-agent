@@ -5,7 +5,7 @@
  * any client can talk to any adapter through a single, consistent contract.
  */
 import { AiProviderName } from "@template/domain/config"
-import { ChannelNotFound, ChannelTypeMismatch } from "@template/domain/errors"
+import { ChannelNotFound, ChannelTypeMismatch, SessionNotFound } from "@template/domain/errors"
 import { TurnStreamEvent } from "@template/domain/events"
 import { TurnRecord } from "@template/domain/ports"
 import { ChannelCapability, ChannelType } from "@template/domain/status"
@@ -29,6 +29,10 @@ const GenerationConfigOverrideFields = Schema.Struct({
   topP: Schema.optionalKey(Schema.Number)
 })
 
+const AttachToFields = Schema.Struct({
+  sessionId: Schema.String
+})
+
 /** Status snapshot returned by `GetStatusRpc`. */
 export const ChannelStatusSchema = Schema.Struct({
   channelId: Schema.String,
@@ -49,16 +53,18 @@ export const ChannelStatusSchema = Schema.Struct({
  * One-time channel bootstrap. Persisted and idempotent — safe to replay.
  *
  * Payload carries the `agentId` and desired `channelType` so the adapter can
- * create the underlying channel, session, and conversation records.
+ * create the underlying channel. `attachTo` optionally reuses an existing
+ * session for multi-channel fan-in.
  */
 export const InitializeRpc = Rpc.make("initialize", {
   payload: {
     channelType: ChannelType,
     agentId: Schema.String,
-    userId: Schema.String
+    userId: Schema.String,
+    attachTo: Schema.optionalKey(AttachToFields)
   },
   success: Schema.Void,
-  error: ChannelTypeMismatch,
+  error: Schema.Union([ChannelTypeMismatch, SessionNotFound]),
   primaryKey: ({ agentId }) => `initialize:${agentId}`
 }).annotate(ClusterSchema.Persisted, true)
 
