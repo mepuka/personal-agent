@@ -4,26 +4,13 @@ import { Effect, Layer, Schema } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
+import {
+  badRequest,
+  extractPathParam,
+  internalServerError,
+  sseStreamResponse
+} from "./RouteCommon.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const extractParam = (inputUrl: string, index: number): string => {
-  const url = new URL(inputUrl, "http://localhost")
-  const parts = url.pathname.split("/").filter(Boolean)
-  return parts[index] ?? ""
-}
-
-const badRequest = (message: string) =>
-  HttpServerResponse.json(
-    {
-      error: "BadRequest",
-      message
-    },
-    { status: 400 }
-  )
 
 const DecideCheckpointRequest = Schema.Struct({
   decision: CheckpointDecision,
@@ -48,12 +35,7 @@ const listPending = HttpRouter.add(
       return yield* HttpServerResponse.json({ items: checkpoints, totalCount: checkpoints.length })
     }).pipe(
       Effect.withSpan("CheckpointRoutes.listPending"),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -63,7 +45,7 @@ const getCheckpoint = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const channelCore = yield* ChannelCore
-      const checkpointId = extractParam(request.url, 1) as CheckpointId
+      const checkpointId = extractPathParam(request.url, 1) as CheckpointId
       if (checkpointId.length === 0) {
         return yield* badRequest("Missing checkpointId")
       }
@@ -77,12 +59,7 @@ const getCheckpoint = HttpRouter.add(
       return yield* HttpServerResponse.json(checkpoint)
     }).pipe(
       Effect.withSpan("CheckpointRoutes.getCheckpoint"),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -92,7 +69,7 @@ const decideCheckpoint = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const channelCore = yield* ChannelCore
-      const checkpointId = extractParam(request.url, 1) as CheckpointId
+      const checkpointId = extractPathParam(request.url, 1) as CheckpointId
       if (checkpointId.length === 0) {
         return yield* badRequest("Missing checkpointId")
       }
@@ -138,13 +115,7 @@ const decideCheckpoint = HttpRouter.add(
         })
       )
 
-      return HttpServerResponse.stream(sseStream, {
-        contentType: "text/event-stream",
-        headers: {
-          "cache-control": "no-cache",
-          connection: "keep-alive"
-        }
-      })
+      return sseStreamResponse(sseStream)
     }).pipe(
       Effect.withSpan("CheckpointRoutes.decideCheckpoint"),
       Effect.catchTag("CheckpointNotFound", (error) =>
@@ -165,12 +136,7 @@ const decideCheckpoint = HttpRouter.add(
           { status: 410 }
         )
       ),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 

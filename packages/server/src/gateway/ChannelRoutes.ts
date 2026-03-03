@@ -7,17 +7,13 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { ChannelCore } from "../ChannelCore.js"
 import { CLIAdapterEntity } from "../entities/CLIAdapterEntity.js"
+import {
+  badRequest,
+  extractPathParam,
+  internalServerError,
+  sseStreamResponse
+} from "./RouteCommon.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const extractParam = (inputUrl: string, index: number): string => {
-  const url = new URL(inputUrl, "http://localhost")
-  const parts = url.pathname.split("/").filter(Boolean)
-  return parts[index] ?? ""
-}
 
 const InitializeChannelRequest = Schema.Struct({
   channelType: Schema.Union([ChannelType, Schema.Undefined]),
@@ -39,15 +35,6 @@ const SendMessageRequest = Schema.Struct({
 
 const decodeInitializeChannelRequest = Schema.decodeUnknownOption(InitializeChannelRequest)
 const decodeSendMessageRequest = Schema.decodeUnknownOption(SendMessageRequest)
-
-const badRequest = (message: string) =>
-  HttpServerResponse.json(
-    {
-      error: "BadRequest",
-      message
-    },
-    { status: 400 }
-  )
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -108,7 +95,7 @@ const initializeChannel = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       const rawBody = yield* request.json
       if (!isRecord(rawBody)) {
         return yield* badRequest("Expected JSON object payload")
@@ -134,12 +121,7 @@ const initializeChannel = HttpRouter.add(
       return yield* HttpServerResponse.json({ ok: true })
     }).pipe(
       Effect.withSpan("ChannelRoutes.initializeChannel"),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -149,7 +131,7 @@ const sendMessage = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       const rawBody = yield* request.json
       const decodedBody = decodeSendMessageRequest(rawBody)
       if (Option.isNone(decodedBody)) {
@@ -173,13 +155,7 @@ const sendMessage = HttpRouter.add(
         )
       )
 
-      return HttpServerResponse.stream(stream, {
-        contentType: "text/event-stream",
-        headers: {
-          "cache-control": "no-cache",
-          connection: "keep-alive"
-        }
-      })
+      return sseStreamResponse(stream)
     }).pipe(
       Effect.withSpan("ChannelRoutes.sendMessage")
     )
@@ -191,7 +167,7 @@ const getHistory = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       const client = makeClient(channelId)
 
       const turns = yield* client.getHistory({})
@@ -204,12 +180,7 @@ const getHistory = HttpRouter.add(
           { error: "ChannelNotFound", channelId: error.channelId },
           { status: 404 }
         )),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -219,7 +190,7 @@ const getStatus = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       const client = makeClient(channelId)
 
       const status = yield* client.getStatus({})
@@ -232,12 +203,7 @@ const getStatus = HttpRouter.add(
           { error: "ChannelNotFound", channelId: error.channelId },
           { status: 404 }
         )),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -247,7 +213,7 @@ const deleteChannel = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const channelCore = yield* ChannelCore
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       if (channelId.length === 0) {
         return yield* badRequest("Missing channelId")
       }
@@ -260,12 +226,7 @@ const deleteChannel = HttpRouter.add(
           { error: "ChannelNotFound", channelId: error.channelId },
           { status: 404 }
         )),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 
@@ -291,7 +252,7 @@ const setModelPreference = HttpRouter.add(
   (request) =>
     Effect.gen(function*() {
       const makeClient = yield* CLIAdapterEntity.client
-      const channelId = extractParam(request.url, 1)
+      const channelId = extractPathParam(request.url, 1)
       const rawBody = yield* request.json
       const decodedBody = decodeSetModelPreferenceRequest(rawBody)
       if (Option.isNone(decodedBody)) {
@@ -311,12 +272,7 @@ const setModelPreference = HttpRouter.add(
           { error: "ChannelNotFound", channelId: error.channelId },
           { status: 404 }
         )),
-      Effect.catchCause(() =>
-        HttpServerResponse.json(
-          { error: "InternalServerError" },
-          { status: 500 }
-        )
-      )
+      Effect.catchCause(() => internalServerError())
     )
 )
 

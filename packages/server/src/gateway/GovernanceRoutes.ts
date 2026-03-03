@@ -6,21 +6,11 @@ import { Effect, Layer } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../PortTags.js"
-
-const extractParam = (inputUrl: string, index: number): string => {
-  const url = new URL(inputUrl, "http://localhost")
-  const parts = url.pathname.split("/").filter(Boolean)
-  return parts[index] ?? ""
-}
-
-const badRequest = (message: string) =>
-  HttpServerResponse.json(
-    {
-      error: "BadRequest",
-      message
-    },
-    { status: 400 }
-  )
+import {
+  badRequest,
+  extractPathParam,
+  internalServerError
+} from "./RouteCommon.js"
 
 const parseLimit = (url: URL): number | null => {
   const raw = url.searchParams.get("limit")
@@ -93,7 +83,7 @@ export const handleListSessionToolInvocations = (
 ) =>
   Effect.gen(function*() {
     const parsedUrl = new URL(requestUrl, "http://localhost")
-    const sessionIdRaw = extractParam(requestUrl, 2)
+    const sessionIdRaw = extractPathParam(requestUrl, 2)
     if (sessionIdRaw.length === 0) {
       return yield* badRequest("Missing sessionId")
     }
@@ -150,12 +140,7 @@ export const handleListSessionToolInvocations = (
     })
   }).pipe(
     Effect.withSpan("GovernanceRoutes.listSessionToolInvocations"),
-    Effect.catchCause(() =>
-      HttpServerResponse.json(
-        { error: "InternalServerError" },
-        { status: 500 }
-      )
-    )
+    Effect.catchCause(() => internalServerError())
   )
 
 export const handleListAgentPolicies = (
@@ -173,7 +158,7 @@ export const handleListAgentPolicies = (
       return yield* badRequest(`action must be one of: ${validActions.join(", ")}`)
     }
 
-    const agentIdRaw = extractParam(requestUrl, 2)
+    const agentIdRaw = extractPathParam(requestUrl, 2)
     if (agentIdRaw.length === 0) {
       return yield* badRequest("Missing agentId")
     }
@@ -204,12 +189,7 @@ export const handleListAgentPolicies = (
     })
   }).pipe(
     Effect.withSpan("GovernanceRoutes.listAgentPolicies"),
-    Effect.catchCause(() =>
-      HttpServerResponse.json(
-        { error: "InternalServerError" },
-        { status: 500 }
-      )
-    )
+    Effect.catchCause(() => internalServerError())
   )
 
 const listSessionToolInvocations = HttpRouter.add(
