@@ -5,17 +5,9 @@ import {
   messageCountAtom,
   toolEventsAtom
 } from "../atoms/session.js"
+import { connectionDot } from "../formatters/connectionDot.js"
 import { theme } from "../theme.js"
 import { ContextBar } from "./ContextBar.js"
-
-const connectionDot = (status: string): { dot: string; color: string } => {
-  switch (status) {
-    case "connected": return { dot: "\u25CF", color: theme.statusConnected }
-    case "connecting": return { dot: "\u25CF", color: theme.statusPending }
-    case "error": return { dot: "\u25CF", color: theme.statusError }
-    default: return { dot: "\u25CB", color: theme.textMuted }
-  }
-}
 
 export function SidePanel() {
   const channelId = useAtomValue(channelIdAtom)

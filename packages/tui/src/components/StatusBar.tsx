@@ -2,29 +2,35 @@ import { useAtomValue } from "@effect/atom-react"
 import {
   channelIdAtom,
   connectionStatusAtom,
-  isStreamingAtom,
   messageCountAtom,
   pendingCheckpointAtom
 } from "../atoms/session.js"
+import { connectionDot } from "../formatters/connectionDot.js"
 import { theme } from "../theme.js"
 
 export function StatusBar() {
   const channelId = useAtomValue(channelIdAtom)
   const status = useAtomValue(connectionStatusAtom)
-  const isStreaming = useAtomValue(isStreamingAtom)
   const count = useAtomValue(messageCountAtom)
   const checkpoint = useAtomValue(pendingCheckpointAtom)
+  const { dot, color: dotColor } = connectionDot(status)
 
-  const shortId = channelId.length > 20 ? `${channelId.slice(0, 20)}...` : channelId
-  const streamLabel = isStreaming ? " | streaming" : ""
-  const checkpointLabel = checkpoint ? " | CHECKPOINT" : ""
+  const shortId = channelId.length > 8 ? channelId.slice(0, 8) : channelId
+  const shortcuts = checkpoint
+    ? "^Y approve  ^N reject  ^D defer"
+    : "^S sessions  ^M memory  ^K cmd"
 
   return (
-    <box backgroundColor={theme.surface}>
-      <text
-        content={` ${shortId} | ${status}${streamLabel}${checkpointLabel} | ${count} msgs | ^K palette  ^S sessions  ^M memory  ^C exit `}
-        fg={checkpoint ? theme.statusPending : theme.textMuted}
-      />
+    <box backgroundColor={theme.surface} flexDirection="row">
+      <text content={` ${shortId} `} fg={theme.textMuted} />
+      <text content="│" fg={theme.border} />
+      <text content={` ${dot} ${status} `} fg={dotColor} />
+      <text content="│" fg={theme.border} />
+      <text content={` ${count} msgs `} fg={theme.textMuted} />
+      <text content="│" fg={theme.border} />
+      <box flexGrow={1} justifyContent="flex-end">
+        <text content={`${shortcuts} `} fg={checkpoint ? theme.statusPending : theme.textMuted} />
+      </box>
     </box>
   )
 }
