@@ -337,12 +337,49 @@ export const ScheduleSkipReason = Schema.Literals([
 ])
 export type ScheduleSkipReason = typeof ScheduleSkipReason.Type
 
+export const BackgroundActionLog = Schema.Struct({
+  kind: Schema.Literal("Log")
+})
+export type BackgroundActionLog = typeof BackgroundActionLog.Type
+
+export const BackgroundActionHealthCheck = Schema.Struct({
+  kind: Schema.Literal("HealthCheck")
+})
+export type BackgroundActionHealthCheck = typeof BackgroundActionHealthCheck.Type
+
+export const BackgroundActionCommand = Schema.Struct({
+  kind: Schema.Literal("Command"),
+  command: Schema.String
+})
+export type BackgroundActionCommand = typeof BackgroundActionCommand.Type
+
+export const BackgroundActionMemorySubroutine = Schema.Struct({
+  kind: Schema.Literal("MemorySubroutine"),
+  subroutineId: Schema.String
+})
+export type BackgroundActionMemorySubroutine = typeof BackgroundActionMemorySubroutine.Type
+
+export const BackgroundActionUnknown = Schema.Struct({
+  kind: Schema.Literal("Unknown"),
+  actionRef: Schema.String
+})
+export type BackgroundActionUnknown = typeof BackgroundActionUnknown.Type
+
+export const BackgroundAction = Schema.Union([
+  BackgroundActionLog,
+  BackgroundActionHealthCheck,
+  BackgroundActionCommand,
+  BackgroundActionMemorySubroutine,
+  BackgroundActionUnknown
+])
+export type BackgroundAction = typeof BackgroundAction.Type
+
 export interface ScheduleRecord {
   readonly scheduleId: ScheduleId
   readonly ownerAgentId: AgentId
   readonly recurrencePattern: RecurrencePattern
   readonly trigger: Trigger
-  readonly actionRef: string
+  readonly action: BackgroundAction
   readonly scheduleStatus: ScheduleStatus
   readonly concurrencyPolicy: ConcurrencyPolicy
   readonly allowsCatchUp: boolean

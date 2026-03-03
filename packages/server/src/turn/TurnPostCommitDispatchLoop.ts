@@ -1,12 +1,17 @@
 import type { PostCommitTaskId } from "@template/domain/ids"
-import type { PostCommitResult } from "@template/domain/ports"
+import {
+  ExecutePostCommitPayload as ExecutePostCommitPayloadSchema,
+  type ExecutePostCommitPayload,
+  type PostCommitResult,
+  type PostCommitTaskRecord
+} from "@template/domain/ports"
 import {
   POST_COMMIT_CLAIM_BATCH_SIZE,
   POST_COMMIT_CLAIM_LEASE_SECONDS,
   POST_COMMIT_MAX_ATTEMPTS,
   POST_COMMIT_TICK_SECONDS
 } from "@template/domain/system-defaults"
-import { Cause, DateTime, Duration, Effect, Layer, Schedule, ServiceMap } from "effect"
+import { Cause, DateTime, Duration, Effect, Layer, Schedule, Schema, ServiceMap } from "effect"
 import { POST_COMMIT_COMMAND_LANE_ID } from "../CommandLanes.js"
 import { TurnPostCommitPortTag } from "../PortTags.js"
 import { TurnPostCommitCommandEntity } from "./TurnPostCommitCommandEntity.js"
@@ -38,19 +43,14 @@ export class TurnPostCommitDispatchLoop extends ServiceMap.Service<TurnPostCommi
         yield* Effect.sleep(0)
 
         for (const task of tasks) {
+          const payload = decodePostCommitTaskPayload(task)
           yield* Effect.log("post_commit_dispatching", {
             taskId: task.taskId,
             turnId: task.turnId,
             sessionId: task.sessionId
           })
 
-          const result = yield* client.executePostCommit({
-            taskId: task.taskId,
-            turnId: task.turnId,
-            agentId: task.agentId,
-            sessionId: task.sessionId,
-            conversationId: task.conversationId
-          }).pipe(
+          const result = yield* client.executePostCommit(payload).pipe(
             Effect.timeout(Duration.seconds(30)),
             Effect.catchCause((cause) =>
               Effect.succeed({
@@ -176,3 +176,21 @@ const stringifyCause = (cause: Cause.Cause<unknown>): string =>
       fiberId: String(reason.fiberId)
     }
   }))
+
+const decodePostCommitPayloadJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(ExecutePostCommitPayloadSchema)
+)
+
+const decodePostCommitTaskPayload = (task: PostCommitTaskRecord): ExecutePostCommitPayload => {
+  try {
+    return decodePostCommitPayloadJson(task.payloadJson)
+  } catch {
+    return {
+      taskId: task.taskId,
+      turnId: task.turnId,
+      agentId: task.agentId,
+      sessionId: task.sessionId,
+      conversationId: task.conversationId
+    }
+  }
+}

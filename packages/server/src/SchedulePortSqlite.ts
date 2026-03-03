@@ -6,6 +6,7 @@ import type { ScheduledExecutionId, ScheduleId } from "../../domain/src/ids.js"
 import {
   type DueScheduleRecord,
   type Instant,
+  type BackgroundAction,
   type ScheduledExecutionRecord,
   type SchedulePort,
   type ScheduleRecord,
@@ -20,6 +21,12 @@ import {
   nextExecutionAfterRecord,
   triggerSourceFromTrigger
 } from "./scheduler/ScheduleDue.js"
+import {
+  decodeBackgroundActionPayloadJson,
+  fromLegacyActionRef,
+  toLegacyActionRef,
+  encodeBackgroundActionPayloadJson
+} from "./scheduler/ScheduleActionCodec.js"
 
 const ScheduleRowSchema = Schema.Struct({
   schedule_id: Schema.String,
@@ -28,6 +35,8 @@ const ScheduleRowSchema = Schema.Struct({
   cron_expression: Schema.Union([Schema.String, Schema.Null]),
   interval_seconds: Schema.Union([Schema.Number, Schema.Null]),
   trigger_tag: Schema.Literals(["CronTrigger", "IntervalTrigger", "EventTrigger"]),
+  action_kind: Schema.Union([Schema.String, Schema.Null]),
+  action_payload_json: Schema.Union([Schema.String, Schema.Null]),
   action_ref: Schema.String,
   schedule_status: ScheduleStatus,
   concurrency_policy: ConcurrencyPolicy,
@@ -77,6 +86,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               cron_expression,
               interval_seconds,
               trigger_tag,
+              action_kind,
+              action_payload_json,
               action_ref,
               schedule_status,
               concurrency_policy,
@@ -104,6 +115,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               cron_expression,
               interval_seconds,
               trigger_tag,
+              action_kind,
+              action_payload_json,
               action_ref,
               schedule_status,
               concurrency_policy,
@@ -161,6 +174,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             cron_expression,
             interval_seconds,
             trigger_tag,
+            action_kind,
+            action_payload_json,
             action_ref,
             schedule_status,
             concurrency_policy,
@@ -177,7 +192,9 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             ${schedule.recurrencePattern.cronExpression},
             ${schedule.recurrencePattern.intervalSeconds},
             ${schedule.trigger._tag},
-            ${schedule.actionRef},
+            ${schedule.action.kind},
+            ${encodeBackgroundActionPayloadJson(schedule.action)},
+            ${toLegacyActionRef(schedule.action)},
             ${schedule.scheduleStatus},
             ${schedule.concurrencyPolicy},
             ${toSqlBoolean(schedule.allowsCatchUp)},
@@ -193,6 +210,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             cron_expression = excluded.cron_expression,
             interval_seconds = excluded.interval_seconds,
             trigger_tag = excluded.trigger_tag,
+            action_kind = excluded.action_kind,
+            action_payload_json = excluded.action_payload_json,
             action_ref = excluded.action_ref,
             schedule_status = excluded.schedule_status,
             concurrency_policy = excluded.concurrency_policy,
@@ -313,7 +332,7 @@ const decodeScheduleRow = (row: ScheduleRow): ScheduleRecord => ({
     intervalSeconds: row.interval_seconds
   },
   trigger: decodeTrigger(row.trigger_tag),
-  actionRef: row.action_ref,
+  action: decodeScheduleAction(row),
   scheduleStatus: row.schedule_status,
   concurrencyPolicy: row.concurrency_policy,
   allowsCatchUp: row.allows_catch_up === 1,
@@ -334,6 +353,22 @@ const decodeExecutionRow = (row: ExecutionRow): ScheduledExecutionRecord => ({
   endedAt: fromSqlInstant(row.ended_at),
   skipReason: row.skip_reason
 })
+
+const decodeScheduleAction = (row: ScheduleRow): BackgroundAction => {
+  if (row.action_payload_json !== null) {
+    const decoded = decodeBackgroundActionPayloadJson(row.action_payload_json)
+    if (decoded !== null) {
+      if (decoded.kind !== "Unknown") {
+        return decoded
+      }
+      if (decoded.actionRef === row.action_ref) {
+        return decoded
+      }
+    }
+  }
+
+  return fromLegacyActionRef(row.action_ref)
+}
 
 const decodeTrigger = (tag: ScheduleRow["trigger_tag"]): Trigger => {
   switch (tag) {

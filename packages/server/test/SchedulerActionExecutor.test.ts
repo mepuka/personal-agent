@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
-import type { GovernancePort, Instant, PolicyDecision, PolicyInput } from "@template/domain/ports"
+import type {
+  BackgroundAction,
+  GovernancePort,
+  Instant,
+  PolicyDecision,
+  PolicyInput
+} from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
 import { GovernancePortTag } from "../src/PortTags.js"
 import {
@@ -31,7 +37,7 @@ describe("SchedulerActionExecutor", () => {
   it.effect("action:log returns ExecutionSucceeded when governance allows", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
-      const ticket = makeTicket({ actionRef: "action:log" })
+      const ticket = makeTicket({ action: { kind: "Log" } })
 
       const outcome = yield* executor.execute(ticket)
 
@@ -41,7 +47,7 @@ describe("SchedulerActionExecutor", () => {
   it.effect("action:health_check returns ExecutionSucceeded when governance allows", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
-      const ticket = makeTicket({ actionRef: "action:health_check" })
+      const ticket = makeTicket({ action: { kind: "HealthCheck" } })
 
       const outcome = yield* executor.execute(ticket)
 
@@ -51,7 +57,7 @@ describe("SchedulerActionExecutor", () => {
   it.effect("governance deny returns ExecutionSkipped", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
-      const ticket = makeTicket({ actionRef: "action:log" })
+      const ticket = makeTicket({ action: { kind: "Log" } })
 
       const outcome = yield* executor.execute(ticket)
 
@@ -61,7 +67,7 @@ describe("SchedulerActionExecutor", () => {
   it.effect("governance require approval returns ExecutionSkipped", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
-      const ticket = makeTicket({ actionRef: "action:log" })
+      const ticket = makeTicket({ action: { kind: "Log" } })
 
       const outcome = yield* executor.execute(ticket)
 
@@ -75,7 +81,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: toCommandActionRef("echo scheduled-command")
+        action: toCommandAction("echo scheduled-command")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -93,7 +99,7 @@ describe("SchedulerActionExecutor", () => {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
         ownerAgentId: "agent:schedule-owner" as AgentId,
-        actionRef: toCommandActionRef("echo context")
+        action: toCommandAction("echo context")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -121,7 +127,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: toCommandActionRef("echo failing-command")
+        action: toCommandAction("echo failing-command")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -134,10 +140,10 @@ describe("SchedulerActionExecutor", () => {
       }
     ))))
 
-  it.effect("unknown actionRef returns ExecutionSkipped", () =>
+  it.effect("unknown action returns ExecutionSkipped", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
-      const ticket = makeTicket({ actionRef: "action:unknown-future-action" })
+      const ticket = makeTicket({ action: { kind: "Unknown", actionRef: "action:unknown-future-action" } })
 
       const outcome = yield* executor.execute(ticket)
 
@@ -148,7 +154,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: "action:memory_subroutine:memory_consolidation"
+        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -163,7 +169,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: "action:memory_subroutine:nonexistent"
+        action: { kind: "MemorySubroutine", subroutineId: "nonexistent" }
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -174,24 +180,23 @@ describe("SchedulerActionExecutor", () => {
       { subroutines: [] }
     ))))
 
-  it.effect("action:memory_subroutine: (empty id) falls through to unknown", () =>
+  it.effect("memory subroutine with empty id is skipped", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: "action:memory_subroutine:"
+        action: { kind: "MemorySubroutine", subroutineId: "" }
       })
 
       const outcome = yield* executor.execute(ticket)
 
-      // Empty id after prefix → parseMemorySubroutineId returns null → falls through to switch default
-      expect(outcome).toBe("ExecutionSkipped")
+      expect(outcome).toBe("ExecutionFailed")
     }).pipe(Effect.provide(makeTestLayer({ decision: "Allow" }))))
 
   it.effect("governance deny still skips memory subroutine actions", () =>
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: "action:memory_subroutine:memory_consolidation"
+        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -226,7 +231,7 @@ describe("SchedulerActionExecutor", () => {
       const ticket = makeTicket({
         scheduleId: "schedule:daily-consolidation" as ScheduleId,
         ownerAgentId: "agent:context-test" as AgentId,
-        actionRef: "action:memory_subroutine:memory_consolidation",
+        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" },
         triggerSource: "CronTick"
       })
 
@@ -266,7 +271,7 @@ describe("SchedulerActionExecutor", () => {
     return Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        actionRef: "action:memory_subroutine:memory_consolidation"
+        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -321,7 +326,7 @@ describe("SchedulerActionExecutor", () => {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
         ownerAgentId: "agent:owner-123" as AgentId,
-        actionRef: "action:log"
+        action: { kind: "Log" }
       })
 
       yield* executor.execute(ticket)
@@ -456,8 +461,10 @@ const makeCommandResult = (exitCode = 0): CommandResult => ({
   completedAt: instant("2026-02-24T12:00:00.000Z")
 })
 
-const toCommandActionRef = (command: string): string =>
-  `action:command:${encodeURIComponent(command)}`
+const toCommandAction = (command: string): BackgroundAction => ({
+  kind: "Command",
+  command
+})
 
 const makeTicket = (overrides: Partial<ExecutionTicket> = {}): ExecutionTicket => ({
   executionId: crypto.randomUUID() as ScheduledExecutionId,
@@ -466,6 +473,6 @@ const makeTicket = (overrides: Partial<ExecutionTicket> = {}): ExecutionTicket =
   dueAt: instant("2026-02-24T12:00:00.000Z"),
   triggerSource: "CronTick",
   startedAt: instant("2026-02-24T12:00:00.000Z"),
-  actionRef: "action:default",
+  action: { kind: "Unknown", actionRef: "action:default" },
   ...overrides
 })

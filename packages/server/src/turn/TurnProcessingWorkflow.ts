@@ -34,6 +34,7 @@ import {
   type AuditEntryRecord,
   type ContentBlock,
   ContentBlock as ContentBlockSchema,
+  ExecutePostCommitPayload as ExecutePostCommitPayloadSchema,
   type Instant,
   type PostCommitTaskRecord,
   type TurnRecord
@@ -72,13 +73,9 @@ import {
   SessionTurnPortTag
 } from "../PortTags.js"
 
-const PostCommitPayload = Schema.Struct({
-  turnId: Schema.String,
-  agentId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String
-})
-const encodePostCommitPayload = Schema.encodeSync(Schema.fromJsonString(PostCommitPayload))
+const encodePostCommitPayload = Schema.encodeSync(
+  Schema.fromJsonString(ExecutePostCommitPayloadSchema)
+)
 
 const InvokeToolReplayExecution = Schema.Struct({
   replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
@@ -825,10 +822,11 @@ export const layer = TurnProcessingWorkflow.toLayer(
           lastErrorCode: null,
           lastErrorMessage: null,
           payloadJson: encodePostCommitPayload({
-            turnId: payload.turnId,
-            agentId: payload.agentId,
-            sessionId: payload.sessionId,
-            conversationId: payload.conversationId
+            taskId,
+            turnId: payload.turnId as TurnId,
+            agentId: payload.agentId as AgentId,
+            sessionId: payload.sessionId as SessionId,
+            conversationId: payload.conversationId as ConversationId
           })
         }
         yield* sessionTurnPort.appendAssistantTurnWithPostCommitTask(assistantTurn, task)

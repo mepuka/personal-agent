@@ -1,5 +1,5 @@
 import type { AgentId, AuditEntryId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
-import type { TriggerSource } from "@template/domain/ports"
+import { BackgroundAction, type TriggerSource } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
 import { Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
@@ -15,7 +15,7 @@ const SchedulerExecutePayloadFields = {
   triggerSource: Schema.Literals(["CronTick", "IntervalTick", "Event", "Manual"]),
   startedAt: Schema.DateTimeUtc,
   endedAt: Schema.DateTimeUtc,
-  actionRef: Schema.String,
+  action: BackgroundAction,
   ownerAgentId: Schema.String,
   outcome: Schema.Literals(["ExecutionSucceeded", "ExecutionFailed", "ExecutionSkipped"]),
   agentId: Schema.String
@@ -54,7 +54,7 @@ export const layer = SchedulerCommandEntity.toLayer(Effect.gen(function*() {
           dueAt: payload.dueAt,
           triggerSource: payload.triggerSource as TriggerSource,
           startedAt: payload.startedAt,
-          actionRef: payload.actionRef
+          action: payload.action
         }
 
         const accepted = yield* runtime.completeExecution(

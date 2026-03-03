@@ -5,6 +5,7 @@ import { DateTime, Effect, Layer } from "effect"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
@@ -126,6 +127,43 @@ describe("SchedulePortSqlite", () => {
       Effect.ensuring(cleanupDatabase(dbPath))
     )
   })
+
+  it.effect("falls back to legacy action_ref when action payload is stale", () => {
+    const dbPath = testDatabasePath("legacy-action-fallback")
+    const layer = makeSchedulePortLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const schedulePort = yield* SchedulePortSqlite
+      const sql = yield* SqlClient.SqlClient
+      const scheduleId = "schedule:legacy-fallback" as ScheduleId
+      const legacyCommand = "echo legacy-command"
+      const legacyActionRef = `action:command:${encodeURIComponent(legacyCommand)}`
+      const schedule = makeIntervalSchedule({
+        scheduleId,
+        action: { kind: "Log" }
+      })
+
+      yield* schedulePort.upsertSchedule(schedule)
+
+      yield* sql`
+        UPDATE schedules
+        SET
+          action_ref = ${legacyActionRef},
+          action_kind = 'Unknown',
+          action_payload_json = '{"kind":"Unknown","actionRef":"action:unknown"}'
+        WHERE schedule_id = ${scheduleId}
+      `.unprepared
+
+      const decoded = yield* schedulePort.getSchedule(scheduleId)
+      expect(decoded?.action).toEqual({
+        kind: "Command",
+        command: legacyCommand
+      })
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
 })
 
 const makeSchedulePortLayer = (dbPath: string) => {
@@ -155,7 +193,7 @@ const makeIntervalSchedule = (
     intervalSeconds: 60
   },
   trigger: { _tag: "IntervalTrigger" },
-  actionRef: "action:default",
+  action: { kind: "Log" },
   scheduleStatus: "ScheduleActive",
   concurrencyPolicy: "ConcurrencyAllow",
   allowsCatchUp: true,

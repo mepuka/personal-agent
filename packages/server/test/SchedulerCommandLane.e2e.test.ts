@@ -88,7 +88,7 @@ describe("Scheduler command lane E2E", () => {
         triggerSource: ticket!.triggerSource,
         startedAt: ticket!.startedAt,
         endedAt: DateTime.add(now, { seconds: 5 }),
-        actionRef: ticket!.actionRef,
+        action: ticket!.action,
         ownerAgentId: ticket!.ownerAgentId,
         outcome: "ExecutionSucceeded",
         agentId: ticket!.ownerAgentId
@@ -276,7 +276,7 @@ const makeSchedule = (overrides: Partial<ScheduleRecord>): ScheduleRecord => ({
     intervalSeconds: 60
   },
   trigger: { _tag: "IntervalTrigger" },
-  actionRef: "action:log",
+  action: { kind: "Log" },
   scheduleStatus: "ScheduleActive",
   concurrencyPolicy: "ConcurrencyAllow",
   allowsCatchUp: true,

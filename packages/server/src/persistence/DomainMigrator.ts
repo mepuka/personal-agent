@@ -810,6 +810,48 @@ const loader = SqliteMigrator.fromRecord({
       CREATE INDEX IF NOT EXISTS idx_post_commit_session_created
       ON turn_post_commit_tasks (session_id, created_at)
     `.unprepared
+  }),
+  "0018_schedule_action_payloads": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      ALTER TABLE schedules
+      ADD COLUMN action_kind TEXT NOT NULL DEFAULT 'Unknown'
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      ALTER TABLE schedules
+      ADD COLUMN action_payload_json TEXT NOT NULL DEFAULT '{"kind":"Unknown","actionRef":"action:unknown"}'
+    `.unprepared.pipe(Effect.catch(() => Effect.void))
+
+    yield* sql`
+      UPDATE schedules
+      SET
+        action_kind = CASE
+          WHEN action_ref = 'action:log' THEN 'Log'
+          WHEN action_ref = 'action:health_check' THEN 'HealthCheck'
+          WHEN action_ref LIKE 'action:command:%' THEN 'Command'
+          WHEN action_ref LIKE 'action:memory_subroutine:%'
+               AND length(trim(substr(action_ref, 26))) > 0 THEN 'MemorySubroutine'
+          ELSE 'Unknown'
+        END,
+        action_payload_json = CASE
+          WHEN action_ref = 'action:log' THEN '{"kind":"Log"}'
+          WHEN action_ref = 'action:health_check' THEN '{"kind":"HealthCheck"}'
+          WHEN action_ref LIKE 'action:command:%' THEN
+            '{"kind":"Command","command":' || json_quote(substr(action_ref, 16)) || '}'
+          WHEN action_ref LIKE 'action:memory_subroutine:%'
+               AND length(trim(substr(action_ref, 26))) > 0 THEN
+            '{"kind":"MemorySubroutine","subroutineId":' || json_quote(trim(substr(action_ref, 26))) || '}'
+          ELSE
+            '{"kind":"Unknown","actionRef":' || json_quote(action_ref) || '}'
+        END
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS schedules_action_kind_idx
+      ON schedules (action_kind)
+    `.unprepared
   })
 })
 

@@ -37,7 +37,7 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
               triggerSource: ticket.triggerSource,
               startedAt: ticket.startedAt,
               endedAt,
-              actionRef: ticket.actionRef,
+              action: ticket.action,
               outcome,
               agentId: ticket.ownerAgentId
             }

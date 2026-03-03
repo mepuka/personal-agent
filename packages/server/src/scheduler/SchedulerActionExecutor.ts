@@ -5,34 +5,8 @@ import { GovernancePortTag } from "../PortTags.js"
 import { SubroutineCatalog, type SubroutineCatalogService } from "../memory/SubroutineCatalog.js"
 import { SubroutineRunner, type SubroutineContext, type SubroutineRunnerService } from "../memory/SubroutineRunner.js"
 import type { ExecutionTicket } from "../SchedulerRuntime.js"
+import { decodeMaybeUriComponent } from "./ScheduleActionCodec.js"
 import { CommandRuntime, type CommandRuntimeService } from "../tools/command/CommandRuntime.js"
-
-const SCHEDULE_COMMAND_PREFIX = "action:command:"
-
-const MEMORY_SUBROUTINE_PREFIX = "action:memory_subroutine:"
-
-const parseMemorySubroutineId = (actionRef: string): string | null => {
-  if (!actionRef.startsWith(MEMORY_SUBROUTINE_PREFIX)) return null
-  const id = actionRef.slice(MEMORY_SUBROUTINE_PREFIX.length)
-  return id.length > 0 ? id : null
-}
-
-const parseScheduleCommand = (actionRef: string): string | null => {
-  if (!actionRef.startsWith(SCHEDULE_COMMAND_PREFIX)) {
-    return null
-  }
-
-  const encoded = actionRef.slice(SCHEDULE_COMMAND_PREFIX.length)
-  if (encoded.length === 0) {
-    return ""
-  }
-
-  try {
-    return decodeURIComponent(encoded)
-  } catch {
-    return ""
-  }
-}
 
 export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionExecutor>()(
   "server/SchedulerActionExecutor",
@@ -54,7 +28,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
           if (policy.decision === "Deny") {
             yield* Effect.log("Scheduled action denied by governance", {
               scheduleId: ticket.scheduleId,
-              actionRef: ticket.actionRef,
+              actionKind: ticket.action.kind,
               decision: policy.decision,
               reason: policy.reason
             })
@@ -64,7 +38,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
           if (policy.decision === "RequireApproval") {
             yield* Effect.log("Scheduled action requires approval; skipping", {
               scheduleId: ticket.scheduleId,
-              actionRef: ticket.actionRef,
+              actionKind: ticket.action.kind,
               decision: policy.decision,
               reason: policy.reason
             })
@@ -81,7 +55,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
               Effect.gen(function*() {
                 yield* Effect.log("Scheduled action failed", {
                   scheduleId: ticket.scheduleId,
-                  actionRef: ticket.actionRef,
+                  actionKind: ticket.action.kind,
                   cause: String(cause)
                 })
                 return "ExecutionFailed" as const
@@ -104,101 +78,98 @@ const dispatchAction = (params: {
   readonly subroutineCatalog: SubroutineCatalogService
 }): Effect.Effect<ExecutionOutcome> =>
   Effect.gen(function*() {
-    const subroutineId = parseMemorySubroutineId(params.ticket.actionRef)
-    if (subroutineId !== null) {
-      const loaded = yield* params.subroutineCatalog.getById(subroutineId).pipe(
-        Effect.catchTag("SubroutineNotFound", () =>
-          Effect.gen(function*() {
-            yield* Effect.log("Unknown memory subroutine in schedule", {
-              scheduleId: params.ticket.scheduleId,
-              subroutineId
+    switch (params.ticket.action.kind) {
+      case "MemorySubroutine": {
+        const subroutineId = params.ticket.action.subroutineId
+        const loaded = yield* params.subroutineCatalog.getById(subroutineId).pipe(
+          Effect.catchTag("SubroutineNotFound", () =>
+            Effect.gen(function*() {
+              yield* Effect.log("Unknown memory subroutine in schedule", {
+                scheduleId: params.ticket.scheduleId,
+                subroutineId
+              })
+              return null
             })
-            return null
+          )
+        )
+        if (!loaded) return "ExecutionFailed" as const
+
+        const runId = crypto.randomUUID()
+        const context: SubroutineContext = {
+          agentId: params.ticket.ownerAgentId,
+          sessionId: `session:scheduled:${params.ticket.scheduleId}` as SessionId,
+          conversationId: `conversation:scheduled:${runId}` as ConversationId,
+          turnId: null,
+          triggerType: "Scheduled",
+          triggerReason: `Schedule: ${params.ticket.scheduleId} (${params.ticket.triggerSource})`,
+          now: params.ticket.startedAt,
+          runId
+        }
+
+        const result = yield* params.subroutineRunner.execute(loaded, context)
+        yield* Effect.log("SchedulerActionExecutor subroutine result", {
+          subroutineId: result.subroutineId,
+          runId: result.runId,
+          success: result.success,
+          checkpointWritten: result.checkpointWritten,
+          errorTag: result.error?.tag ?? null
+        })
+        return result.success
+          ? "ExecutionSucceeded" as const
+          : "ExecutionFailed" as const
+      }
+      case "Command": {
+        const command = decodeMaybeUriComponent(params.ticket.action.command).trim()
+        if (command.length === 0) {
+          yield* Effect.log("Invalid scheduled command action", {
+            scheduleId: params.ticket.scheduleId
+          })
+          return "ExecutionFailed" as const
+        }
+
+        const execution = yield* params.commandRuntime.execute({
+          context: {
+            source: "schedule",
+            agentId: params.ticket.ownerAgentId
+          },
+          request: {
+            command
+          }
+        }).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.gen(function*() {
+                yield* Effect.log("Scheduled command execution failed", {
+                  scheduleId: params.ticket.scheduleId,
+                  command,
+                  errorTag: error._tag
+                })
+                return "ExecutionFailed" as const
+              }),
+            onSuccess: (result) =>
+              Effect.succeed(
+                result.exitCode === 0
+                  ? "ExecutionSucceeded" as const
+                  : "ExecutionFailed" as const
+              )
           })
         )
-      )
-      if (!loaded) return "ExecutionFailed" as const
 
-      const runId = crypto.randomUUID()
-      const context: SubroutineContext = {
-        agentId: params.ticket.ownerAgentId,
-        sessionId: `session:scheduled:${params.ticket.scheduleId}` as SessionId,
-        conversationId: `conversation:scheduled:${runId}` as ConversationId,
-        turnId: null,
-        triggerType: "Scheduled",
-        triggerReason: `Schedule: ${params.ticket.scheduleId} (${params.ticket.triggerSource})`,
-        now: params.ticket.startedAt,
-        runId
+        return execution
       }
-
-      const result = yield* params.subroutineRunner.execute(loaded, context)
-      yield* Effect.log("SchedulerActionExecutor subroutine result", {
-        subroutineId: result.subroutineId,
-        runId: result.runId,
-        success: result.success,
-        checkpointWritten: result.checkpointWritten,
-        errorTag: result.error?.tag ?? null
-      })
-      return result.success
-        ? "ExecutionSucceeded" as const
-        : "ExecutionFailed" as const
-    }
-
-    const command = parseScheduleCommand(params.ticket.actionRef)
-    if (command !== null) {
-      if (command.trim().length === 0) {
-        yield* Effect.log("Invalid scheduled command action", {
-          scheduleId: params.ticket.scheduleId,
-          actionRef: params.ticket.actionRef
-        })
-        return "ExecutionFailed" as const
-      }
-
-      const execution = yield* params.commandRuntime.execute({
-        context: {
-          source: "schedule",
-          agentId: params.ticket.ownerAgentId
-        },
-        request: {
-          command
-        }
-      }).pipe(
-        Effect.matchEffect({
-          onFailure: (error) =>
-            Effect.gen(function*() {
-              yield* Effect.log("Scheduled command execution failed", {
-                scheduleId: params.ticket.scheduleId,
-                actionRef: params.ticket.actionRef,
-                command,
-                errorTag: error._tag
-              })
-              return "ExecutionFailed" as const
-            }),
-          onSuccess: (result) =>
-            Effect.succeed(
-              result.exitCode === 0
-                ? "ExecutionSucceeded" as const
-                : "ExecutionFailed" as const
-            )
-        })
-      )
-
-      return execution
-    }
-
-    switch (params.ticket.actionRef) {
-      case "action:log":
+      case "Log":
         return yield* Effect.log("Scheduled action executed", {
           scheduleId: params.ticket.scheduleId,
-          actionRef: params.ticket.actionRef
+          actionKind: params.ticket.action.kind
         }).pipe(Effect.as("ExecutionSucceeded" as const))
-      case "action:health_check":
+      case "HealthCheck":
         return yield* Effect.log("Health check", {
           scheduleId: params.ticket.scheduleId
         }).pipe(Effect.as("ExecutionSucceeded" as const))
-      default:
-        return yield* Effect.log("Unknown action ref, skipping", {
-          actionRef: params.ticket.actionRef
+      case "Unknown":
+        return yield* Effect.log("Unknown schedule action, skipping", {
+          scheduleId: params.ticket.scheduleId,
+          actionRef: params.ticket.action.actionRef
         }).pipe(Effect.as("ExecutionSkipped" as const))
     }
   })

@@ -1,5 +1,11 @@
 import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
-import type { Instant, ScheduleRecord, ScheduleSkipReason, TriggerSource } from "@template/domain/ports"
+import type {
+  BackgroundAction,
+  Instant,
+  ScheduleRecord,
+  ScheduleSkipReason,
+  TriggerSource
+} from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
 import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, ServiceMap } from "effect"
 import { SchedulePortTag } from "./PortTags.js"
@@ -11,7 +17,7 @@ export interface ExecutionTicket {
   readonly dueAt: Instant
   readonly triggerSource: TriggerSource
   readonly startedAt: Instant
-  readonly actionRef: string
+  readonly action: BackgroundAction
 }
 
 export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
@@ -131,7 +137,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
                 dueAt,
                 triggerSource,
                 now,
-                schedule.actionRef
+                schedule.action
               )
               yield* Ref.set(
                 inFlightBySchedule,
@@ -158,7 +164,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
                 dueAt,
                 triggerSource,
                 now,
-                schedule.actionRef
+                schedule.action
               )
               yield* Ref.set(
                 inFlightBySchedule,
@@ -188,7 +194,7 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
                 dueAt,
                 triggerSource,
                 now,
-                schedule.actionRef
+                schedule.action
               )
               yield* Ref.set(
                 inFlightBySchedule,
@@ -263,7 +269,7 @@ const createExecutionTicket = (
   dueAt: Instant,
   triggerSource: TriggerSource,
   startedAt: Instant,
-  actionRef: string
+  action: BackgroundAction
 ): ExecutionTicket => ({
   executionId: makeExecutionId(),
   scheduleId,
@@ -271,7 +277,7 @@ const createExecutionTicket = (
   dueAt,
   triggerSource,
   startedAt,
-  actionRef
+  action
 })
 
 const makeExecutionId = (): ScheduledExecutionId => crypto.randomUUID() as ScheduledExecutionId

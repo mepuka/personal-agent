@@ -200,7 +200,7 @@ const makeSchedule = (overrides: Partial<ScheduleRecord>): ScheduleRecord => ({
     intervalSeconds: 60
   },
   trigger: { _tag: "IntervalTrigger" },
-  actionRef: "action:default",
+  action: { kind: "Log" },
   scheduleStatus: "ScheduleActive",
   concurrencyPolicy: "ConcurrencyAllow",
   allowsCatchUp: true,
