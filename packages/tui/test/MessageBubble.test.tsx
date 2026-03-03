@@ -32,8 +32,9 @@ describe("MessageBubble", () => {
     errorMessage: "model error"
   }
 
-  it("exports a React component", () => {
-    expect(typeof MessageBubble).toBe("function")
+  it("exports a React component wrapped in React.memo", () => {
+    expect(MessageBubble).toHaveProperty("$$typeof")
+    expect(MessageBubble).toHaveProperty("type")
   })
 
   it("accepts a completed assistant message", () => {

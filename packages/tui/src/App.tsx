@@ -8,9 +8,7 @@ import {
   availableChannelsAtom,
   channelIdAtom,
   connectionStatusAtom,
-  messagesAtom,
-  modalAtom,
-  toolEventsAtom
+  modalAtom
 } from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
@@ -19,8 +17,8 @@ import { StatusBar } from "./components/StatusBar.js"
 import { ToolPane } from "./components/ToolPane.js"
 import { useDecideCheckpoint } from "./hooks/useDecideCheckpoint.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
+import { applyRestoredHistory, restoreHistory } from "./state/restoreHistory.js"
 import { theme } from "./theme.js"
-import type { ChatMessage } from "./types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
@@ -28,33 +26,6 @@ type FocusTarget = "input" | "tools"
 
 const DEFAULT_AGENT_ID = "agent:bootstrap"
 
-const toChatMessages = (history: unknown): Array<ChatMessage> => {
-  if (!Array.isArray(history)) {
-    return []
-  }
-
-  const restored: Array<ChatMessage> = []
-  for (const entry of history as Array<any>) {
-    const participantRole = String(entry?.participantRole ?? "")
-    const content = String(entry?.message?.content ?? entry?.message_content ?? "")
-    const turnId = String(entry?.turnId ?? entry?.turn_id ?? "")
-
-    if (turnId.length === 0) {
-      continue
-    }
-
-    if (participantRole === "UserRole") {
-      restored.push({ role: "user", content, turnId, status: "complete" })
-      continue
-    }
-
-    if (participantRole === "AssistantRole" || participantRole === "ToolRole") {
-      restored.push({ role: "assistant", content, turnId, status: "complete" })
-    }
-  }
-
-  return restored
-}
 
 export function App({ client }: { readonly client: ChatClientShape }) {
   const registry = React.useContext(RegistryContext)
@@ -91,8 +62,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       registry.set(channelIdAtom, channelId)
       yield* client.initialize(channelId, DEFAULT_AGENT_ID)
       const history = yield* client.getHistory(channelId)
-      registry.set(messagesAtom, toChatMessages(history))
-      registry.set(toolEventsAtom, [])
+      applyRestoredHistory(registry, restoreHistory(history))
       registry.set(connectionStatusAtom, "connected")
     }).pipe(
       Effect.catch((error) =>
@@ -139,8 +109,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
         registry.set(channelIdAtom, freshChannelId)
         yield* client.initialize(freshChannelId, DEFAULT_AGENT_ID)
         const history = yield* client.getHistory(freshChannelId)
-        registry.set(messagesAtom, toChatMessages(history))
-        registry.set(toolEventsAtom, [])
+        applyRestoredHistory(registry, restoreHistory(history))
         registry.set(connectionStatusAtom, "connected")
         return
       }
@@ -149,8 +118,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       registry.set(channelIdAtom, nextChannelId)
       yield* client.initialize(nextChannelId, DEFAULT_AGENT_ID)
       const history = yield* client.getHistory(nextChannelId)
-      registry.set(messagesAtom, toChatMessages(history))
-      registry.set(toolEventsAtom, [])
+      applyRestoredHistory(registry, restoreHistory(history))
       registry.set(connectionStatusAtom, "connected")
     }).pipe(
       Effect.catch((error) =>
@@ -272,8 +240,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
       registry.set(connectionStatusAtom, "connected")
 
       const history = yield* client.getHistory(chId)
-      registry.set(messagesAtom, toChatMessages(history))
-      registry.set(toolEventsAtom, [])
+      applyRestoredHistory(registry, restoreHistory(history))
     }).pipe(
       Effect.catch((error) =>
         Effect.sync(() => {
