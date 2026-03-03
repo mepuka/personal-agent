@@ -95,20 +95,13 @@ export function InputBar({
         borderStyle="single"
         borderColor={theme.statusPending}
         padding={0}
-        flexDirection="column"
+        flexDirection="row"
       >
         <text
-          content={` Checkpoint Required `}
+          content={` [checkpoint] \u26A0 ${checkpoint.action}: ${checkpoint.reason} `}
           fg={theme.statusPending}
-          bold={true}
-        />
-        <text
-          content={` ⚠ ${checkpoint.action}: ${checkpoint.reason}`}
-          fg={theme.text}
-        />
-        <text
-          content={` [Y] Approve  [N] Reject  [D] Defer`}
-          fg={theme.statusPending}
+          truncate={true}
+          flexGrow={1}
         />
       </box>
     )
@@ -125,8 +118,8 @@ export function InputBar({
       padding={0}
     >
       <text
-        content={isStreaming ? " streaming... " : " > "}
-        fg={isStreaming ? theme.streaming : theme.userText}
+        content={isStreaming ? " \u23F3 " : " > "}
+        fg={isStreaming ? theme.streaming : theme.textMuted}
       />
       <input
         ref={inputRef}
