@@ -148,7 +148,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     }
 
     if (activeModal === "session-picker" && key.name === "x") {
-      deleteSelectedChannel()
+      deleteSelectedChannel(activeChannelId)
       return
     }
   })
