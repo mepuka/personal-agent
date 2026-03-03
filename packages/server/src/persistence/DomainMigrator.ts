@@ -14,7 +14,8 @@ const loader = SqliteMigrator.fromRecord({
         cron_expression TEXT,
         interval_seconds INTEGER,
         trigger_tag TEXT NOT NULL,
-        action_ref TEXT NOT NULL,
+        action_kind TEXT NOT NULL,
+        action_payload_json TEXT NOT NULL,
         schedule_status TEXT NOT NULL,
         concurrency_policy TEXT NOT NULL,
         allows_catch_up INTEGER NOT NULL,
@@ -499,7 +500,7 @@ const loader = SqliteMigrator.fromRecord({
 
     yield* sql`
       UPDATE tool_invocations
-      SET idempotency_key = 'legacy:' || tool_invocation_id
+      SET idempotency_key = 'migrated:' || tool_invocation_id
       WHERE idempotency_key IS NULL
     `.unprepared
 
@@ -815,40 +816,6 @@ const loader = SqliteMigrator.fromRecord({
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-      ALTER TABLE schedules
-      ADD COLUMN action_kind TEXT NOT NULL DEFAULT 'Unknown'
-    `.unprepared.pipe(Effect.catch(() => Effect.void))
-
-    yield* sql`
-      ALTER TABLE schedules
-      ADD COLUMN action_payload_json TEXT NOT NULL DEFAULT '{"kind":"Unknown","actionRef":"action:unknown"}'
-    `.unprepared.pipe(Effect.catch(() => Effect.void))
-
-    yield* sql`
-      UPDATE schedules
-      SET
-        action_kind = CASE
-          WHEN action_ref = 'action:log' THEN 'Log'
-          WHEN action_ref = 'action:health_check' THEN 'HealthCheck'
-          WHEN action_ref LIKE 'action:command:%' THEN 'Command'
-          WHEN action_ref LIKE 'action:memory_subroutine:%'
-               AND length(trim(substr(action_ref, 26))) > 0 THEN 'MemorySubroutine'
-          ELSE 'Unknown'
-        END,
-        action_payload_json = CASE
-          WHEN action_ref = 'action:log' THEN '{"kind":"Log"}'
-          WHEN action_ref = 'action:health_check' THEN '{"kind":"HealthCheck"}'
-          WHEN action_ref LIKE 'action:command:%' THEN
-            '{"kind":"Command","command":' || json_quote(substr(action_ref, 16)) || '}'
-          WHEN action_ref LIKE 'action:memory_subroutine:%'
-               AND length(trim(substr(action_ref, 26))) > 0 THEN
-            '{"kind":"MemorySubroutine","subroutineId":' || json_quote(trim(substr(action_ref, 26))) || '}'
-          ELSE
-            '{"kind":"Unknown","actionRef":' || json_quote(action_ref) || '}'
-        END
-    `.unprepared
-
-    yield* sql`
       CREATE INDEX IF NOT EXISTS schedules_action_kind_idx
       ON schedules (action_kind)
     `.unprepared
@@ -866,6 +833,129 @@ const loader = SqliteMigrator.fromRecord({
 
     yield* sql`
       DROP TABLE IF EXISTS turn_post_commit_tasks
+    `.unprepared
+  }),
+  "0020_storage_foundation": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        compression TEXT NOT NULL CHECK (compression IN ('none', 'gzip')),
+        preview_text TEXT,
+        created_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS artifacts_sha256_uq
+      ON artifacts (sha256)
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS session_artifacts (
+        session_artifact_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        purpose TEXT NOT NULL CHECK (purpose IN ('ToolResult', 'SubroutineTrace', 'TranscriptSnapshot', 'CompactionDetail')),
+        turn_id TEXT,
+        tool_invocation_id TEXT,
+        run_id TEXT,
+        idempotency_key TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS session_artifacts_idempotency_uq
+      ON session_artifacts (idempotency_key)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS session_artifacts_session_purpose_created_idx
+      ON session_artifacts (session_id, purpose, created_at)
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS session_metrics (
+        session_id TEXT PRIMARY KEY,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        tool_result_bytes INTEGER NOT NULL DEFAULT 0,
+        artifact_bytes INTEGER NOT NULL DEFAULT 0,
+        file_touches INTEGER NOT NULL DEFAULT 0,
+        last_compaction_at TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS session_metrics_updated_idx
+      ON session_metrics (updated_at)
+    `.unprepared
+  }),
+  "0021_schedule_memory_subroutine_session_mode": Effect.void,
+  "0022_hard_cutover_schedule_schema_reset": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+      DROP TABLE IF EXISTS scheduled_executions
+    `.unprepared
+
+    yield* sql`
+      DROP TABLE IF EXISTS schedules
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS schedules (
+        schedule_id TEXT PRIMARY KEY,
+        owner_agent_id TEXT NOT NULL,
+        recurrence_label TEXT NOT NULL,
+        cron_expression TEXT,
+        interval_seconds INTEGER,
+        trigger_tag TEXT NOT NULL,
+        action_kind TEXT NOT NULL,
+        action_payload_json TEXT NOT NULL,
+        schedule_status TEXT NOT NULL,
+        concurrency_policy TEXT NOT NULL,
+        allows_catch_up INTEGER NOT NULL,
+        auto_disable_after_run INTEGER NOT NULL,
+        catch_up_window_seconds INTEGER NOT NULL,
+        max_catch_up_runs_per_tick INTEGER NOT NULL,
+        last_execution_at TEXT,
+        next_execution_at TEXT
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS schedules_next_execution_idx
+      ON schedules (schedule_status, next_execution_at)
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS schedules_action_kind_idx
+      ON schedules (action_kind)
+    `.unprepared
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_executions (
+        execution_id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        trigger_source TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        skip_reason TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `.unprepared
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS scheduled_executions_schedule_id_idx
+      ON scheduled_executions (schedule_id, created_at)
     `.unprepared
   })
 })

@@ -1,7 +1,16 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, CheckpointPort, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
+import type { AgentId, ArtifactId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type {
+  AgentState,
+  ArtifactStorePort,
+  CheckpointPort,
+  GovernancePort,
+  Instant,
+  MemoryPort,
+  SessionArtifactPort,
+  SessionMetricsPort
+} from "@template/domain/ports"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -15,7 +24,14 @@ import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
-import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import {
+  ArtifactStorePortTag,
+  CheckpointPortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag
+} from "../src/PortTags.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
@@ -1121,6 +1137,37 @@ const makeToolRegistryLayer = (
     })
   ).pipe(Layer.provide(checkpointPortSqliteLayer))
 
+  const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
+    putJson: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "application/json",
+        bytes: 0,
+        previewText: null
+      }),
+    putBytes: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "application/octet-stream",
+        bytes: 0,
+        previewText: null
+      }),
+    getBytes: () => Effect.succeed(new Uint8Array())
+  } as ArtifactStorePort)
+
+  const sessionArtifactLayer = Layer.succeed(SessionArtifactPortTag, {
+    link: () => Effect.void,
+    listBySession: () => Effect.succeed([])
+  } as SessionArtifactPort)
+
+  const sessionMetricsLayer = Layer.succeed(SessionMetricsPortTag, {
+    increment: () => Effect.void,
+    get: () => Effect.succeed(null),
+    shouldTriggerCompaction: () => Effect.succeed(false)
+  } as SessionMetricsPort)
+
   const commandHooksLayer = options.commandHooks === undefined
     ? CommandHooksDefaultLayer
     : withAdditionalCommandHooks(options.commandHooks)
@@ -1180,7 +1227,10 @@ const makeToolRegistryLayer = (
       Layer.provide(governanceTagLayer),
       Layer.provide(memoryPortTagLayer),
       Layer.provide(mockAgentConfigLayer),
-      Layer.provide(checkpointPortTagLayer)
+      Layer.provide(checkpointPortTagLayer),
+      Layer.provide(artifactStoreLayer),
+      Layer.provide(sessionArtifactLayer),
+      Layer.provide(sessionMetricsLayer)
     )
   )
 }

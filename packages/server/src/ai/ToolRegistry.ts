@@ -21,7 +21,10 @@ import {
   DEFAULT_MEMORY_TIER
 } from "@template/domain/system-defaults"
 import {
+  ArtifactRefSchema,
   CHECKPOINT_REPLAY_PAYLOAD_VERSION,
+  type ArtifactStorePort,
+  type SessionArtifactPort,
   type CheckpointReplayPayloadVersion,
   type Instant
 } from "@template/domain/ports"
@@ -38,7 +41,14 @@ import {
   computeAllowedTools,
   TOOL_CATALOG_BY_NAME
 } from "./ToolCatalog.js"
-import { CheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../PortTags.js"
+import {
+  ArtifactStorePortTag,
+  CheckpointPortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag
+} from "../PortTags.js"
 import {
   canonicalJsonStringify,
   makeCheckpointPayloadHash
@@ -126,6 +136,13 @@ const ToolErrorResult = Schema.Struct({
   message: Schema.String
 })
 type ToolErrorResult = typeof ToolErrorResult.Type
+
+const ToolOutputArtifactEnvelope = Schema.Struct({
+  storage: Schema.Literal("ArtifactRef"),
+  artifact: ArtifactRefSchema,
+  preview: Schema.String
+})
+type ToolOutputArtifactEnvelope = typeof ToolOutputArtifactEnvelope.Type
 
 const withToolErrorResult = <A extends Schema.Top>(success: A) =>
   Schema.Union([success, ToolErrorResult])
@@ -424,8 +441,12 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
       const governance = yield* GovernancePortTag
       const memoryPort = yield* MemoryPortTag
       const checkpointPort = yield* CheckpointPortTag
+      const artifactStore = yield* ArtifactStorePortTag
+      const sessionArtifactPort = yield* SessionArtifactPortTag
+      const sessionMetricsPort = yield* SessionMetricsPortTag
       const agentConfig = yield* AgentConfig
       const toolExecution = yield* ToolExecution
+      const artifactConfig = agentConfig.server.storage.artifacts
 
       // ── Startup invariant: toolkit tool names must match ToolCatalog ──
       const toolkitNames = new Set(Object.keys(TOOL_NAMES))
@@ -461,6 +482,19 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         Effect.gen(function*() {
           const toolInvocationId = (`toolinv:${crypto.randomUUID()}`) as ToolInvocationId
           const auditEntryId = (`audit:${params.context.turnId}:${crypto.randomUUID()}`) as AuditEntryId
+          const rawOutputBytes = utf8ByteLength(params.outputJson)
+
+          const storedOutput = yield* storeToolOutputIfLarge({
+            outputJson: params.outputJson,
+            outputBytes: rawOutputBytes,
+            thresholdBytes: artifactConfig.inlineToolResultMaxBytes,
+            previewBytes: artifactConfig.previewMaxBytes,
+            context: params.context,
+            turnId: params.context.turnId,
+            toolInvocationId,
+            artifactStore,
+            sessionArtifactPort
+          })
 
           yield* governance.recordToolInvocationWithAudit({
             invocation: {
@@ -475,7 +509,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               turnId: params.context.turnId,
               toolName: params.toolName,
               inputJson: params.inputJson,
-              outputJson: params.outputJson,
+              outputJson: storedOutput.storedOutputJson,
               decision: params.decision,
               complianceStatus: params.complianceStatus,
               policyId: params.policyId,
@@ -494,26 +528,44 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
               createdAt: params.context.now
             }
           })
+
+          yield* sessionMetricsPort.increment(params.context.sessionId, {
+            toolResultBytes: rawOutputBytes,
+            artifactBytes: storedOutput.artifactBytes,
+            fileTouches: estimateFileTouchDelta(params.toolName)
+          })
         })
 
       const replayStoredInvocation = <A>(
         outputJson: string
       ): Effect.Effect<A, ToolFailure> =>
-        Effect.suspend(() => {
-          const parsed = safeJsonParse(outputJson)
-          if (isToolFailurePayload(parsed)) {
-            return Effect.fail(fromToolFailurePayload(parsed))
-          }
-          if (parsed === null || parsed === undefined) {
-            return Effect.fail(
+        materializeStoredOutputJson(outputJson, artifactStore).pipe(
+          Effect.flatMap((materializedOutputJson) =>
+            Effect.suspend(() => {
+              const parsed = safeJsonParse(materializedOutputJson)
+              if (isToolFailurePayload(parsed)) {
+                return Effect.fail(fromToolFailurePayload(parsed))
+              }
+              if (parsed === null || parsed === undefined) {
+                return Effect.fail(
+                  makeToolFailure(
+                    "ReplayDecodeFailed",
+                    "stored invocation output was null or undefined"
+                  )
+                )
+              }
+              return Effect.succeed(parsed as A)
+            })
+          ),
+          Effect.catchDefect(() =>
+            Effect.fail(
               makeToolFailure(
                 "ReplayDecodeFailed",
-                "stored invocation output was null or undefined"
+                "failed to decode persisted tool invocation payload"
               )
             )
-          }
-          return Effect.succeed(parsed as A)
-        })
+          )
+        )
 
       const failWithRecordedInvocation = (params: {
         readonly context: ToolExecutionContext
@@ -1398,6 +1450,84 @@ const safeJsonParse = (value: string): unknown => {
   }
 }
 
+const utf8ByteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength
+
+const previewFromJsonString = (
+  value: string,
+  previewBytes: number
+): string => {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  return decoder.decode(
+    encoder.encode(value).slice(0, Math.max(1, previewBytes))
+  )
+}
+
+const storeToolOutputIfLarge = (params: {
+  readonly outputJson: string
+  readonly outputBytes: number
+  readonly thresholdBytes: number
+  readonly previewBytes: number
+  readonly context: ToolExecutionContext
+  readonly turnId: TurnId
+  readonly toolInvocationId: ToolInvocationId
+  readonly artifactStore: Pick<ArtifactStorePort, "putBytes">
+  readonly sessionArtifactPort: Pick<SessionArtifactPort, "link">
+}): Effect.Effect<{ readonly storedOutputJson: string; readonly artifactBytes: number }> =>
+  Effect.gen(function*() {
+    if (params.outputBytes <= params.thresholdBytes) {
+      return {
+        storedOutputJson: params.outputJson,
+        artifactBytes: 0
+      } as const
+    }
+
+    const preview = previewFromJsonString(params.outputJson, params.previewBytes)
+    const artifact = yield* params.artifactStore.putBytes(
+      params.context.sessionId,
+      "ToolResult",
+      new TextEncoder().encode(params.outputJson),
+      {
+        mediaType: "application/json",
+        previewText: preview
+      }
+    )
+    yield* params.sessionArtifactPort.link(
+      params.context.sessionId,
+      artifact,
+      "ToolResult",
+      {
+        turnId: params.turnId,
+        toolInvocationId: params.toolInvocationId
+      }
+    )
+
+    const envelope: ToolOutputArtifactEnvelope = {
+      storage: "ArtifactRef",
+      artifact,
+      preview
+    }
+
+    return {
+      storedOutputJson: safeJsonStringify(envelope),
+      artifactBytes: artifact.bytes
+    } as const
+  })
+
+const materializeStoredOutputJson = (
+  storedOutputJson: string,
+  artifactStore: Pick<ArtifactStorePort, "getBytes">
+): Effect.Effect<string> =>
+  Effect.gen(function*() {
+    const parsed = safeJsonParse(storedOutputJson)
+    if (!isToolOutputArtifactEnvelope(parsed)) {
+      return storedOutputJson
+    }
+    const bytes = yield* artifactStore.getBytes(parsed.artifact.artifactId)
+    return new TextDecoder().decode(bytes)
+  })
+
 const makeIdempotencyKey = (
   turnId: TurnId,
   iteration: number,
@@ -1442,6 +1572,10 @@ const safeCalculate = (expression: string): number | null => {
 }
 
 const isToolFailurePayload = Schema.is(ToolFailurePayload)
+const isToolOutputArtifactEnvelope = Schema.is(ToolOutputArtifactEnvelope)
+
+const estimateFileTouchDelta = (toolName: ToolName): number =>
+  String(toolName).startsWith("file_") ? 1 : 0
 
 const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)

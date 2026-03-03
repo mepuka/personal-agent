@@ -2,13 +2,19 @@ import { describe, expect, it } from "@effect/vitest"
 import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
 import type {
   BackgroundAction,
+  ChannelPort,
   GovernancePort,
   Instant,
   PolicyDecision,
-  PolicyInput
+  PolicyInput,
+  SessionTurnPort
 } from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
-import { GovernancePortTag } from "../src/PortTags.js"
+import {
+  ChannelPortTag,
+  GovernancePortTag,
+  SessionTurnPortTag
+} from "../src/PortTags.js"
 import {
   SubroutineCatalog,
   SubroutineNotFound,
@@ -154,7 +160,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
+        action: toMemorySubroutineAction("memory_consolidation")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -169,7 +175,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        action: { kind: "MemorySubroutine", subroutineId: "nonexistent" }
+        action: toMemorySubroutineAction("nonexistent")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -184,7 +190,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        action: { kind: "MemorySubroutine", subroutineId: "" }
+        action: toMemorySubroutineAction("")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -196,7 +202,7 @@ describe("SchedulerActionExecutor", () => {
     Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
+        action: toMemorySubroutineAction("memory_consolidation")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -231,7 +237,7 @@ describe("SchedulerActionExecutor", () => {
       const ticket = makeTicket({
         scheduleId: "schedule:daily-consolidation" as ScheduleId,
         ownerAgentId: "agent:context-test" as AgentId,
-        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" },
+        action: toMemorySubroutineAction("memory_consolidation"),
         triggerSource: "CronTick"
       })
 
@@ -271,7 +277,7 @@ describe("SchedulerActionExecutor", () => {
     return Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
-        action: { kind: "MemorySubroutine", subroutineId: "memory_consolidation" }
+        action: toMemorySubroutineAction("memory_consolidation")
       })
 
       const outcome = yield* executor.execute(ticket)
@@ -312,11 +318,28 @@ describe("SchedulerActionExecutor", () => {
 
     const catalogLayer = Layer.succeed(SubroutineCatalog, makeMockCatalog() as any)
     const runnerLayer = Layer.succeed(SubroutineRunner, makeMockRunner() as any)
+    const channelLayer = Layer.succeed(ChannelPortTag, {
+      create: () => Effect.void,
+      get: () => Effect.succeed(null),
+      delete: () => Effect.void,
+      list: () => Effect.succeed([]),
+      updateModelPreference: () => Effect.void
+    } as ChannelPort)
+    const sessionTurnLayer = Layer.succeed(SessionTurnPortTag, {
+      startSession: () => Effect.void,
+      appendTurn: () => Effect.void,
+      deleteSession: () => Effect.void,
+      updateContextWindow: () => Effect.void,
+      getSession: () => Effect.succeed(null),
+      listTurns: () => Effect.succeed([])
+    } as SessionTurnPort)
 
     const layer = SchedulerActionExecutor.layer.pipe(
       Layer.provide(Layer.mergeAll(
         capturingGovernanceLayer,
         commandRuntimeLayer,
+        channelLayer,
+        sessionTurnLayer,
         catalogLayer,
         runnerLayer
       ))
@@ -440,10 +463,27 @@ const makeTestLayer = (
   const runner = options.runner ?? makeMockRunner()
   const catalogLayer = Layer.succeed(SubroutineCatalog, catalog as any)
   const runnerLayer = Layer.succeed(SubroutineRunner, runner as any)
+  const channelLayer = Layer.succeed(ChannelPortTag, {
+    create: () => Effect.void,
+    get: () => Effect.succeed(null),
+    delete: () => Effect.void,
+    list: () => Effect.succeed([]),
+    updateModelPreference: () => Effect.void
+  } as ChannelPort)
+  const sessionTurnLayer = Layer.succeed(SessionTurnPortTag, {
+    startSession: () => Effect.void,
+    appendTurn: () => Effect.void,
+    deleteSession: () => Effect.void,
+    updateContextWindow: () => Effect.void,
+    getSession: () => Effect.succeed(null),
+    listTurns: () => Effect.succeed([])
+  } as SessionTurnPort)
 
   return SchedulerActionExecutor.layer.pipe(
     Layer.provide(governanceLayer),
     Layer.provide(commandRuntimeLayer),
+    Layer.provide(channelLayer),
+    Layer.provide(sessionTurnLayer),
     Layer.provide(catalogLayer),
     Layer.provide(runnerLayer)
   )
@@ -464,6 +504,12 @@ const makeCommandResult = (exitCode = 0): CommandResult => ({
 const toCommandAction = (command: string): BackgroundAction => ({
   kind: "Command",
   command
+})
+
+const toMemorySubroutineAction = (subroutineId: string): BackgroundAction => ({
+  kind: "MemorySubroutine",
+  subroutineId,
+  sessionMode: "synthetic"
 })
 
 const makeTicket = (overrides: Partial<ExecutionTicket> = {}): ExecutionTicket => ({

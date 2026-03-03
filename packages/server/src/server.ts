@@ -41,10 +41,13 @@ import { layer as WebChatRoutesLayer } from "./gateway/WebChatRoutes.js"
 import { GovernancePortSqlite } from "./GovernancePortSqlite.js"
 import { IntegrationPortSqlite } from "./IntegrationPortSqlite.js"
 import { MemoryPortSqlite } from "./MemoryPortSqlite.js"
+import { SessionArtifactPortSqlite } from "./SessionArtifactPortSqlite.js"
+import { SessionMetricsPortSqlite } from "./SessionMetricsPortSqlite.js"
 import * as DomainMigrator from "./persistence/DomainMigrator.js"
 import * as SqliteRuntime from "./persistence/SqliteRuntime.js"
 import {
   AgentStatePortTag,
+  ArtifactStorePortTag,
   ChannelPortTag,
   CheckpointPortTag,
   CompactionCheckpointPortTag,
@@ -52,6 +55,8 @@ import {
   IntegrationPortTag,
   MemoryPortTag,
   SchedulePortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag,
   SessionTurnPortTag
 } from "./PortTags.js"
 import { SchedulePortSqlite } from "./SchedulePortSqlite.js"
@@ -65,6 +70,9 @@ import { PostCommitExecutor } from "./turn/PostCommitExecutor.js"
 import { layer as PostCommitWorkflowLayer } from "./turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "./turn/TurnProcessingRuntime.js"
 import { layer as TurnProcessingWorkflowLayer } from "./turn/TurnProcessingWorkflow.js"
+import { ArtifactStoreFsCas } from "./storage/ArtifactStoreFsCas.js"
+import { SessionFileStore } from "./storage/SessionFileStore.js"
+import { StorageLayout } from "./storage/StorageLayout.js"
 
 const sqliteLayer = SqliteRuntime.layer()
 const migrationLayer = DomainMigrator.layer.pipe(
@@ -210,6 +218,50 @@ const modelRegistryLayer = ModelRegistry.layer.pipe(
 
 const chatPersistenceLayer = sqliteBackedLayer(ChatPersistence.layer)
 
+const storageLayoutLayer = StorageLayout.layer.pipe(
+  Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer))
+)
+
+const sessionFileStoreLayer = SessionFileStore.layer.pipe(
+  Layer.provide(Layer.mergeAll(storageLayoutLayer, BunServices.layer))
+)
+
+const artifactStoreFsCasLayer = ArtifactStoreFsCas.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    sqlInfrastructureLayer,
+    storageLayoutLayer,
+    agentConfigLayer,
+    BunServices.layer
+  ))
+)
+
+const artifactStorePortTagLayer = exposeAsPortTagLayer(
+  ArtifactStorePortTag,
+  ArtifactStoreFsCas,
+  artifactStoreFsCasLayer
+)
+
+const sessionArtifactPortSqliteLayer = SessionArtifactPortSqlite.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    sqlInfrastructureLayer,
+    sessionFileStoreLayer
+  ))
+)
+
+const sessionArtifactPortTagLayer = exposeAsPortTagLayer(
+  SessionArtifactPortTag,
+  SessionArtifactPortSqlite,
+  sessionArtifactPortSqliteLayer
+)
+
+const sessionMetricsPortSqliteLayer = sqliteBackedLayer(SessionMetricsPortSqlite.layer)
+
+const sessionMetricsPortTagLayer = exposeAsPortTagLayer(
+  SessionMetricsPortTag,
+  SessionMetricsPortSqlite,
+  sessionMetricsPortSqliteLayer
+)
+
 const withConfigLayer = <A, E, R, CE, CR>(
   configLayer: Layer.Layer<any, CE, CR>,
   build: (config: AgentConfigService) => Layer.Layer<A, E, R>
@@ -285,7 +337,10 @@ const toolRegistryLayer = ToolRegistry.layer.pipe(
     governancePortTagLayer,
     memoryPortTagLayer,
     agentConfigLayer,
-    checkpointPortTagLayer
+    checkpointPortTagLayer,
+    artifactStorePortTagLayer,
+    sessionArtifactPortTagLayer,
+    sessionMetricsPortTagLayer
   ))
 )
 
@@ -293,10 +348,14 @@ const subroutineCatalogLayer = SubroutineCatalog.layer.pipe(
   Layer.provide(Layer.mergeAll(agentConfigLayer, BunServices.layer))
 )
 
-const memoryFileServicesLayer = Layer.mergeAll(BunServices.layer, agentConfigLayer)
-
 const traceWriterLayer = TraceWriter.layer.pipe(
-  Layer.provide(memoryFileServicesLayer)
+  Layer.provide(Layer.mergeAll(
+    BunServices.layer,
+    agentConfigLayer,
+    artifactStorePortTagLayer,
+    sessionArtifactPortTagLayer,
+    sessionMetricsPortTagLayer
+  ))
 )
 
 const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
@@ -307,7 +366,8 @@ const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
     modelRegistryLayer,
     governancePortTagLayer,
     traceWriterLayer,
-    compactionCheckpointPortTagLayer
+    compactionCheckpointPortTagLayer,
+    sessionMetricsPortTagLayer
   ))
 )
 
@@ -322,6 +382,8 @@ const subroutineControlPlaneLayer = SubroutineControlPlane.layer.pipe(
 const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
   Layer.provide(Layer.mergeAll(
     commandRuntimeLayer,
+    channelPortTagLayer,
+    sessionTurnPortTagLayer,
     governancePortTagLayer,
     subroutineRunnerLayer,
     subroutineCatalogLayer
@@ -342,11 +404,19 @@ const schedulerTickLayer = SchedulerTickService.layer.pipe(
 )
 
 const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
-  Layer.provide(Layer.mergeAll(memoryFileServicesLayer, sessionTurnPortTagLayer))
+  Layer.provide(Layer.mergeAll(
+    agentConfigLayer,
+    sessionTurnPortTagLayer,
+    sessionFileStoreLayer
+  ))
 )
 
 const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
   Layer.provide(Layer.mergeAll(
+    agentConfigLayer,
+    sessionTurnPortTagLayer,
+    sessionMetricsPortTagLayer,
+    subroutineControlPlaneLayer,
     subroutineCatalogLayer,
     subroutineRunnerLayer,
     transcriptProjectorLayer
@@ -374,6 +444,7 @@ const turnProcessingWorkflowLayer = TurnProcessingWorkflowLayer.pipe(
     workflowEngineLayer,
     agentStatePortTagLayer,
     sessionTurnPortTagLayer,
+    sessionMetricsPortTagLayer,
     governancePortTagLayer,
     toolRegistryLayer,
     chatPersistenceLayer,
@@ -451,10 +522,13 @@ const portTagsLayer = Layer.mergeAll(
   memoryEntityLayer,
   agentStatePortTagLayer,
   sessionTurnPortTagLayer,
+  sessionMetricsPortTagLayer,
   schedulePortTagLayer,
   governancePortTagLayer,
   checkpointPortTagLayer,
   compactionCheckpointPortTagLayer,
+  artifactStorePortTagLayer,
+  sessionArtifactPortTagLayer,
   channelPortTagLayer,
   integrationPortTagLayer
 )

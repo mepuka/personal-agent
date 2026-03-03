@@ -1,9 +1,9 @@
 import type { AgentId, SessionId } from "@template/domain/ids"
-import type { AgentProfile } from "@template/domain/config"
 import type { TurnRecord } from "@template/domain/ports"
-import { DateTime, Effect, FileSystem, Layer, Path, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, ServiceMap } from "effect"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { SessionTurnPortTag } from "../PortTags.js"
+import { SessionFileStore } from "../storage/SessionFileStore.js"
 
 // ---------------------------------------------------------------------------
 // Service
@@ -32,61 +32,36 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
   "server/memory/TranscriptProjector",
   {
     make: Effect.gen(function*() {
-      const fs = yield* FileSystem.FileSystem
-      const pathService = yield* Path.Path
       const agentConfig = yield* AgentConfig
       const sessionTurnPort = yield* SessionTurnPortTag
-      const configPath = process.env.PA_CONFIG_PATH ?? "agent.yaml"
-      const configDir = pathService.dirname(pathService.resolve(configPath))
+      const sessionFileStore = yield* SessionFileStore
 
-      const resolveTranscriptPath = (
-        _agentId: AgentId,
-        sessionId: SessionId,
-        profile: AgentProfile
-      ): string | null => {
-        const transcriptConfig = profile.memoryRoutines?.transcripts
-        if (!transcriptConfig?.enabled) return null
-        const transcriptDir = pathService.resolve(configDir, transcriptConfig.directory)
-        return pathService.join(transcriptDir, sessionId, "transcript.md")
-      }
+      const shouldProject = (agentId: AgentId): Effect.Effect<boolean> =>
+        agentConfig.getAgent(agentId).pipe(
+          Effect.map((profile) => profile.memoryRoutines?.transcripts?.enabled === true),
+          Effect.orDie
+        )
 
       const appendTurn: TranscriptProjectorService["appendTurn"] = (agentId, sessionId, turn) =>
         Effect.gen(function*() {
-          const profile = yield* agentConfig.getAgent(agentId)
-          const filePath = resolveTranscriptPath(agentId, sessionId, profile)
-          if (!filePath) return
+          const enabled = yield* shouldProject(agentId)
+          if (!enabled) return
 
-          const rendered = renderTurn(turn)
-          yield* appendFileWithDirs(fs, pathService, filePath, rendered)
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning({
-              event: "transcript_projector_append_failed",
-              agentId,
-              sessionId,
-              error: String(error)
-            })
-          )
-        )
+          yield* sessionFileStore.appendTranscript(sessionId, renderTurn(turn))
+          yield* sessionFileStore.appendEventLine(sessionId, renderTurnEvent(turn))
+        })
 
       const projectSession: TranscriptProjectorService["projectSession"] = (agentId, sessionId, turns) =>
         Effect.gen(function*() {
-          const profile = yield* agentConfig.getAgent(agentId)
-          const filePath = resolveTranscriptPath(agentId, sessionId, profile)
-          if (!filePath) return
+          const enabled = yield* shouldProject(agentId)
+          if (!enabled) return
 
-          const content = renderTranscript(turns)
-          yield* writeFileWithDirs(fs, pathService, filePath, content)
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning({
-              event: "transcript_projector_project_failed",
-              agentId,
-              sessionId,
-              error: String(error)
-            })
+          yield* sessionFileStore.writeTranscript(sessionId, renderTranscript(turns))
+          yield* sessionFileStore.writeEventLines(
+            sessionId,
+            turns.map(renderTurnEvent)
           )
-        )
+        })
 
       const projectFromStore: TranscriptProjectorService["projectFromStore"] = (agentId, sessionId) =>
         Effect.gen(function*() {
@@ -100,39 +75,6 @@ export class TranscriptProjector extends ServiceMap.Service<TranscriptProjector>
 ) {
   static layer = Layer.effect(this, this.make)
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const writeFileWithDirs = (
-  fs: FileSystem.FileSystem,
-  pathService: Path.Path,
-  filePath: string,
-  content: string
-) =>
-  Effect.gen(function*() {
-    yield* fs.makeDirectory(pathService.dirname(filePath), { recursive: true })
-    yield* fs.writeFileString(filePath, content)
-  })
-
-const appendFileWithDirs = (
-  fs: FileSystem.FileSystem,
-  pathService: Path.Path,
-  filePath: string,
-  content: string
-) =>
-  Effect.gen(function*() {
-    yield* fs.makeDirectory(pathService.dirname(filePath), { recursive: true })
-    const existing = yield* fs.readFileString(filePath).pipe(
-      Effect.catchTag("PlatformError", (e) =>
-        e.reason._tag === "NotFound"
-          ? Effect.succeed("")
-          : Effect.fail(e)
-      )
-    )
-    yield* fs.writeFileString(filePath, existing + content)
-  })
 
 // ---------------------------------------------------------------------------
 // Renderers (pure)
@@ -183,4 +125,15 @@ const renderTurn = (turn: TurnRecord): string => {
   return lines.join("\n")
 }
 
-export { renderTurn as _renderTurn, renderTranscript as _renderTranscript }
+const renderTurnEvent = (turn: TurnRecord): string =>
+  JSON.stringify({
+    type: "turn",
+    turnId: turn.turnId,
+    turnIndex: turn.turnIndex,
+    role: turn.participantRole,
+    messageId: turn.message.messageId,
+    createdAt: DateTime.formatIso(turn.createdAt),
+    contentBlocks: turn.message.contentBlocks
+  })
+
+export { renderTurn as _renderTurn, renderTranscript as _renderTranscript, renderTurnEvent as _renderTurnEvent }

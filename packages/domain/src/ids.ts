@@ -39,6 +39,9 @@ export type ToolName = typeof ToolName.Type
 export const ToolInvocationId = Schema.String.pipe(Schema.brand("ToolInvocationId"))
 export type ToolInvocationId = typeof ToolInvocationId.Type
 
+export const ArtifactId = Schema.String.pipe(Schema.brand("ArtifactId"))
+export type ArtifactId = typeof ArtifactId.Type
+
 export const ToolDefinitionId = Schema.String.pipe(Schema.brand("ToolDefinitionId"))
 export type ToolDefinitionId = typeof ToolDefinitionId.Type
 

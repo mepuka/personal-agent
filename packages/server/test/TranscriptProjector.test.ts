@@ -6,6 +6,8 @@ import { DateTime, Effect, Layer } from "effect"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { SessionTurnPortTag } from "../src/PortTags.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
+import { SessionFileStore } from "../src/storage/SessionFileStore.js"
+import { StorageLayout } from "../src/storage/StorageLayout.js"
 import { rmSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -100,6 +102,8 @@ const makeToolUseTurn = (): TurnRecord => ({
 // ---------------------------------------------------------------------------
 
 const testDir = () => join(tmpdir(), `transcript-projector-test-${crypto.randomUUID()}`)
+const transcriptPath = (baseDir: string, sessionId: SessionId) =>
+  join(baseDir, "state", "sessions", sessionId, "transcript.md")
 
 const makeStubSessionTurnPort = (
   turns: ReadonlyArray<TurnRecord> = []
@@ -127,20 +131,38 @@ const makeTestLayer = (transcriptDir: string, enabled = true, turns: ReadonlyArr
         }
       }
     },
-    server: { port: 3000 }
+    server: {
+      port: 3000,
+      storage: {
+        rootDir: join(transcriptDir, "state")
+      }
+    }
   })
-
-  return TranscriptProjector.layer.pipe(
+  const storageLayoutLayer = StorageLayout.layer.pipe(
+    Layer.provide(Layer.mergeAll(
+      NodePath.layer,
+      agentConfigLayer
+    ))
+  )
+  const sessionFileStoreLayer = SessionFileStore.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
+      storageLayoutLayer
+    ))
+  )
+
+  return TranscriptProjector.layer.pipe(
+    Layer.provide(Layer.mergeAll(
       agentConfigLayer,
-      makeStubSessionTurnPort(turns)
+      makeStubSessionTurnPort(turns),
+      sessionFileStoreLayer
     ))
   )
 }
 
 const makeTestLayerNoConfig = () => {
+  const dir = testDir()
   const agentConfigLayer = AgentConfig.layerFromParsed({
     providers: { anthropic: { apiKeyEnv: "PA_ANTHROPIC_API_KEY" } },
     agents: {
@@ -150,15 +172,32 @@ const makeTestLayerNoConfig = () => {
         generation: { temperature: 0.7, maxOutputTokens: 4096 }
       }
     },
-    server: { port: 3000 }
+    server: {
+      port: 3000,
+      storage: {
+        rootDir: join(dir, "state")
+      }
+    }
   })
-
-  return TranscriptProjector.layer.pipe(
+  const storageLayoutLayer = StorageLayout.layer.pipe(
+    Layer.provide(Layer.mergeAll(
+      NodePath.layer,
+      agentConfigLayer
+    ))
+  )
+  const sessionFileStoreLayer = SessionFileStore.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
+      storageLayoutLayer
+    ))
+  )
+
+  return TranscriptProjector.layer.pipe(
+    Layer.provide(Layer.mergeAll(
       agentConfigLayer,
-      makeStubSessionTurnPort()
+      makeStubSessionTurnPort(),
+      sessionFileStoreLayer
     ))
   )
 }
@@ -176,7 +215,7 @@ describe("TranscriptProjector", () => {
       const projector = yield* TranscriptProjector
       yield* projector.appendTurn(AGENT_ID, SESSION_ID, makeAssistantTurn())
 
-      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      const expectedPath = transcriptPath(dir, SESSION_ID)
       expect(existsSync(expectedPath)).toBe(true)
 
       const content = readFileSync(expectedPath, "utf-8")
@@ -197,7 +236,7 @@ describe("TranscriptProjector", () => {
       yield* projector.appendTurn(AGENT_ID, SESSION_ID, makeUserTurn())
       yield* projector.appendTurn(AGENT_ID, SESSION_ID, makeAssistantTurn())
 
-      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      const expectedPath = transcriptPath(dir, SESSION_ID)
       const content = readFileSync(expectedPath, "utf-8")
       expect(content).toContain("## Turn 0 (user)")
       expect(content).toContain("Hello, how are you?")
@@ -220,7 +259,7 @@ describe("TranscriptProjector", () => {
         makeAssistantTurn()
       ])
 
-      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      const expectedPath = transcriptPath(dir, SESSION_ID)
       expect(existsSync(expectedPath)).toBe(true)
 
       const content = readFileSync(expectedPath, "utf-8")
@@ -264,7 +303,7 @@ describe("TranscriptProjector", () => {
       const projector = yield* TranscriptProjector
       yield* projector.appendTurn(AGENT_ID, SESSION_ID, makeToolUseTurn())
 
-      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      const expectedPath = transcriptPath(dir, SESSION_ID)
       const content = readFileSync(expectedPath, "utf-8")
       expect(content).toContain("[Tool: retrieve_memories]")
       expect(content).toContain('Input: {"query":"recent"}')
@@ -284,7 +323,7 @@ describe("TranscriptProjector", () => {
       const projector = yield* TranscriptProjector
       yield* projector.projectFromStore(AGENT_ID, SESSION_ID)
 
-      const expectedPath = join(dir, SESSION_ID, "transcript.md")
+      const expectedPath = transcriptPath(dir, SESSION_ID)
       expect(existsSync(expectedPath)).toBe(true)
 
       const content = readFileSync(expectedPath, "utf-8")

@@ -4,7 +4,10 @@ import type {
   PostCommitSubroutineOutcome
 } from "@template/domain/ports"
 import { Cause, DateTime, Effect, Layer, ServiceMap } from "effect"
+import { AgentConfig } from "../ai/AgentConfig.js"
+import { SessionMetricsPortTag, SessionTurnPortTag } from "../PortTags.js"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
+import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import { SubroutineRunner, type SubroutineContext } from "../memory/SubroutineRunner.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 
@@ -19,6 +22,10 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
       const catalog = yield* SubroutineCatalog
       const runner = yield* SubroutineRunner
       const projector = yield* TranscriptProjector
+      const agentConfig = yield* AgentConfig
+      const sessionTurnPort = yield* SessionTurnPortTag
+      const sessionMetricsPort = yield* SessionMetricsPortTag
+      const subroutineControlPlane = yield* SubroutineControlPlane
 
       const execute: PostCommitExecutorService["execute"] = (payload) =>
         Effect.gen(function*() {
@@ -74,6 +81,54 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
               Effect.sync(() => {
                 projectionSuccess = false
                 projectionError = Cause.pretty(cause)
+              })
+            )
+          )
+
+          yield* Effect.gen(function*() {
+            const session = yield* sessionTurnPort.getSession(payload.sessionId)
+            if (session === null) {
+              return
+            }
+
+            const compactionConfig = agentConfig.server.storage.compaction
+            const shouldTrigger = yield* sessionMetricsPort.shouldTriggerCompaction(
+              payload.sessionId,
+              {
+                tokenPressureRatio: compactionConfig.thresholds.tokenPressureRatio,
+                tokenCapacity: session.tokenCapacity,
+                toolResultBytes: compactionConfig.thresholds.toolResultBytes,
+                artifactBytes: compactionConfig.thresholds.artifactBytes,
+                fileTouches: compactionConfig.thresholds.fileTouches,
+                cooldownSeconds: compactionConfig.cooldownSeconds,
+                now
+              }
+            )
+            if (!shouldTrigger) {
+              return
+            }
+
+            const enqueueResults = yield* subroutineControlPlane.dispatchByTrigger(
+              "ContextPressure",
+              {
+                agentId: payload.agentId,
+                sessionId: payload.sessionId,
+                conversationId: payload.conversationId,
+                turnId: payload.turnId,
+                now
+              }
+            )
+            if (enqueueResults.some((result) => result.accepted)) {
+              yield* sessionMetricsPort.increment(payload.sessionId, {
+                lastCompactionAt: now
+              })
+            }
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("post_commit_compaction_gate_failed", {
+                turnId: payload.turnId,
+                sessionId: payload.sessionId,
+                cause: Cause.pretty(cause)
               })
             )
           )

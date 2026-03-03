@@ -1,8 +1,15 @@
 import { DateTime, Effect, FileSystem, Layer, Path, ServiceMap } from "effect"
 import type * as Response from "effect/unstable/ai/Response"
 import { AgentConfig } from "../ai/AgentConfig.js"
+import {
+  ArtifactStorePortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag
+} from "../PortTags.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
 import type { SubroutineContext, SubroutineResult } from "./SubroutineRunner.js"
+
+const textEncoder = new TextEncoder()
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +38,9 @@ export class TraceWriter extends ServiceMap.Service<TraceWriter>()(
       const fs = yield* FileSystem.FileSystem
       const pathService = yield* Path.Path
       const agentConfig = yield* AgentConfig
+      const artifactStore = yield* ArtifactStorePortTag
+      const sessionArtifactPort = yield* SessionArtifactPortTag
+      const sessionMetricsPort = yield* SessionMetricsPortTag
       const configPath = process.env.PA_CONFIG_PATH ?? "agent.yaml"
       const configDir = pathService.dirname(pathService.resolve(configPath))
 
@@ -40,6 +50,9 @@ export class TraceWriter extends ServiceMap.Service<TraceWriter>()(
           const traceConfig = profile.memoryRoutines?.traces
           if (!traceConfig?.enabled) return
 
+          const content = renderTrace(params)
+
+          // Keep explicit trace files for local debugging and parity with existing behavior.
           const traceDir = pathService.resolve(configDir, traceConfig.directory)
           const datePart = DateTime.formatIso(params.context.now).slice(0, 10)
           const filePath = pathService.join(
@@ -48,9 +61,30 @@ export class TraceWriter extends ServiceMap.Service<TraceWriter>()(
             datePart,
             `${params.context.runId}.trace.txt`
           )
-
-          const content = renderTrace(params)
           yield* writeFileWithDirs(fs, pathService, filePath, content)
+
+          const artifact = yield* artifactStore.putBytes(
+            params.context.sessionId,
+            "SubroutineTrace",
+            textEncoder.encode(content),
+            {
+              mediaType: "text/plain; charset=utf-8",
+              previewText: content.slice(0, 512)
+            }
+          )
+          yield* sessionArtifactPort.link(
+            params.context.sessionId,
+            artifact,
+            "SubroutineTrace",
+            {
+              turnId: params.context.turnId,
+              runId: params.context.runId
+            }
+          )
+          yield* sessionMetricsPort.increment(params.context.sessionId, {
+            artifactBytes: artifact.bytes,
+            fileTouches: 1
+          })
         }).pipe(Effect.catch(() => Effect.void))
 
       return { writeRunTrace } satisfies TraceWriterService

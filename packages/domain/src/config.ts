@@ -14,9 +14,18 @@ import { Schema } from "effect"
 
 import { MemoryRoutinesConfig } from "./memory.js"
 import {
+  DEFAULT_ARTIFACT_COMPRESSION,
+  DEFAULT_ARTIFACT_PREVIEW_MAX_BYTES,
+  DEFAULT_COMPACTION_ARTIFACT_BYTES,
+  DEFAULT_COMPACTION_COOLDOWN_SECONDS,
+  DEFAULT_COMPACTION_FILE_TOUCHES,
+  DEFAULT_COMPACTION_TOKEN_PRESSURE_RATIO,
+  DEFAULT_COMPACTION_TOOL_RESULT_BYTES,
+  DEFAULT_INLINE_TOOL_RESULT_MAX_BYTES,
   DEFAULT_TOKEN_CAPACITY,
   DEFAULT_MAX_TOOL_ITERATIONS,
   DEFAULT_MEMORY_RETRIEVE_LIMIT,
+  DEFAULT_STORAGE_ROOT_DIR,
   MAX_MEMORY_RETRIEVE_LIMIT
 } from "./system-defaults.js"
 
@@ -104,8 +113,84 @@ export const AgentProfileSchema = Schema.Struct({
 })
 export type AgentProfile = typeof AgentProfileSchema.Type
 
+export const ArtifactCompressionSchema = Schema.Literals([
+  "none",
+  "gzip"
+])
+export type ArtifactCompression = typeof ArtifactCompressionSchema.Type
+
+export const ServerStorageArtifactsConfigSchema = Schema.Struct({
+  inlineToolResultMaxBytes: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_INLINE_TOOL_RESULT_MAX_BYTES)
+  ),
+  previewMaxBytes: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_ARTIFACT_PREVIEW_MAX_BYTES)
+  ),
+  compression: ArtifactCompressionSchema.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_ARTIFACT_COMPRESSION)
+  )
+})
+export type ServerStorageArtifactsConfig = typeof ServerStorageArtifactsConfigSchema.Type
+
+export const ServerStorageCompactionThresholdsSchema = Schema.Struct({
+  tokenPressureRatio: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_TOKEN_PRESSURE_RATIO)
+  ),
+  toolResultBytes: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_TOOL_RESULT_BYTES)
+  ),
+  artifactBytes: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_ARTIFACT_BYTES)
+  ),
+  fileTouches: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_FILE_TOUCHES)
+  )
+})
+export type ServerStorageCompactionThresholds =
+  typeof ServerStorageCompactionThresholdsSchema.Type
+
+const defaultServerStorageCompactionThresholds = Schema.decodeUnknownSync(
+  ServerStorageCompactionThresholdsSchema
+)({})
+
+export const ServerStorageCompactionConfigSchema = Schema.Struct({
+  cooldownSeconds: Schema.Number.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_COMPACTION_COOLDOWN_SECONDS)
+  ),
+  thresholds: ServerStorageCompactionThresholdsSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultServerStorageCompactionThresholds)
+  )
+})
+export type ServerStorageCompactionConfig = typeof ServerStorageCompactionConfigSchema.Type
+
+const defaultServerStorageArtifactsConfig = Schema.decodeUnknownSync(
+  ServerStorageArtifactsConfigSchema
+)({})
+
+const defaultServerStorageCompactionConfig = Schema.decodeUnknownSync(
+  ServerStorageCompactionConfigSchema
+)({})
+
+export const ServerStorageConfigSchema = Schema.Struct({
+  rootDir: Schema.String.pipe(
+    Schema.withDecodingDefaultKey(() => DEFAULT_STORAGE_ROOT_DIR)
+  ),
+  artifacts: ServerStorageArtifactsConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultServerStorageArtifactsConfig)
+  ),
+  compaction: ServerStorageCompactionConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultServerStorageCompactionConfig)
+  )
+})
+export type ServerStorageConfig = typeof ServerStorageConfigSchema.Type
+
+const defaultServerStorageConfig = Schema.decodeUnknownSync(ServerStorageConfigSchema)({})
+
 export const ServerConfigSchema = Schema.Struct({
-  port: Schema.Number
+  port: Schema.Number,
+  storage: ServerStorageConfigSchema.pipe(
+    Schema.withDecodingDefaultKey(() => defaultServerStorageConfig)
+  )
 })
 export type ServerConfig = typeof ServerConfigSchema.Type
 

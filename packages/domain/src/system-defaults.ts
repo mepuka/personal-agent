@@ -16,6 +16,17 @@ export const MAX_PAGINATION_LIMIT = 500
 /** Scheduler tick interval (seconds). */
 export const SCHEDULER_TICK_SECONDS = 10
 
+/** Server storage defaults. */
+export const DEFAULT_STORAGE_ROOT_DIR = "state"
+export const DEFAULT_INLINE_TOOL_RESULT_MAX_BYTES = 262_144
+export const DEFAULT_ARTIFACT_PREVIEW_MAX_BYTES = 4_096
+export const DEFAULT_ARTIFACT_COMPRESSION = "gzip" as const
+export const DEFAULT_COMPACTION_COOLDOWN_SECONDS = 300
+export const DEFAULT_COMPACTION_TOKEN_PRESSURE_RATIO = 0.82
+export const DEFAULT_COMPACTION_TOOL_RESULT_BYTES = 262_144
+export const DEFAULT_COMPACTION_ARTIFACT_BYTES = 1_048_576
+export const DEFAULT_COMPACTION_FILE_TOUCHES = 40
+
 /** Default token capacity for new agent state. */
 export const DEFAULT_TOKEN_CAPACITY = 200_000
 

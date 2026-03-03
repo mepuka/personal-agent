@@ -19,7 +19,11 @@ import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
 import { type CheckpointSignal, ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
-import { CompactionCheckpointPortTag, GovernancePortTag } from "../PortTags.js"
+import {
+  CompactionCheckpointPortTag,
+  GovernancePortTag,
+  SessionMetricsPortTag
+} from "../PortTags.js"
 import { makeLoopCapResponse, mergeUsage, toProviderConfigOverride, zeroUsage } from "../turn/TurnProcessingWorkflow.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
 import { TraceWriter } from "./TraceWriter.js"
@@ -92,6 +96,7 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
       const modelRegistry = yield* ModelRegistry
       const governancePort = yield* GovernancePortTag
       const compactionCheckpointPort = yield* CompactionCheckpointPortTag
+      const sessionMetricsPort = yield* SessionMetricsPortTag
       const traceWriter = yield* TraceWriter
 
       const execute: SubroutineRunnerService["execute"] = (subroutine, context) =>
@@ -164,6 +169,12 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
           const modelUsageJson = yield* encodeUsageToJson(loopResult.usage).pipe(
             Effect.catch(() => Effect.succeed(null))
           )
+          const tokenCount = totalUsageTokens(loopResult.usage)
+          if (tokenCount > 0) {
+            yield* sessionMetricsPort.increment(context.sessionId, {
+              tokenCount
+            })
+          }
 
           // Audit: completed
           yield* writeSubroutineAudit(
@@ -289,6 +300,9 @@ export class SubroutineRunner extends ServiceMap.Service<SubroutineRunner>()(
 ) {
   static layer = Layer.effect(this, this.make)
 }
+
+const totalUsageTokens = (usage: Response.Usage): number =>
+  (usage.inputTokens.total ?? 0) + (usage.outputTokens.total ?? 0)
 
 // ---------------------------------------------------------------------------
 // Error Classification

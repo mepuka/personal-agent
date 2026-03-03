@@ -1,13 +1,22 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type {
+  AgentId,
+  ArtifactId,
+  ConversationId,
+  SessionId,
+  TurnId
+} from "@template/domain/ids"
 import type {
   AgentState,
   AgentStatePort,
+  ArtifactStorePort,
   CheckpointPort,
   GovernancePort,
   Instant,
   MemoryPort,
+  SessionArtifactPort,
+  SessionMetricsPort,
   SessionState,
   SessionTurnPort
 } from "@template/domain/ports"
@@ -37,7 +46,16 @@ import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
-import { AgentStatePortTag, CheckpointPortTag, GovernancePortTag, MemoryPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import {
+  AgentStatePortTag,
+  ArtifactStorePortTag,
+  CheckpointPortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag,
+  SessionTurnPortTag
+} from "../src/PortTags.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
 import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
@@ -348,7 +366,35 @@ const makeChatFlowLayer = (
     Layer.provide(governanceTagLayer),
     Layer.provide(memoryPortTagLayer),
     Layer.provide(agentConfigLayer),
-    Layer.provide(checkpointPortTagLayer)
+    Layer.provide(checkpointPortTagLayer),
+    Layer.provide(Layer.succeed(ArtifactStorePortTag, {
+      putJson: () =>
+        Effect.succeed({
+          artifactId: "artifact:test" as ArtifactId,
+          sha256: "test",
+          mediaType: "application/json",
+          bytes: 0,
+          previewText: null
+        }),
+      putBytes: () =>
+        Effect.succeed({
+          artifactId: "artifact:test" as ArtifactId,
+          sha256: "test",
+          mediaType: "application/octet-stream",
+          bytes: 0,
+          previewText: null
+        }),
+      getBytes: () => Effect.succeed(new Uint8Array())
+    } as ArtifactStorePort)),
+    Layer.provide(Layer.succeed(SessionArtifactPortTag, {
+      link: () => Effect.void,
+      listBySession: () => Effect.succeed([])
+    } as SessionArtifactPort)),
+    Layer.provide(Layer.succeed(SessionMetricsPortTag, {
+      increment: () => Effect.void,
+      get: () => Effect.succeed(null),
+      shouldTriggerCompaction: () => Effect.succeed(false)
+    } as SessionMetricsPort))
   )
 
   const clusterLayer = SingleRunner.layer().pipe(
@@ -407,6 +453,11 @@ const makeChatFlowLayer = (
     Layer.provide(agentConfigLayer),
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(checkpointPortTagLayer),
+    Layer.provide(Layer.succeed(SessionMetricsPortTag, {
+      increment: () => Effect.void,
+      get: () => Effect.succeed(null),
+      shouldTriggerCompaction: () => Effect.succeed(false)
+    } as SessionMetricsPort)),
     Layer.provide(subroutineControlPlaneLayer),
     Layer.provide(transcriptProjectorLayer),
     Layer.provide(subroutineCatalogLayer)

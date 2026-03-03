@@ -67,6 +67,7 @@ import {
   AgentStatePortTag,
   CheckpointPortTag,
   GovernancePortTag,
+  SessionMetricsPortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
 import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
@@ -279,6 +280,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
   Effect.fn("TurnProcessingWorkflow.execute")(function*(payload, _executionId: string) {
     const agentStatePort = yield* AgentStatePortTag
     const sessionTurnPort = yield* SessionTurnPortTag
+    const sessionMetricsPort = yield* SessionMetricsPortTag
     const governancePort = yield* GovernancePortTag
     const toolRegistry = yield* ToolRegistry
     const chatPersistence = yield* Chat.Persistence
@@ -824,6 +826,26 @@ export const layer = TurnProcessingWorkflow.toLayer(
       )
     }).asEffect()
 
+    const tokenCountDelta = extractTotalTokensFromUsageJson(
+      assistantResult.modelUsageJson
+    )
+    if (tokenCountDelta > 0) {
+      yield* Activity.make({
+        name: "IncrementSessionMetricsAfterTurn",
+        execute: sessionMetricsPort.increment(payload.sessionId as SessionId, {
+          tokenCount: tokenCountDelta
+        })
+      }).asEffect().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("turn_processing_metrics_increment_failed", {
+            turnId: payload.turnId,
+            sessionId: payload.sessionId,
+            cause
+          })
+        )
+      )
+    }
+
     yield* writeAuditEntry(
       governancePort,
       payload,
@@ -1288,6 +1310,25 @@ export const looksLikeProviderCreditExhausted = (reason: string): boolean => {
     || normalized.includes("insufficient credits")
     || normalized.includes("insufficient_quota")
     || normalized.includes("billing")
+}
+
+export const extractTotalTokensFromUsageJson = (modelUsageJson: string | null): number => {
+  if (modelUsageJson === null) {
+    return 0
+  }
+  try {
+    const parsed = JSON.parse(modelUsageJson) as {
+      readonly inputTokens?: { readonly total?: number }
+      readonly outputTokens?: { readonly total?: number }
+    }
+    const inputTotal = parsed.inputTokens?.total ?? 0
+    const outputTotal = parsed.outputTokens?.total ?? 0
+    return Number.isFinite(inputTotal + outputTotal)
+      ? Math.max(0, Math.floor(inputTotal + outputTotal))
+      : 0
+  } catch {
+    return 0
+  }
 }
 
 export const zeroUsage = (): Response.Usage =>

@@ -1,5 +1,6 @@
 import type {
   AgentStatePort,
+  ArtifactStorePort,
   ChannelPort,
   CheckpointPort,
   CompactionCheckpointPort,
@@ -7,6 +8,8 @@ import type {
   IntegrationPort,
   MemoryPort,
   SchedulePort,
+  SessionArtifactPort,
+  SessionMetricsPort,
   SessionTurnPort
 } from "@template/domain/ports"
 import { ServiceMap } from "effect"
@@ -33,4 +36,16 @@ export const CheckpointPortTag = ServiceMap.Service<CheckpointPort>("server/port
 
 export const CompactionCheckpointPortTag = ServiceMap.Service<CompactionCheckpointPort>(
   "server/ports/CompactionCheckpointPort"
+)
+
+export const ArtifactStorePortTag = ServiceMap.Service<ArtifactStorePort>(
+  "server/ports/ArtifactStorePort"
+)
+
+export const SessionArtifactPortTag = ServiceMap.Service<SessionArtifactPort>(
+  "server/ports/SessionArtifactPort"
+)
+
+export const SessionMetricsPortTag = ServiceMap.Service<SessionMetricsPort>(
+  "server/ports/SessionMetricsPort"
 )

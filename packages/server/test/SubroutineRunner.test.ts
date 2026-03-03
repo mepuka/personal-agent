@@ -1,7 +1,18 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { AgentState, CheckpointPort, CompactionCheckpointPort, CompactionCheckpointRecord, GovernancePort, Instant, MemoryPort } from "@template/domain/ports"
+import type { AgentId, ArtifactId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type {
+  AgentState,
+  ArtifactStorePort,
+  CheckpointPort,
+  CompactionCheckpointPort,
+  CompactionCheckpointRecord,
+  GovernancePort,
+  Instant,
+  MemoryPort,
+  SessionArtifactPort,
+  SessionMetricsPort
+} from "@template/domain/ports"
 import type { SubroutineToolScope } from "@template/domain/memory"
 import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
@@ -17,7 +28,15 @@ import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
-import { CheckpointPortTag, CompactionCheckpointPortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import {
+  ArtifactStorePortTag,
+  CheckpointPortTag,
+  CompactionCheckpointPortTag,
+  GovernancePortTag,
+  MemoryPortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag
+} from "../src/PortTags.js"
 import { layer as CliRuntimeLocalLayer } from "../src/tools/cli/CliRuntimeLocal.js"
 import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandBackendLocal.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
@@ -150,6 +169,37 @@ const makeCompactionCheckpointMock = (captured?: Array<CompactionCheckpointRecor
   getLatestForSubroutine: () => Effect.succeed(null),
   listBySession: () => Effect.succeed([])
 })
+
+const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
+  putJson: () =>
+    Effect.succeed({
+      artifactId: "artifact:test" as ArtifactId,
+      sha256: "test",
+      mediaType: "application/json",
+      bytes: 0,
+      previewText: null
+    }),
+  putBytes: () =>
+    Effect.succeed({
+      artifactId: "artifact:test" as ArtifactId,
+      sha256: "test",
+      mediaType: "application/octet-stream",
+      bytes: 0,
+      previewText: null
+    }),
+  getBytes: () => Effect.succeed(new Uint8Array())
+} as ArtifactStorePort)
+
+const sessionArtifactLayer = Layer.succeed(SessionArtifactPortTag, {
+  link: () => Effect.void,
+  listBySession: () => Effect.succeed([])
+} as SessionArtifactPort)
+
+const sessionMetricsLayer = Layer.succeed(SessionMetricsPortTag, {
+  increment: () => Effect.void,
+  get: () => Effect.succeed(null),
+  shouldTriggerCompaction: () => Effect.succeed(false)
+} as SessionMetricsPort)
 
 // ---------------------------------------------------------------------------
 // Test Fixtures
@@ -291,7 +341,10 @@ const makeTestLayer = (
     Layer.provide(governanceTagLayer),
     Layer.provide(memoryPortTagLayer),
     Layer.provide(mockAgentConfigLayer),
-    Layer.provide(checkpointPortTagLayer)
+    Layer.provide(checkpointPortTagLayer),
+    Layer.provide(artifactStoreLayer),
+    Layer.provide(sessionArtifactLayer),
+    Layer.provide(sessionMetricsLayer)
   )
 
   const chatPersistenceLayer = ChatPersistence.layer.pipe(
@@ -324,7 +377,8 @@ const makeTestLayer = (
     Layer.provide(mockModelRegistryLayer),
     Layer.provide(governanceTagLayer),
     Layer.provide(traceWriterLayer),
-    Layer.provide(compactionCheckpointPortTagLayer)
+    Layer.provide(compactionCheckpointPortTagLayer),
+    Layer.provide(sessionMetricsLayer)
   )
 
   return Layer.mergeAll(
@@ -785,7 +839,10 @@ describe("SubroutineRunner checkpoint", () => {
       Layer.provide(governanceTagLayer),
       Layer.provide(memoryPortTagLayer),
       Layer.provide(mockAgentConfigLayer),
-      Layer.provide(checkpointPortTagLayer)
+      Layer.provide(checkpointPortTagLayer),
+      Layer.provide(artifactStoreLayer),
+      Layer.provide(sessionArtifactLayer),
+      Layer.provide(sessionMetricsLayer)
     )
     const chatPersistenceLayer = ChatPersistence.layer.pipe(Layer.provide(sqlInfrastructureLayer))
     const mockModelRegistryLayer = Layer.effect(
@@ -804,7 +861,8 @@ describe("SubroutineRunner checkpoint", () => {
       Layer.provide(mockModelRegistryLayer),
       Layer.provide(governanceTagLayer),
       Layer.provide(traceWriterLayer),
-      Layer.provide(failingCheckpointLayer)
+      Layer.provide(failingCheckpointLayer),
+      Layer.provide(sessionMetricsLayer)
     )
 
     const layer = Layer.mergeAll(

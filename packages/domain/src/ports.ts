@@ -7,7 +7,14 @@ import type {
   TokenBudgetExceeded,
   ToolQuotaExceeded
 } from "./errors.js"
-import { AgentId, ConversationId, MessageId, SessionId, TurnId } from "./ids.js"
+import {
+  AgentId,
+  ArtifactId,
+  ConversationId,
+  MessageId,
+  SessionId,
+  TurnId
+} from "./ids.js"
 import type {
   AuditEntryId,
   AuditLogId,
@@ -32,6 +39,7 @@ import {
 } from "./config.js"
 import type {
   AuthorizationDecision,
+  ArtifactPurpose,
   ComplianceStatus,
   ConcurrencyPolicy,
   ExecutionOutcome,
@@ -76,6 +84,60 @@ export interface SessionState {
   readonly conversationId: ConversationId
   readonly tokenCapacity: number
   readonly tokensUsed: number
+}
+
+export const ArtifactRefSchema = Schema.Struct({
+  artifactId: ArtifactId,
+  sha256: Schema.String,
+  mediaType: Schema.String,
+  bytes: Schema.Number,
+  previewText: Schema.Union([Schema.String, Schema.Null])
+})
+export type ArtifactRef = typeof ArtifactRefSchema.Type
+
+export interface SessionArtifactRecord {
+  readonly sessionArtifactId: string
+  readonly sessionId: SessionId
+  readonly artifact: ArtifactRef
+  readonly purpose: ArtifactPurpose
+  readonly turnId: TurnId | null
+  readonly toolInvocationId: ToolInvocationId | null
+  readonly runId: string | null
+  readonly createdAt: Instant
+}
+
+export interface SessionArtifactProvenance {
+  readonly turnId?: TurnId | null
+  readonly toolInvocationId?: ToolInvocationId | null
+  readonly runId?: string | null
+}
+
+export interface SessionMetricsRecord {
+  readonly sessionId: SessionId
+  readonly tokenCount: number
+  readonly toolResultBytes: number
+  readonly artifactBytes: number
+  readonly fileTouches: number
+  readonly lastCompactionAt: Instant | null
+  readonly updatedAt: Instant
+}
+
+export interface SessionMetricsDelta {
+  readonly tokenCount?: number
+  readonly toolResultBytes?: number
+  readonly artifactBytes?: number
+  readonly fileTouches?: number
+  readonly lastCompactionAt?: Instant | null
+}
+
+export interface SessionCompactionPolicy {
+  readonly tokenPressureRatio: number
+  readonly tokenCapacity: number
+  readonly toolResultBytes: number
+  readonly artifactBytes: number
+  readonly fileTouches: number
+  readonly cooldownSeconds: number
+  readonly now: Instant
 }
 
 export const TextBlock = Schema.Struct({
@@ -352,9 +414,18 @@ export const BackgroundActionCommand = Schema.Struct({
 })
 export type BackgroundActionCommand = typeof BackgroundActionCommand.Type
 
+export const ScheduledMemorySessionMode = Schema.Literals([
+  "synthetic",
+  "active_agent_session",
+  "session_id"
+])
+export type ScheduledMemorySessionMode = typeof ScheduledMemorySessionMode.Type
+
 export const BackgroundActionMemorySubroutine = Schema.Struct({
   kind: Schema.Literal("MemorySubroutine"),
-  subroutineId: Schema.String
+  subroutineId: Schema.String,
+  sessionMode: ScheduledMemorySessionMode,
+  sessionId: Schema.optionalKey(SessionId)
 })
 export type BackgroundActionMemorySubroutine = typeof BackgroundActionMemorySubroutine.Type
 
@@ -502,6 +573,55 @@ export interface SchedulePort {
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
   readonly getSchedule: (scheduleId: ScheduleId) => Effect.Effect<ScheduleRecord | null>
   readonly listExecutions: () => Effect.Effect<Array<ScheduledExecutionRecord>>
+}
+
+export interface ArtifactStorePort {
+  readonly putJson: (
+    sessionId: SessionId,
+    purpose: ArtifactPurpose,
+    payload: unknown,
+    metadata?: {
+      readonly mediaType?: string
+      readonly previewText?: string | null
+    }
+  ) => Effect.Effect<ArtifactRef>
+  readonly putBytes: (
+    sessionId: SessionId,
+    purpose: ArtifactPurpose,
+    bytes: Uint8Array,
+    metadata?: {
+      readonly mediaType?: string
+      readonly previewText?: string | null
+    }
+  ) => Effect.Effect<ArtifactRef>
+  readonly getBytes: (artifactId: ArtifactId) => Effect.Effect<Uint8Array>
+}
+
+export interface SessionArtifactPort {
+  readonly link: (
+    sessionId: SessionId,
+    artifactRef: ArtifactRef,
+    purpose: ArtifactPurpose,
+    provenance?: SessionArtifactProvenance
+  ) => Effect.Effect<void>
+  readonly listBySession: (
+    sessionId: SessionId,
+    purpose?: ArtifactPurpose
+  ) => Effect.Effect<ReadonlyArray<SessionArtifactRecord>>
+}
+
+export interface SessionMetricsPort {
+  readonly increment: (
+    sessionId: SessionId,
+    deltas: SessionMetricsDelta
+  ) => Effect.Effect<void>
+  readonly get: (
+    sessionId: SessionId
+  ) => Effect.Effect<SessionMetricsRecord | null>
+  readonly shouldTriggerCompaction: (
+    sessionId: SessionId,
+    policy: SessionCompactionPolicy
+  ) => Effect.Effect<boolean>
 }
 
 export interface ChannelRecord {

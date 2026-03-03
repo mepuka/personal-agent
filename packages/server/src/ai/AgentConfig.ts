@@ -1,4 +1,10 @@
-import type { AgentProfile, ChannelsConfig, IntegrationsConfig, ProviderConfig } from "@template/domain/config"
+import type {
+  AgentProfile,
+  ChannelsConfig,
+  IntegrationsConfig,
+  ProviderConfig,
+  ServerConfig
+} from "@template/domain/config"
 import { AgentConfigFileSchema } from "@template/domain/config"
 import { Effect, FileSystem, Layer, Schema, ServiceMap } from "effect"
 
@@ -12,7 +18,7 @@ export class AgentProfileNotFound extends Schema.ErrorClass<AgentProfileNotFound
 export interface AgentConfigService {
   readonly providers: Map<string, ProviderConfig>
   readonly agents: Map<string, AgentProfile>
-  readonly server: { readonly port: number }
+  readonly server: ServerConfig
   readonly channels: ChannelsConfig
   readonly integrations: IntegrationsConfig
   readonly defaultAgent: AgentProfile

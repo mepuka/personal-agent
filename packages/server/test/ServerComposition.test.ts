@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
 import type {
   AgentStatePort,
+  ArtifactStorePort,
   ChannelPort,
   CheckpointPort,
   CompactionCheckpointPort,
@@ -9,6 +10,8 @@ import type {
   IntegrationPort,
   MemoryPort,
   SchedulePort,
+  SessionArtifactPort,
+  SessionMetricsPort,
   SessionTurnPort
 } from "@template/domain/ports"
 import { Effect, Exit, Layer, Scope } from "effect"
@@ -33,6 +36,11 @@ import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
 import { SubroutineRunner } from "../src/memory/SubroutineRunner.js"
 import { TraceWriter } from "../src/memory/TraceWriter.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
+import { SessionArtifactPortSqlite } from "../src/SessionArtifactPortSqlite.js"
+import { SessionMetricsPortSqlite } from "../src/SessionMetricsPortSqlite.js"
+import { ArtifactStoreFsCas } from "../src/storage/ArtifactStoreFsCas.js"
+import { SessionFileStore } from "../src/storage/SessionFileStore.js"
+import { StorageLayout } from "../src/storage/StorageLayout.js"
 import { ChannelPortSqlite } from "../src/ChannelPortSqlite.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
 import { CompactionCheckpointPortSqlite } from "../src/CompactionCheckpointPortSqlite.js"
@@ -45,6 +53,7 @@ import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import {
   AgentStatePortTag,
+  ArtifactStorePortTag,
   ChannelPortTag,
   CheckpointPortTag,
   CompactionCheckpointPortTag,
@@ -52,6 +61,8 @@ import {
   IntegrationPortTag,
   MemoryPortTag,
   SchedulePortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag,
   SessionTurnPortTag
 } from "../src/PortTags.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
@@ -197,6 +208,52 @@ const makePortsLiveLayer = (dbPath: string) => {
 
   const agentConfigLayer = makeAgentConfigLayer()
 
+  const storageLayoutLayer = StorageLayout.layer.pipe(
+    Layer.provide(Layer.mergeAll(agentConfigLayer, NodeServices.layer))
+  )
+
+  const sessionFileStoreLayer = SessionFileStore.layer.pipe(
+    Layer.provide(Layer.mergeAll(storageLayoutLayer, NodeServices.layer))
+  )
+
+  const artifactStoreFsCasLayer = ArtifactStoreFsCas.layer.pipe(
+    Layer.provide(Layer.mergeAll(
+      sqlInfrastructureLayer,
+      storageLayoutLayer,
+      agentConfigLayer,
+      NodeServices.layer
+    ))
+  )
+  const artifactStoreTagLayer = Layer.effect(
+    ArtifactStorePortTag,
+    Effect.gen(function*() {
+      return (yield* ArtifactStoreFsCas) as ArtifactStorePort
+    })
+  ).pipe(Layer.provide(artifactStoreFsCasLayer))
+
+  const sessionArtifactPortSqliteLayer = SessionArtifactPortSqlite.layer.pipe(
+    Layer.provide(Layer.mergeAll(
+      sqlInfrastructureLayer,
+      sessionFileStoreLayer
+    ))
+  )
+  const sessionArtifactPortTagLayer = Layer.effect(
+    SessionArtifactPortTag,
+    Effect.gen(function*() {
+      return (yield* SessionArtifactPortSqlite) as SessionArtifactPort
+    })
+  ).pipe(Layer.provide(sessionArtifactPortSqliteLayer))
+
+  const sessionMetricsPortSqliteLayer = SessionMetricsPortSqlite.layer.pipe(
+    Layer.provide(sqlInfrastructureLayer)
+  )
+  const sessionMetricsPortTagLayer = Layer.effect(
+    SessionMetricsPortTag,
+    Effect.gen(function*() {
+      return (yield* SessionMetricsPortSqlite) as SessionMetricsPort
+    })
+  ).pipe(Layer.provide(sessionMetricsPortSqliteLayer))
+
   const clusterLayer = SingleRunner.layer().pipe(
     Layer.provide(sqlInfrastructureLayer),
     Layer.orDie
@@ -263,7 +320,10 @@ const makePortsLiveLayer = (dbPath: string) => {
       governancePortTagLayer,
       memoryPortTagLayer,
       agentConfigLayer,
-      checkpointPortTagLayer
+      checkpointPortTagLayer,
+      artifactStoreTagLayer,
+      sessionArtifactPortTagLayer,
+      sessionMetricsPortTagLayer
     ))
   )
 
@@ -271,14 +331,22 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(Layer.mergeAll(agentConfigLayer, platformLayer))
   )
 
-  const memoryFileServicesLayer = Layer.mergeAll(platformLayer, agentConfigLayer)
-
   const traceWriterLayer = TraceWriter.layer.pipe(
-    Layer.provide(memoryFileServicesLayer)
+    Layer.provide(Layer.mergeAll(
+      platformLayer,
+      agentConfigLayer,
+      artifactStoreTagLayer,
+      sessionArtifactPortTagLayer,
+      sessionMetricsPortTagLayer
+    ))
   )
 
   const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
-    Layer.provide(memoryFileServicesLayer)
+    Layer.provide(Layer.mergeAll(
+      agentConfigLayer,
+      sessionTurnPortTagLayer,
+      sessionFileStoreLayer
+    ))
   )
 
   const subroutineRunnerLayer = SubroutineRunner.layer.pipe(
@@ -289,7 +357,8 @@ const makePortsLiveLayer = (dbPath: string) => {
       modelRegistryLayer,
       governancePortTagLayer,
       traceWriterLayer,
-      compactionCheckpointPortTagLayer
+      compactionCheckpointPortTagLayer,
+      sessionMetricsPortTagLayer
     ))
   )
 
@@ -312,6 +381,8 @@ const makePortsLiveLayer = (dbPath: string) => {
   const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
     Layer.provide(Layer.mergeAll(
       commandRuntimeLayer,
+      channelPortTagLayer,
+      sessionTurnPortTagLayer,
       governancePortTagLayer,
       subroutineRunnerLayer,
       subroutineCatalogLayer
@@ -337,6 +408,10 @@ const makePortsLiveLayer = (dbPath: string) => {
 
   const postCommitExecutorLayer = PostCommitExecutor.layer.pipe(
     Layer.provide(Layer.mergeAll(
+      agentConfigLayer,
+      sessionTurnPortTagLayer,
+      sessionMetricsPortTagLayer,
+      subroutineControlPlaneLayer,
       subroutineCatalogLayer,
       subroutineRunnerLayer,
       transcriptProjectorLayer
@@ -360,6 +435,7 @@ const makePortsLiveLayer = (dbPath: string) => {
       agentConfigLayer,
       modelRegistryLayer,
       checkpointPortTagLayer,
+      sessionMetricsPortTagLayer,
       subroutineControlPlaneLayer,
       transcriptProjectorLayer,
       subroutineCatalogLayer
@@ -386,10 +462,13 @@ const makePortsLiveLayer = (dbPath: string) => {
     memoryPortTagLayer,
     agentStatePortTagLayer,
     sessionTurnPortTagLayer,
+    sessionMetricsPortTagLayer,
     schedulePortTagLayer,
     governancePortTagLayer,
     checkpointPortTagLayer,
     compactionCheckpointPortTagLayer,
+    artifactStoreTagLayer,
+    sessionArtifactPortTagLayer,
     channelPortTagLayer,
     integrationPortTagLayer
   )

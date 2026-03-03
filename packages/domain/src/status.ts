@@ -53,6 +53,14 @@ export const ContentBlockType = Schema.Literals([
 ])
 export type ContentBlockType = typeof ContentBlockType.Type
 
+export const ArtifactPurpose = Schema.Literals([
+  "ToolResult",
+  "SubroutineTrace",
+  "TranscriptSnapshot",
+  "CompactionDetail"
+])
+export type ArtifactPurpose = typeof ArtifactPurpose.Type
+
 export const ScheduleStatus = Schema.Literals([
   "ScheduleActive",
   "SchedulePaused",

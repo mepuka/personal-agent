@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
-import type { AgentId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
-import type { Instant } from "@template/domain/ports"
+import type { AgentId, ArtifactId, ConversationId, SessionId, TurnId } from "@template/domain/ids"
+import type {
+  ArtifactStorePort,
+  Instant,
+  SessionArtifactPort,
+  SessionMetricsPort
+} from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
 import * as Response from "effect/unstable/ai/Response"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
@@ -9,6 +14,11 @@ import { TraceWriter, _renderTrace } from "../src/memory/TraceWriter.js"
 import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
 import type { SubroutineContext, SubroutineResult } from "../src/memory/SubroutineRunner.js"
 import type { RunTraceParams } from "../src/memory/TraceWriter.js"
+import {
+  ArtifactStorePortTag,
+  SessionArtifactPortTag,
+  SessionMetricsPortTag
+} from "../src/PortTags.js"
 import { rmSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -128,12 +138,43 @@ const makeTestLayer = (traceDir: string, enabled = true) => {
     },
     server: { port: 3000 }
   })
+  const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
+    putJson: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "application/json",
+        bytes: 0,
+        previewText: null
+      }),
+    putBytes: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "text/plain",
+        bytes: 0,
+        previewText: null
+      }),
+    getBytes: () => Effect.succeed(new Uint8Array())
+  } as ArtifactStorePort)
+  const sessionArtifactLayer = Layer.succeed(SessionArtifactPortTag, {
+    link: () => Effect.void,
+    listBySession: () => Effect.succeed([])
+  } as SessionArtifactPort)
+  const sessionMetricsLayer = Layer.succeed(SessionMetricsPortTag, {
+    increment: () => Effect.void,
+    get: () => Effect.succeed(null),
+    shouldTriggerCompaction: () => Effect.succeed(false)
+  } as SessionMetricsPort)
 
   return TraceWriter.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
-      agentConfigLayer
+      agentConfigLayer,
+      artifactStoreLayer,
+      sessionArtifactLayer,
+      sessionMetricsLayer
     ))
   )
 }
@@ -150,12 +191,43 @@ const makeTestLayerNoConfig = () => {
     },
     server: { port: 3000 }
   })
+  const artifactStoreLayer = Layer.succeed(ArtifactStorePortTag, {
+    putJson: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "application/json",
+        bytes: 0,
+        previewText: null
+      }),
+    putBytes: () =>
+      Effect.succeed({
+        artifactId: "artifact:test" as ArtifactId,
+        sha256: "test",
+        mediaType: "text/plain",
+        bytes: 0,
+        previewText: null
+      }),
+    getBytes: () => Effect.succeed(new Uint8Array())
+  } as ArtifactStorePort)
+  const sessionArtifactLayer = Layer.succeed(SessionArtifactPortTag, {
+    link: () => Effect.void,
+    listBySession: () => Effect.succeed([])
+  } as SessionArtifactPort)
+  const sessionMetricsLayer = Layer.succeed(SessionMetricsPortTag, {
+    increment: () => Effect.void,
+    get: () => Effect.succeed(null),
+    shouldTriggerCompaction: () => Effect.succeed(false)
+  } as SessionMetricsPort)
 
   return TraceWriter.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodeFileSystem.layer,
       NodePath.layer,
-      agentConfigLayer
+      agentConfigLayer,
+      artifactStoreLayer,
+      sessionArtifactLayer,
+      sessionMetricsLayer
     ))
   )
 }

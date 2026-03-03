@@ -23,8 +23,6 @@ import {
 } from "./scheduler/ScheduleDue.js"
 import {
   decodeBackgroundActionPayloadJson,
-  fromLegacyActionRef,
-  toLegacyActionRef,
   encodeBackgroundActionPayloadJson
 } from "./scheduler/ScheduleActionCodec.js"
 
@@ -35,9 +33,8 @@ const ScheduleRowSchema = Schema.Struct({
   cron_expression: Schema.Union([Schema.String, Schema.Null]),
   interval_seconds: Schema.Union([Schema.Number, Schema.Null]),
   trigger_tag: Schema.Literals(["CronTrigger", "IntervalTrigger", "EventTrigger"]),
-  action_kind: Schema.Union([Schema.String, Schema.Null]),
-  action_payload_json: Schema.Union([Schema.String, Schema.Null]),
-  action_ref: Schema.String,
+  action_kind: Schema.String,
+  action_payload_json: Schema.String,
   schedule_status: ScheduleStatus,
   concurrency_policy: ConcurrencyPolicy,
   allows_catch_up: Schema.Number,
@@ -88,7 +85,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               trigger_tag,
               action_kind,
               action_payload_json,
-              action_ref,
               schedule_status,
               concurrency_policy,
               allows_catch_up,
@@ -117,7 +113,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               trigger_tag,
               action_kind,
               action_payload_json,
-              action_ref,
               schedule_status,
               concurrency_policy,
               allows_catch_up,
@@ -176,7 +171,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             trigger_tag,
             action_kind,
             action_payload_json,
-            action_ref,
             schedule_status,
             concurrency_policy,
             allows_catch_up,
@@ -194,7 +188,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             ${schedule.trigger._tag},
             ${schedule.action.kind},
             ${encodeBackgroundActionPayloadJson(schedule.action)},
-            ${toLegacyActionRef(schedule.action)},
             ${schedule.scheduleStatus},
             ${schedule.concurrencyPolicy},
             ${toSqlBoolean(schedule.allowsCatchUp)},
@@ -212,7 +205,6 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             trigger_tag = excluded.trigger_tag,
             action_kind = excluded.action_kind,
             action_payload_json = excluded.action_payload_json,
-            action_ref = excluded.action_ref,
             schedule_status = excluded.schedule_status,
             concurrency_policy = excluded.concurrency_policy,
             allows_catch_up = excluded.allows_catch_up,
@@ -355,19 +347,14 @@ const decodeExecutionRow = (row: ExecutionRow): ScheduledExecutionRecord => ({
 })
 
 const decodeScheduleAction = (row: ScheduleRow): BackgroundAction => {
-  if (row.action_payload_json !== null) {
-    const decoded = decodeBackgroundActionPayloadJson(row.action_payload_json)
-    if (decoded !== null) {
-      if (decoded.kind !== "Unknown") {
-        return decoded
-      }
-      if (decoded.actionRef === row.action_ref) {
-        return decoded
-      }
-    }
+  const decoded = decodeBackgroundActionPayloadJson(row.action_payload_json)
+  if (decoded !== null) {
+    return decoded
   }
-
-  return fromLegacyActionRef(row.action_ref)
+  return {
+    kind: "Unknown",
+    actionRef: `decode_error:${row.action_kind}`
+  }
 }
 
 const decodeTrigger = (tag: ScheduleRow["trigger_tag"]): Trigger => {

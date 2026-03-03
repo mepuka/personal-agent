@@ -1,7 +1,14 @@
 import { describe, expect, it } from "@effect/vitest"
 import { NodeServices } from "@effect/platform-node"
 import type { AgentId, ScheduleId } from "@template/domain/ids"
-import type { GovernancePort, Instant, SchedulePort, ScheduleRecord } from "@template/domain/ports"
+import type {
+  ChannelPort,
+  GovernancePort,
+  Instant,
+  SchedulePort,
+  ScheduleRecord,
+  SessionTurnPort
+} from "@template/domain/ports"
 import { DateTime, Effect, Layer } from "effect"
 import { SingleRunner } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
@@ -10,7 +17,12 @@ import { join } from "node:path"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
-import { GovernancePortTag, SchedulePortTag } from "../src/PortTags.js"
+import {
+  ChannelPortTag,
+  GovernancePortTag,
+  SchedulePortTag,
+  SessionTurnPortTag
+} from "../src/PortTags.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
 import { SCHEDULER_COMMAND_LANE_ID } from "../src/CommandLanes.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
@@ -238,6 +250,21 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
   const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
     Layer.provide(Layer.mergeAll(
       commandRuntimeLayer,
+      Layer.succeed(ChannelPortTag, {
+        create: () => Effect.void,
+        get: () => Effect.succeed(null),
+        delete: () => Effect.void,
+        list: () => Effect.succeed([]),
+        updateModelPreference: () => Effect.void
+      } as ChannelPort),
+      Layer.succeed(SessionTurnPortTag, {
+        startSession: () => Effect.void,
+        appendTurn: () => Effect.void,
+        deleteSession: () => Effect.void,
+        updateContextWindow: () => Effect.void,
+        getSession: () => Effect.succeed(null),
+        listTurns: () => Effect.succeed([])
+      } as SessionTurnPort),
       governancePortTagLayer,
       catalogLayer,
       runnerLayer
