@@ -1,6 +1,5 @@
 import { RegistryContext } from "@effect/atom-react"
 import type { ChatClient } from "@template/client/ChatClient"
-import type { TurnStreamEvent } from "@template/domain/events"
 import {
   toTurnFailureCodeFromUnknown,
   toTurnFailureDisplayMessage,
@@ -15,10 +14,10 @@ import {
   connectionStatusAtom,
   inputHistoryAtom,
   isStreamingAtom,
-  messagesAtom,
-  toolEventsAtom
+  messagesAtom
 } from "../atoms/session.js"
-import type { ChatMessage, ToolEvent } from "../types.js"
+import { dispatchTurnStreamEvent, markLatestStreamingMessageFailed } from "../state/turnStream.js"
+import type { ChatMessage } from "../types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
@@ -43,11 +42,12 @@ export function useSendMessage(client: ChatClientShape) {
       registry.update(messagesAtom, (msgs) => [...msgs, userMsg])
       registry.update(inputHistoryAtom, (history) => [...history, content])
       registry.set(isStreamingAtom, true)
+      registry.set(connectionStatusAtom, "connecting")
 
       const program = Effect.gen(function*() {
         const eventStream = yield* client.sendMessage(chId, content)
         yield* eventStream.pipe(
-          Stream.tap((event) => Effect.sync(() => dispatchEvent(registry, event))),
+          Stream.tap((event) => Effect.sync(() => dispatchTurnStreamEvent(registry, event))),
           Stream.runDrain
         )
       }).pipe(
@@ -56,132 +56,23 @@ export function useSendMessage(client: ChatClientShape) {
           Effect.sync(() => {
             const message = toTurnFailureMessageFromUnknown(error, "Turn processing failed unexpectedly")
             const errorCode = toTurnFailureCodeFromUnknown(error, message)
-            registry.update(messagesAtom, (msgs) => {
-              const last = msgs[msgs.length - 1]
-              if (last && last.status === "streaming") {
-                return [
-                  ...msgs.slice(0, -1),
-                  {
-                    ...last,
-                    status: "failed" as const,
-                    errorMessage: toFailureDisplayMessage(errorCode, message)
-                  }
-                ]
-              }
-              return msgs
-            })
+            markLatestStreamingMessageFailed(registry, toFailureDisplayMessage(errorCode, message))
             registry.set(connectionStatusAtom, "error")
           })
         ),
-        Effect.ensuring(Effect.sync(() => registry.set(isStreamingAtom, false)))
+        Effect.ensuring(
+          Effect.sync(() => {
+            registry.set(isStreamingAtom, false)
+            registry.update(connectionStatusAtom, (status) =>
+              status === "error" ? status : "connected")
+          })
+        )
       )
 
       Effect.runFork(program)
     },
     [registry, client]
   )
-}
-
-/** @internal — exported for testing */
-export function dispatchEvent(
-  registry: AtomRegistry.AtomRegistry,
-  event: TurnStreamEvent
-): void {
-  switch (event.type) {
-    case "turn.started": {
-      const assistantMsg: ChatMessage = {
-        role: "assistant",
-        content: "",
-        turnId: event.turnId,
-        status: "streaming"
-      }
-      registry.update(messagesAtom, (msgs) => [...msgs, assistantMsg])
-      break
-    }
-    case "assistant.delta": {
-      registry.update(messagesAtom, (msgs) => {
-        if (msgs.length === 0) return msgs
-        const last = msgs[msgs.length - 1]!
-        return [
-          ...msgs.slice(0, -1),
-          { ...last, content: last.content + event.delta }
-        ]
-      })
-      break
-    }
-    case "tool.call": {
-      const toolEvent: ToolEvent = {
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        inputJson: event.inputJson,
-        outputJson: null,
-        isError: false,
-        status: "called"
-      }
-      registry.update(toolEventsAtom, (events) => [...events, toolEvent])
-      break
-    }
-    case "tool.result": {
-      registry.update(toolEventsAtom, (events) =>
-        events.map((t) =>
-          t.toolCallId === event.toolCallId
-            ? { ...t, outputJson: event.outputJson, isError: event.isError, status: "completed" as const }
-            : t
-        ))
-      break
-    }
-    case "iteration.completed": {
-      break
-    }
-    case "turn.checkpoint_required": {
-      registry.update(messagesAtom, (msgs) => {
-        if (msgs.length === 0) return msgs
-        const last = msgs[msgs.length - 1]!
-        return [
-          ...msgs.slice(0, -1),
-          {
-            ...last,
-            status: "checkpoint_required" as const,
-            checkpointId: event.checkpointId,
-            checkpointAction: event.action,
-            checkpointReason: event.reason
-          }
-        ]
-      })
-      break
-    }
-    case "turn.completed": {
-      registry.update(messagesAtom, (msgs) => {
-        if (msgs.length === 0) return msgs
-        const last = msgs[msgs.length - 1]!
-        if (
-          last.status === "checkpoint_required"
-          && event.accepted === false
-          && event.auditReasonCode === "turn_processing_checkpoint_required"
-        ) {
-          // Preserve pending checkpoint UI even though the backend emits terminal completed.
-          return msgs
-        }
-        return [...msgs.slice(0, -1), { ...last, status: "complete" as const }]
-      })
-      break
-    }
-    case "turn.failed": {
-      registry.update(messagesAtom, (msgs) => {
-        if (msgs.length === 0) return msgs
-        const last = msgs[msgs.length - 1]!
-        return [
-          ...msgs.slice(0, -1),
-          {
-            ...last,
-            status: "failed" as const,
-            errorMessage: toFailureDisplayMessage(event.errorCode, event.message)
-          }
-        ]
-      })
-      break
-    }
-  }
 }
 
 /** @internal — exported for testing */

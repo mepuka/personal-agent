@@ -63,6 +63,8 @@ const chat = Command.make("chat", { channel: channelFlag }).pipe(
                   return Console.log(`\n[tool: ${event.toolName}]`)
                 case "tool.result":
                   return Console.log(`[result: ${event.outputJson}]`)
+                case "tool.error":
+                  return Console.log(`[tool error: ${event.outputJson}]`)
                 case "turn.checkpoint_required":
                   return Console.log(`\n[checkpoint required: ${event.checkpointId} — ${event.action}: ${event.reason}]\n`)
                 case "turn.completed":

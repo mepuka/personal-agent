@@ -10,6 +10,7 @@ import {
   sanitizePromptForAnthropic,
   toPromptText,
   toTurnModelFailure,
+  isRequiresApprovalToolFailure,
   toModelFailureMessage,
   toModelFailureAuditReason,
   isProviderCreditExhaustedReason,
@@ -22,6 +23,7 @@ import {
   TurnModelFailure,
   type ProcessTurnPayload
 } from "../src/turn/TurnProcessingWorkflow.js"
+import { RequiresApprovalToolFailure } from "../src/ai/ToolRegistry.js"
 
 const makePayload = (overrides: Partial<ProcessTurnPayload> = {}): ProcessTurnPayload => ({
   turnId: overrides.turnId ?? "turn:test-1",
@@ -168,6 +170,27 @@ describe("toModelFailureMessage", () => {
 
   it("falls back to String() for undefined", () => {
     expect(toModelFailureMessage(undefined)).toBe("undefined")
+  })
+})
+
+describe("isRequiresApprovalToolFailure", () => {
+  it("returns true for tagged RequiresApproval tool failures", () => {
+    expect(
+      isRequiresApprovalToolFailure(
+        new RequiresApprovalToolFailure({
+          errorCode: "RequiresApproval",
+          message: "approval required"
+        })
+      )
+    ).toBe(true)
+  })
+
+  it("returns false for other failures", () => {
+    expect(isRequiresApprovalToolFailure(new Error("OtherError"))).toBe(false)
+  })
+
+  it("returns false for non-object values", () => {
+    expect(isRequiresApprovalToolFailure("RequiresApproval")).toBe(false)
   })
 })
 

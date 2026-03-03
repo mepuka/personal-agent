@@ -4,6 +4,7 @@ import { useKeyboard } from "@opentui/react"
 import * as React from "react"
 import { inputHistoryAtom, isStreamingAtom, pendingCheckpointAtom } from "../atoms/session.js"
 import { theme } from "../theme.js"
+import type { CheckpointDecision } from "../types.js"
 
 export function InputBar({
   onSubmit,
@@ -12,7 +13,7 @@ export function InputBar({
   inputRef
 }: {
   readonly onSubmit: (content: string) => void
-  readonly onDecision?: (checkpointId: string, decision: "Approved" | "Rejected" | "Deferred") => void
+  readonly onDecision?: (checkpointId: string, decision: CheckpointDecision) => void
   readonly focused: boolean
   readonly inputRef?: React.RefObject<unknown>
 }) {

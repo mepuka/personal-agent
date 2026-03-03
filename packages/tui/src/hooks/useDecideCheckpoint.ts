@@ -10,10 +10,14 @@ import { Effect, Stream } from "effect"
 import type * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry"
 import * as React from "react"
 import { connectionStatusAtom, isStreamingAtom, messagesAtom } from "../atoms/session.js"
-import { dispatchEvent } from "./useSendMessage.js"
+import {
+  applyCheckpointDecisionAck,
+  dispatchTurnStreamEvent,
+  markLatestCheckpointOrStreamingMessageFailed
+} from "../state/turnStream.js"
+import type { CheckpointDecision } from "../types.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
-type CheckpointDecision = "Approved" | "Rejected" | "Deferred"
 
 const toDecisionErrorMessage = (error: unknown): string => {
   if (error instanceof CheckpointDecisionError) {
@@ -26,21 +30,6 @@ const toDecisionErrorMessage = (error: unknown): string => {
   const errorCode = toTurnFailureCodeFromUnknown(error, message)
   return toTurnFailureDisplayMessage(errorCode, message)
 }
-
-const updateMessageForAckDecision = (
-  registry: AtomRegistry.AtomRegistry,
-  decision: Exclude<CheckpointDecision, "Approved">
-) =>
-  registry.update(messagesAtom, (msgs) => {
-    if (msgs.length === 0) return msgs
-    const last = msgs[msgs.length - 1]!
-    if (last.status !== "checkpoint_required") return msgs
-
-    if (decision === "Rejected") {
-      return [...msgs.slice(0, -1), { ...last, status: "checkpoint_rejected" as const }]
-    }
-    return [...msgs.slice(0, -1), { ...last, status: "checkpoint_deferred" as const }]
-  })
 
 export const runCheckpointDecision = (
   registry: AtomRegistry.AtomRegistry,
@@ -56,11 +45,11 @@ export const runCheckpointDecision = (
 
     if (result.kind === "stream") {
       yield* result.stream.pipe(
-        Stream.tap((event) => Effect.sync(() => dispatchEvent(registry, event))),
+        Stream.tap((event) => Effect.sync(() => dispatchTurnStreamEvent(registry, event))),
         Stream.runDrain
       )
     } else if (decision !== "Approved") {
-      updateMessageForAckDecision(registry, decision)
+      applyCheckpointDecisionAck(registry, decision)
     } else {
       registry.update(messagesAtom, (msgs) => {
         if (msgs.length === 0) return msgs
@@ -75,20 +64,7 @@ export const runCheckpointDecision = (
     Effect.scoped,
     Effect.catch((error) =>
       Effect.sync(() => {
-        registry.update(messagesAtom, (msgs) => {
-          const last = msgs[msgs.length - 1]
-          if (last && (last.status === "checkpoint_required" || last.status === "streaming")) {
-            return [
-              ...msgs.slice(0, -1),
-              {
-                ...last,
-                status: "failed" as const,
-                errorMessage: toDecisionErrorMessage(error)
-              }
-            ]
-          }
-          return msgs
-        })
+        markLatestCheckpointOrStreamingMessageFailed(registry, toDecisionErrorMessage(error))
         registry.set(connectionStatusAtom, "error")
       })
     ),
@@ -110,6 +86,5 @@ export function useDecideCheckpoint(client: ChatClientShape) {
 
 /** @internal — exported for testing */
 export const _test = {
-  toDecisionErrorMessage,
-  updateMessageForAckDecision
+  toDecisionErrorMessage
 }

@@ -488,6 +488,75 @@ describe("ToolRegistry", () => {
     await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
   })
 
+  it("file_read invalid offset fails when recovery mode is disabled", async () => {
+    const dbPath = testDatabasePath("tool-registry-file-read-invalid-offset")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:file-read-invalid-offset" as AgentId
+    const relativePath = `tmp/tool-registry-read-invalid-${crypto.randomUUID()}.txt`
+    const absolutePath = join(process.cwd(), relativePath)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Permissive",
+        budgetResetAt: NOW
+      }))
+
+      writeFileSync(absolutePath, "line1\nline2\n", "utf8")
+
+      const failure = yield* invokeTool(agentId, "file_read", {
+        path: relativePath,
+        offset: 0
+      }).pipe(Effect.flip)
+
+      expect((failure as { readonly errorCode: string }).errorCode).toBe("InvalidReadRequest")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath)),
+      Effect.ensuring(Effect.sync(() => rmSync(absolutePath, { force: true })))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
+  it("file_read invalid offset returns tool error payload when recovery mode is enabled", async () => {
+    const dbPath = testDatabasePath("tool-registry-file-read-recover-offset")
+    const layer = makeToolRegistryLayer(dbPath)
+    const agentId = "agent:file-read-recover-offset" as AgentId
+    const relativePath = `tmp/tool-registry-read-recover-${crypto.randomUUID()}.txt`
+    const absolutePath = join(process.cwd(), relativePath)
+
+    const program = Effect.gen(function*() {
+      const agents = yield* AgentStatePortSqlite
+      yield* agents.upsert(makeAgentState({
+        agentId,
+        permissionMode: "Permissive",
+        budgetResetAt: NOW
+      }))
+
+      writeFileSync(absolutePath, "line1\nline2\n", "utf8")
+
+      const output = yield* invokeTool(
+        agentId,
+        "file_read",
+        {
+          path: relativePath,
+          offset: 0
+        },
+        { recoverToolErrors: true }
+      )
+
+      expect(output).toContain("\"ok\":false")
+      expect(output).toContain("\"errorCode\":\"InvalidReadRequest\"")
+      expect(output).toContain("offset must be a positive integer")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath)),
+      Effect.ensuring(Effect.sync(() => rmSync(absolutePath, { force: true })))
+    )
+    await Effect.runPromise(program as Effect.Effect<unknown, unknown, never>)
+  })
+
   it("file_ls lists directory entries via CLI runtime", async () => {
     const dbPath = testDatabasePath("tool-registry-file-ls")
     const layer = makeToolRegistryLayer(dbPath)
@@ -957,7 +1026,10 @@ const invokeTool = (
     | "file_write"
     | "file_edit"
     | "send_notification",
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  options?: {
+    readonly recoverToolErrors?: boolean
+  }
 ) =>
   Effect.gen(function*() {
     const registry = yield* ToolRegistry
@@ -967,7 +1039,10 @@ const invokeTool = (
       conversationId: CONVERSATION_ID,
       turnId: TURN_ID,
       now: NOW,
-      channelId: "channel:test"
+      channelId: "channel:test",
+      ...(options?.recoverToolErrors !== undefined
+        ? { recoverToolErrors: options.recoverToolErrors }
+        : {})
     })
     const toolkit = yield* bundle.toolkit.asEffect().pipe(
       Effect.provide(bundle.handlerLayer)

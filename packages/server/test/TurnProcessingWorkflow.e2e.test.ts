@@ -17,7 +17,7 @@ import { DateTime, Effect, Layer, Schema, Stream } from "effect"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Response from "effect/unstable/ai/Response"
 import { ClusterWorkflowEngine, SingleRunner } from "effect/unstable/cluster"
-import { rmSync } from "node:fs"
+import { rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
@@ -674,6 +674,66 @@ describe("TurnProcessingWorkflow e2e", () => {
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("provider-interface file tool validation errors emit tool.error without failing the turn", () => {
+    const dbPath = testDatabasePath("turn-tool-error-event")
+    const relativePath = `tmp/turn-tool-error-${crypto.randomUUID()}.txt`
+    const absolutePath = join(process.cwd(), relativePath)
+    const layer = makeTurnProcessingLayer(
+      dbPath,
+      "Allow",
+      undefined,
+      { useProviderInterface: true, toolName: "file_read", toolParams: { path: relativePath, offset: 0 } }
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T15:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:tool-error" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:tool-error" as SessionId,
+        conversationId: "conversation:tool-error" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      writeFileSync(absolutePath, "line1\nline2\n", "utf8")
+
+      const events = yield* runtime.processTurnStream(makeTurnPayload({
+        turnId: "turn:tool-error" as TurnId,
+        sessionId: "session:tool-error" as SessionId,
+        conversationId: "conversation:tool-error" as ConversationId,
+        agentId: "agent:tool-error" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "read with invalid offset"
+      })).pipe(Stream.runCollect)
+
+      expect(events[0]?.type).toBe("turn.started")
+      expect(events.some((event) => event.type === "tool.call")).toBe(true)
+      expect(events.some((event) => event.type === "tool.error")).toBe(true)
+      expect(events.some((event) => event.type === "turn.failed")).toBe(false)
+
+      const toolErrorEvent = events.find((event) => event.type === "tool.error")
+      expect(toolErrorEvent).toBeDefined()
+      expect((toolErrorEvent as { readonly outputJson: string }).outputJson).toContain("InvalidReadRequest")
+
+      const completed = events.find((event) => event.type === "turn.completed")
+      expect(completed).toBeDefined()
+      expect((completed as { readonly accepted: boolean }).accepted).toBe(true)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath)),
+      Effect.ensuring(Effect.sync(() => rmSync(absolutePath, { force: true })))
     )
   })
 
@@ -1521,6 +1581,10 @@ const makeTurnProcessingLayer = (
   mockOptions?: {
     readonly finishReasons?: ReadonlyArray<Response.FinishReason>
     readonly failWithErrorMessage?: string
+    readonly omitToolResults?: boolean
+    readonly toolName?: string
+    readonly toolParams?: Record<string, unknown>
+    readonly useProviderInterface?: boolean
   },
   capturedDispatches?: Array<{ triggerType: string; context: TriggerContext }>,
   capturedTranscriptAppends?: Array<{ agentId: string; sessionId: string; turn: unknown }>,
@@ -1952,9 +2016,10 @@ const makeMockProvider = (
         type: "finish",
         reason: finishReason,
         usage: {
-          inputTokens: { uncached: 10, total: 10 },
-          outputTokens: { total: 6, text: 6 }
-        }
+          inputTokens: { uncached: 10, total: 10, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 6, text: 6, reasoning: 0 }
+        },
+        response: undefined
       })
 
       return Effect.succeed(parts)
