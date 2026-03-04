@@ -11,20 +11,16 @@ import type {
 } from "@template/domain/ports"
 import type { MemoryScope, MemorySource, MemoryTier, SensitivityLevel } from "@template/domain/status"
 import { DEFAULT_MEMORY_SEARCH_LIMIT, DEFAULT_SENSITIVITY_LEVEL } from "@template/domain/system-defaults"
-import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
+import { Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
-
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+import { sqlCursor, sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 // --- Cursor codec via Schema ---
 
-const CursorSchema = Schema.Struct({
-  createdAt: Schema.String,
-  rowid: Schema.Int
-})
-
-const CursorFromJsonString = Schema.fromJsonString(CursorSchema)
+const CursorJsonCodec = Schema.fromJsonString(
+  Schema.Struct({ createdAt: Schema.String, rowid: Schema.Int })
+)
+const cursor = sqlCursor(CursorJsonCodec)
 
 interface StoreInput {
   readonly tier: MemoryTier
@@ -56,13 +52,13 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
             conditions.push(`content LIKE '%${escapeSql(escaped)}%' ESCAPE '\\'`)
           }
 
-          const cursor = query.cursor ? decodeCursor(query.cursor) : null
-          if (cursor !== null) {
+          const cursorVal = query.cursor ? cursor.decode(query.cursor) : null
+          if (cursorVal !== null) {
             const op = query.sort === "CreatedAsc" ? ">" : "<"
             conditions.push(
-              `(created_at ${op} '${escapeSql(cursor.createdAt)}' OR (created_at = '${
-                escapeSql(cursor.createdAt)
-              }' AND rowid ${op} ${cursor.rowid}))`
+              `(created_at ${op} '${escapeSql(cursorVal.createdAt)}' OR (created_at = '${
+                escapeSql(cursorVal.createdAt)
+              }' AND rowid ${op} ${cursorVal.rowid}))`
             )
           }
 
@@ -95,7 +91,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
 
           const items = rows.map(parseSearchRow)
           const nextCursor = rows.length === limit
-            ? encodeCursor(rows[rows.length - 1].created_at as string, Number(rows[rows.length - 1].rowid))
+            ? cursor.encode({ createdAt: rows[rows.length - 1].created_at as string, rowid: Number(rows[rows.length - 1].rowid) })
             : null
 
           return { items, cursor: nextCursor, totalCount } as MemorySearchResult
@@ -107,7 +103,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
         now: Instant
       ): Effect.Effect<ReadonlyArray<MemoryItemId>> =>
         Effect.gen(function*() {
-          const nowStr = DateTime.formatIso(now)
+          const nowStr = sqlInstant.encode(now)
           const ids: Array<MemoryItemId> = []
 
           for (const item of items) {
@@ -206,7 +202,7 @@ export class MemoryPortSqlite extends ServiceMap.Service<MemoryPortSqlite>()(
 
           const conditions = [`agent_id = '${agentId}'`]
           if (filters.cutoffDate) {
-            conditions.push(`created_at < '${DateTime.formatIso(filters.cutoffDate)}'`)
+            conditions.push(`created_at < '${sqlInstant.encode(filters.cutoffDate)}'`)
           }
           if (filters.scope) {
             conditions.push(`scope = '${escapeSql(filters.scope)}'`)
@@ -276,24 +272,12 @@ const parseSearchRow = (row: any): MemoryItemRecord => ({
   wasGeneratedBy: row.was_generated_by as AgentId | null,
   wasAttributedTo: row.was_attributed_to as AgentId | null,
   governedByRetention: row.governed_by_retention as string | null,
-  lastAccessTime: row.last_access_time
-    ? DateTime.fromDateUnsafe(new Date(row.last_access_time as string))
-    : null,
-  createdAt: decodeSqlInstant(row.created_at),
-  updatedAt: decodeSqlInstant(row.updated_at)
+  lastAccessTime: sqlInstantNullable.decode(row.last_access_time as string | null),
+  createdAt: sqlInstant.decode(row.created_at),
+  updatedAt: sqlInstant.decode(row.updated_at)
 })
 
 const parseRow = (row: any): MemoryItemRow => parseSearchRow(row)
-
-const encodeCursor = (createdAt: string, rowid: number): string =>
-  Buffer.from(Schema.encodeSync(CursorFromJsonString)({ createdAt, rowid })).toString("base64url")
-
-const decodeCursor = (cursor: string): { readonly createdAt: string; readonly rowid: number } | null =>
-  Option.getOrNull(
-    Schema.decodeOption(CursorFromJsonString)(
-      Buffer.from(cursor, "base64url").toString("utf8")
-    )
-  )
 
 const escapeSql = (value: string): string => value.replace(/'/g, "''")
 
