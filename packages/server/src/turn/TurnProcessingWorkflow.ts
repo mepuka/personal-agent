@@ -1,6 +1,6 @@
 import * as Anthropic from "@effect/ai-anthropic"
 import * as OpenAi from "@effect/ai-openai"
-import { DateTime, Effect, Layer, Option, Ref, Schema } from "effect"
+import { DateTime, Effect, Layer, Option, Ref, Schema, Stream } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as Prompt from "effect/unstable/ai/Prompt"
@@ -74,8 +74,14 @@ import {
   parseJsonRecordOption,
   safeJsonParseUnknown
 } from "../json/JsonCodec.js"
+import { isRecoveredToolErrorOutput } from "./RecoveredToolError.js"
 import { injectMemoriesIntoSystemPrompt } from "./MemoryInjector.js"
 import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
+import {
+  emitTurnLiveEvent,
+  TurnEventEmitterTag,
+  type LiveTurnStreamEvent
+} from "./TurnEventEmitter.js"
 
 const InvokeToolReplayExecution = Schema.Struct({
   replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
@@ -203,6 +209,51 @@ export const toProviderConfigOverride = (
   }
   return overrides
 }
+
+const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)
+
+const applyProviderConfigOverrideToStream = (
+  provider: string,
+  overrides: Record<string, unknown>,
+  stream: Stream.Stream<Response.StreamPart<any>, unknown, any>
+): Stream.Stream<Response.StreamPart<any>, unknown, any> =>
+  Stream.unwrap(
+    Effect.gen(function*() {
+      if (Object.keys(overrides).length === 0) {
+        return stream
+      }
+
+      if (provider === "anthropic") {
+        const existing = yield* Effect.serviceOption(Anthropic.AnthropicLanguageModel.Config)
+        const mergedConfig = {
+          ...(Option.isSome(existing) ? existing.value : {}),
+          ...overrides
+        }
+        return stream.pipe(
+          Stream.provideService(
+            Anthropic.AnthropicLanguageModel.Config,
+            mergedConfig as any
+          )
+        )
+      }
+
+      if (provider === "openai" || provider === "openrouter" || provider === "google") {
+        const existing = yield* Effect.serviceOption(OpenAi.OpenAiLanguageModel.Config)
+        const mergedConfig = {
+          ...(Option.isSome(existing) ? existing.value : {}),
+          ...overrides
+        }
+        return stream.pipe(
+          Stream.provideService(
+            OpenAi.OpenAiLanguageModel.Config,
+            mergedConfig as any
+          )
+        )
+      }
+
+      return stream
+    })
+  )
 
 export const inferToolChoice = (
   rawUserContent: string
@@ -512,6 +563,11 @@ export const layer = TurnProcessingWorkflow.toLayer(
       }
 
       const chat = yield* chatPersistence.getOrCreate(payload.sessionId)
+      const turnEventEmitter = yield* Effect.serviceOption(TurnEventEmitterTag)
+      const emitLiveEvent = (event: LiveTurnStreamEvent) =>
+        Option.isSome(turnEventEmitter)
+          ? turnEventEmitter.value.emit(event)
+          : emitTurnLiveEvent(payload.turnId, event)
 
       const baseSystemPrompt = yield* promptCatalog.get(
         promptBindings.turn.systemPromptRef
@@ -591,7 +647,8 @@ export const layer = TurnProcessingWorkflow.toLayer(
         rawUserContent: invokeToolReplay === undefined ? payload.content : "",
         initialPrompt,
         maxIterations: maxToolIterations,
-        checkpointSignalsRef
+        checkpointSignalsRef,
+        emitLiveEvent
       }).pipe(
         Effect.timeoutOption(`${TURN_LOOP_TIMEOUT_SECONDS} seconds`)
       )
@@ -988,6 +1045,7 @@ const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoo
     readonly initialPrompt: Prompt.RawInput
     readonly maxIterations: number
     readonly checkpointSignalsRef: Ref.Ref<ReadonlyArray<CheckpointSignal>>
+    readonly emitLiveEvent: (event: LiveTurnStreamEvent) => Effect.Effect<void>
   }
 ) {
   return yield* Effect.suspend(function loop(
@@ -1015,7 +1073,7 @@ const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoo
         params.checkpointSignalsRef
       )
 
-      const generateTextEffect = params.chat.generateText({
+      const streamText = params.chat.streamText({
         prompt: promptForIteration,
         toolkit: toolkitBundle.toolkit,
         ...(iteration === 0
@@ -1023,21 +1081,118 @@ const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoo
           : {})
       })
 
-      // Apply generation config via provider-specific withConfigOverride
       const providerOverrides = toProviderConfigOverride(
         params.resolvedProvider,
         params.effectiveGenerationConfig
       )
-      const configuredEffect = Object.keys(providerOverrides).length > 0
-        ? (params.resolvedProvider === "anthropic"
-            ? Anthropic.AnthropicLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect)
-            : OpenAi.OpenAiLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect))
-        : generateTextEffect
-
-      const response = yield* configuredEffect.pipe(
-        Effect.provide(Layer.merge(toolkitBundle.handlerLayer, params.lmLayer)),
-        Effect.withSpan("TurnProcessing.generateText")
+      const configuredStream = applyProviderConfigOverrideToStream(
+        params.resolvedProvider,
+        providerOverrides,
+        streamText
       )
+
+      const partsForIteration: Array<Response.Part<any>> = []
+      const activeTextDeltas = new Map<string, string>()
+      let finishReason: Response.FinishReason = "unknown"
+      let finishUsage = zeroUsage()
+
+      yield* configuredStream.pipe(
+        Stream.provide(Layer.merge(toolkitBundle.handlerLayer, params.lmLayer)),
+        Stream.runForEach((part) =>
+          Effect.gen(function*() {
+            switch (part.type) {
+              case "text-start": {
+                activeTextDeltas.set(part.id, "")
+                break
+              }
+              case "text-delta": {
+                const previous = activeTextDeltas.get(part.id) ?? ""
+                activeTextDeltas.set(part.id, `${previous}${part.delta}`)
+                yield* params.emitLiveEvent({
+                  type: "assistant.delta",
+                  turnId: params.context.turnId,
+                  sessionId: params.context.sessionId,
+                  delta: part.delta
+                })
+                break
+              }
+              case "text-end": {
+                const text = activeTextDeltas.get(part.id)
+                if (text !== undefined) {
+                  partsForIteration.push(
+                    Response.makePart("text", { text })
+                  )
+                  activeTextDeltas.delete(part.id)
+                }
+                break
+              }
+              case "tool-call": {
+                partsForIteration.push(part as Response.Part<any>)
+                const inputJson = yield* encodeUnknownJson(part.params)
+                yield* params.emitLiveEvent({
+                  type: "tool.call",
+                  turnId: params.context.turnId,
+                  sessionId: params.context.sessionId,
+                  toolCallId: part.id,
+                  toolName: part.name,
+                  inputJson
+                })
+                break
+              }
+              case "tool-result": {
+                if (part.preliminary === true) {
+                  break
+                }
+                partsForIteration.push(part as Response.Part<any>)
+                const outputJson = yield* encodeUnknownJson(part.result)
+                if (part.isFailure || isRecoveredToolErrorOutput(outputJson)) {
+                  yield* params.emitLiveEvent({
+                    type: "tool.error",
+                    turnId: params.context.turnId,
+                    sessionId: params.context.sessionId,
+                    toolCallId: part.id,
+                    toolName: part.name,
+                    outputJson
+                  })
+                  break
+                }
+                yield* params.emitLiveEvent({
+                  type: "tool.result",
+                  turnId: params.context.turnId,
+                  sessionId: params.context.sessionId,
+                  toolCallId: part.id,
+                  toolName: part.name,
+                  outputJson,
+                  isError: false
+                })
+                break
+              }
+              case "finish": {
+                finishReason = part.reason
+                finishUsage = part.usage
+                break
+              }
+              case "error": {
+                return yield* Effect.fail(part.error)
+              }
+              default:
+                break
+            }
+          })),
+        Effect.withSpan("TurnProcessing.streamText")
+      )
+
+      for (const text of activeTextDeltas.values()) {
+        partsForIteration.push(Response.makePart("text", { text }))
+      }
+
+      partsForIteration.push(Response.makePart("finish", {
+        reason: finishReason,
+        usage: finishUsage,
+        response: undefined
+      }))
+
+      const response = new LanguageModel.GenerateTextResponse(partsForIteration)
 
       const toolCallsThisIteration = response.content.filter((part) => part.type === "tool-call").length
       const nextToolCallsTotal = toolCallsTotal + toolCallsThisIteration
@@ -1049,6 +1204,16 @@ const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoo
         toolCallsThisIteration,
         toolCallsTotal: nextToolCallsTotal
       }]
+
+      yield* params.emitLiveEvent({
+        type: "iteration.completed",
+        turnId: params.context.turnId,
+        sessionId: params.context.sessionId,
+        iteration: currentIteration,
+        finishReason: encodeFinishReason(response.finishReason),
+        toolCallsThisIteration,
+        toolCallsTotal: nextToolCallsTotal
+      })
 
       if (response.finishReason === "tool-calls" && currentIteration < params.maxIterations) {
         return yield* loop(

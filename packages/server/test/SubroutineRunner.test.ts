@@ -200,7 +200,31 @@ const makeMockLanguageModel = (
         new LanguageModel.GenerateTextResponse(parts)
       ) as any
     },
-    streamText: (_options: any) => Stream.empty as any,
+    streamText: (_options: any) => Stream.make(
+      Response.makePart("text-start", { id: "text:0" }),
+      Response.makePart("text-delta", {
+        id: "text:0",
+        delta: mockOptions?.textResponse ?? "I stored a memory."
+      }),
+      Response.makePart("text-end", { id: "text:0" }),
+      Response.makePart("finish", {
+        reason: "stop",
+        usage: new Response.Usage({
+          inputTokens: {
+            uncached: 10,
+            total: 10,
+            cacheRead: undefined,
+            cacheWrite: undefined
+          },
+          outputTokens: {
+            total: 6,
+            text: 6,
+            reasoning: undefined
+          }
+        }),
+        response: undefined
+      })
+    ) as any,
     generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
   }
 }

@@ -1,6 +1,13 @@
 import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
-import { Effect, Layer, Option, Schema, ServiceMap, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Queue, Ref, ServiceMap, Stream } from "effect"
 import * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
+import { isRecoveredToolErrorOutput } from "./RecoveredToolError.js"
+import {
+  clearTurnEventEmitter,
+  registerTurnEventEmitter,
+  TurnEventEmitterTag,
+  type TurnEventEmitter
+} from "./TurnEventEmitter.js"
 import {
   type ProcessTurnPayload,
   type ProcessTurnResult,
@@ -35,23 +42,123 @@ export class TurnProcessingRuntime extends ServiceMap.Service<TurnProcessingRunt
       })
 
       const processTurnStream = (input: ProcessTurnPayload): Stream.Stream<TurnStreamEvent, TurnProcessingError> => {
-        const startedEvent: TurnStreamEvent = {
-          type: "turn.started",
-          sequence: 1,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          createdAt: input.createdAt
-        }
+        const stream = Stream.unwrap(Effect.gen(function*() {
+          const sequenceRef = yield* Ref.make(0)
+          const liveEventCountRef = yield* Ref.make(0)
+          const queue = yield* Queue.bounded<TurnStreamEvent, Cause.Done>(512)
 
-        const tail = Stream.fromEffect(processTurn(input)).pipe(
-          Stream.map((result) => toSuccessEvents(input, result)),
-          Stream.flatMap(Stream.fromIterable),
-          Stream.catch((error) => Stream.make(toFailedEvent(input, error)))
-        )
+          const offerEvent = (
+            event: TurnStreamEventWithoutSequence
+          ) =>
+            assignSequence(sequenceRef, event).pipe(
+              Effect.flatMap((eventWithSequence) => Queue.offer(queue, eventWithSequence))
+            )
 
-        return Stream.concat(Stream.make(startedEvent), tail).pipe(
+          const emitLiveEvent: TurnEventEmitter["emit"] = (event) =>
+            Ref.update(liveEventCountRef, (count) => count + 1).pipe(
+              Effect.flatMap(() => offerEvent(event))
+            )
+
+          const logSummary = (params: {
+            readonly replayFallbackUsed: boolean
+          }) =>
+            Effect.gen(function*() {
+              const liveEventCount = yield* Ref.get(liveEventCountRef)
+              const totalEventCount = yield* Ref.get(sequenceRef)
+              yield* Effect.logInfo({
+                event: "turn_stream_emit_summary",
+                turnId: input.turnId,
+                sessionId: input.sessionId,
+                replayFallbackUsed: params.replayFallbackUsed,
+                liveEventCount,
+                totalEventCount
+              })
+            })
+
+          const producer = Effect.gen(function*() {
+            yield* offerEvent({
+              type: "turn.started",
+              turnId: input.turnId,
+              sessionId: input.sessionId,
+              createdAt: input.createdAt
+            })
+
+            const turnEventEmitter: TurnEventEmitter = { emit: emitLiveEvent }
+            yield* registerTurnEventEmitter(input.turnId, turnEventEmitter)
+            const runtimeExit = yield* processTurn(input).pipe(
+              Effect.provideService(TurnEventEmitterTag, turnEventEmitter),
+              Effect.ensuring(clearTurnEventEmitter(input.turnId, turnEventEmitter)),
+              Effect.exit
+            )
+
+            if (Exit.isFailure(runtimeExit)) {
+              const error = Cause.squash(runtimeExit.cause)
+              yield* offerEvent(toEventWithoutSequence(toFailedEvent(input, error)))
+              yield* logSummary({ replayFallbackUsed: false })
+              return
+            }
+
+            const result = runtimeExit.value
+            const liveEventCount = yield* Ref.get(liveEventCountRef)
+
+            if (liveEventCount > 0) {
+              if (
+                result.checkpointId !== undefined
+                && result.checkpointAction !== undefined
+              ) {
+                yield* offerEvent({
+                  type: "turn.checkpoint_required",
+                  turnId: input.turnId,
+                  sessionId: input.sessionId,
+                  checkpointId: result.checkpointId,
+                  action: result.checkpointAction,
+                  reason: result.checkpointReason ?? "checkpoint required"
+                })
+              }
+
+              yield* offerEvent({
+                type: "turn.completed",
+                turnId: input.turnId,
+                sessionId: input.sessionId,
+                accepted: result.accepted,
+                auditReasonCode: result.auditReasonCode,
+                iterationsUsed: result.iterationsUsed,
+                toolCallsTotal: result.toolCallsTotal,
+                modelFinishReason: result.modelFinishReason,
+                modelUsageJson: result.modelUsageJson
+              })
+              yield* logSummary({ replayFallbackUsed: false })
+              return
+            }
+
+            const fallbackEvents = toSuccessEvents(input, result)
+            for (const event of fallbackEvents) {
+              yield* offerEvent(toEventWithoutSequence(event))
+            }
+            yield* logSummary({ replayFallbackUsed: true })
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function*() {
+                yield* Effect.logWarning({
+                  event: "turn_stream_producer_failed",
+                  turnId: input.turnId,
+                  sessionId: input.sessionId,
+                  cause
+                })
+                yield* offerEvent(toEventWithoutSequence(toFailedEvent(input, Cause.squash(cause))))
+                yield* logSummary({ replayFallbackUsed: false })
+              })),
+            Effect.ensuring(Queue.end(queue))
+          )
+
+          const producerFiber = yield* producer.pipe(Effect.forkDetach)
+          return Stream.fromQueue(queue).pipe(
+            Stream.ensuring(Fiber.interrupt(producerFiber))
+          )
+        })).pipe(
           Stream.withSpan("TurnProcessingRuntime.processTurnStream")
         )
+        return stream as Stream.Stream<TurnStreamEvent, TurnProcessingError>
       }
 
       return {
@@ -148,7 +255,7 @@ const toSuccessEvents = (
 
 const toFailedEvent = (
   input: ProcessTurnPayload,
-  error: TurnProcessingError
+  error: unknown
 ): TurnFailedEvent => {
   const identity = toTurnFailureIdentity(error)
   const message = toTurnFailureMessage(error, "Turn processing failed unexpectedly")
@@ -170,18 +277,26 @@ export const _test = {
   toFailedEvent
 }
 
-const isRecoveredToolErrorOutput = (outputJson: string): boolean => {
-  return Option.isSome(decodeRecoveredToolErrorPayload(outputJson))
+const toEventWithoutSequence = (
+  event: TurnStreamEvent
+): TurnStreamEventWithoutSequence => {
+  const { sequence: _sequence, ...rest } = event
+  return rest as TurnStreamEventWithoutSequence
 }
 
-const RecoveredToolErrorPayload = Schema.Struct({
-  ok: Schema.Literal(false),
-  errorCode: Schema.String,
-  message: Schema.String
+const assignSequence = Effect.fn("TurnProcessingRuntime.assignSequence")(function*(
+  sequenceRef: Ref.Ref<number>,
+  event: TurnStreamEventWithoutSequence
+) {
+  const sequence = yield* Ref.updateAndGet(sequenceRef, (current) => current + 1)
+  return { ...event, sequence } as TurnStreamEvent
 })
-const decodeRecoveredToolErrorPayload = Schema.decodeOption(
-  Schema.fromJsonString(RecoveredToolErrorPayload)
-)
+
+type TurnStreamEventWithoutSequence = TurnStreamEvent extends infer Event
+  ? Event extends TurnStreamEvent
+    ? Omit<Event, "sequence">
+    : never
+  : never
 
 const makeExecutionId = Effect.fn("TurnProcessingRuntime.makeExecutionId")(function*(idempotencyKey: string) {
   const buffer = yield* Effect.promise(() =>

@@ -146,5 +146,16 @@ describe("TurnProcessingRuntime", () => {
       errorCode: "checkpoint_payload_mismatch",
       message: "checkpoint_payload_mismatch"
     })
+
+    const unexpectedFailureEvent = _test.toFailedEvent(
+      input,
+      { message: "unexpected defect while streaming" }
+    )
+    expect(unexpectedFailureEvent).toMatchObject({
+      type: "turn.failed",
+      turnId: input.turnId,
+      sessionId: input.sessionId
+    })
+    expect(unexpectedFailureEvent.message).toContain("unexpected defect while streaming")
   })
 })

@@ -662,8 +662,116 @@ describe("TurnProcessingWorkflow e2e", () => {
       })).pipe(Stream.runCollect)
 
       expect(events[0]?.type).toBe("turn.started")
-      expect(events.some((event) => event.type === "assistant.delta")).toBe(true)
-      expect(events.some((event) => event.type === "turn.completed")).toBe(true)
+      const assistantDeltaIndex = events.findIndex((event) => event.type === "assistant.delta")
+      const turnCompletedIndex = events.findIndex((event) => event.type === "turn.completed")
+      expect(assistantDeltaIndex).toBeGreaterThan(0)
+      expect(turnCompletedIndex).toBeGreaterThan(assistantDeltaIndex)
+      for (let i = 1; i < events.length; i += 1) {
+        expect(events[i]!.sequence).toBeGreaterThan(events[i - 1]!.sequence)
+      }
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("streams tool loop events in causal order across iterations", () => {
+    const dbPath = testDatabasePath("turn-stream-tool-loop-order")
+    const layer = makeTurnProcessingLayer(
+      dbPath,
+      "Allow",
+      undefined,
+      { finishReasons: ["tool-calls", "stop"] }
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:stream-loop" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:stream-loop" as SessionId,
+        conversationId: "conversation:stream-loop" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const events = yield* runtime.processTurnStream(makeTurnPayload({
+        turnId: "turn:stream-loop" as TurnId,
+        sessionId: "session:stream-loop" as SessionId,
+        conversationId: "conversation:stream-loop" as ConversationId,
+        agentId: "agent:stream-loop" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "keep calling tools"
+      })).pipe(Stream.runCollect)
+
+      const firstToolCall = events.findIndex((event) => event.type === "tool.call")
+      const firstToolResult = events.findIndex((event) => event.type === "tool.result")
+      const firstIterationCompleted = events.findIndex((event) => event.type === "iteration.completed")
+      const turnCompletedIndex = events.findIndex((event) => event.type === "turn.completed")
+
+      expect(firstToolCall).toBeGreaterThan(0)
+      expect(firstToolResult).toBeGreaterThan(firstToolCall)
+      expect(firstIterationCompleted).toBeGreaterThan(firstToolResult)
+      expect(turnCompletedIndex).toBeGreaterThan(firstIterationCompleted)
+      for (let i = 1; i < events.length; i += 1) {
+        expect(events[i]!.sequence).toBeGreaterThan(events[i - 1]!.sequence)
+      }
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("replays completed executions through fallback transcript events", () => {
+    const dbPath = testDatabasePath("turn-stream-replay-fallback")
+    const layer = makeTurnProcessingLayer(dbPath)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId: "agent:stream-replay" as AgentId,
+        tokenBudget: 200,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId: "session:stream-replay" as SessionId,
+        conversationId: "conversation:stream-replay" as ConversationId,
+        tokenCapacity: 300,
+        tokensUsed: 0
+      }))
+
+      const payload = makeTurnPayload({
+        turnId: "turn:stream-replay" as TurnId,
+        sessionId: "session:stream-replay" as SessionId,
+        conversationId: "conversation:stream-replay" as ConversationId,
+        agentId: "agent:stream-replay" as AgentId,
+        createdAt: now,
+        inputTokens: 10,
+        content: "replay me"
+      })
+
+      const firstResult = yield* runtime.processTurn(payload)
+      expect(firstResult.accepted).toBe(true)
+
+      const replayEvents = yield* runtime.processTurnStream(payload).pipe(Stream.runCollect)
+      expect(replayEvents[0]?.type).toBe("turn.started")
+      expect(replayEvents.some((event) => event.type === "assistant.delta")).toBe(true)
+      expect(replayEvents.some((event) => event.type === "turn.completed")).toBe(true)
+      for (let i = 1; i < replayEvents.length; i += 1) {
+        expect(replayEvents[i]!.sequence).toBeGreaterThan(replayEvents[i - 1]!.sequence)
+      }
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -708,6 +816,13 @@ describe("TurnProcessingWorkflow e2e", () => {
       expect(completed).toBeDefined()
       expect((completed as any).accepted).toBe(false)
       expect((completed as any).auditReasonCode).toBe("turn_processing_checkpoint_required")
+      const checkpointIndex = events.findIndex((event) => event.type === "turn.checkpoint_required")
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed")
+      expect(checkpointIndex).toBeGreaterThan(0)
+      expect(completedIndex).toBeGreaterThan(checkpointIndex)
+      for (let i = 1; i < events.length; i += 1) {
+        expect(events[i]!.sequence).toBeGreaterThan(events[i - 1]!.sequence)
+      }
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -1804,7 +1919,79 @@ const makeMockLanguageModel = (
         new LanguageModel.GenerateTextResponse(parts)
       ) as any
     },
-    streamText: (_options: any) => Stream.empty as any,
+    streamText: (_options: any) => {
+      if (capturedPrompts) {
+        capturedPrompts.push(encodeJson(_options))
+      }
+      if (mockOptions?.failWithErrorMessage) {
+        return Stream.fail({
+          _tag: "MockModelProviderError",
+          message: mockOptions.failWithErrorMessage
+        }) as any
+      }
+
+      const finishReasons = mockOptions?.finishReasons
+      const currentCall = callCount++
+      const finishReason = finishReasons
+        ? (finishReasons[currentCall] ?? finishReasons[finishReasons.length - 1] ?? "stop")
+        : "stop"
+
+      const mockUsage = new Response.Usage({
+        inputTokens: {
+          uncached: 10,
+          total: 10,
+          cacheRead: undefined,
+          cacheWrite: undefined
+        },
+        outputTokens: {
+          total: 6,
+          text: 6,
+          reasoning: undefined
+        }
+      })
+
+      const mockToolName = mockOptions?.toolName ?? "echo.text"
+      const mockToolParams = mockOptions?.toolParams ?? { text: "hello" }
+      const streamParts: Array<Response.StreamPart<any>> = [
+        Response.makePart("tool-call", {
+          id: `call_${mockToolName}_${currentCall}`,
+          name: mockToolName,
+          params: mockToolParams,
+          providerExecuted: false
+        }),
+        ...(mockOptions?.omitToolResults ? [] : [
+          Response.makePart("tool-result", {
+            id: `call_${mockToolName}_${currentCall}`,
+            name: mockToolName,
+            isFailure: false,
+            result: mockToolParams,
+            encodedResult: mockToolParams,
+            providerExecuted: false,
+            preliminary: false
+          })
+        ])
+      ]
+
+      if (finishReason !== "tool-calls") {
+        const textId = `text_${currentCall}`
+        streamParts.push(
+          Response.makePart("text-start", { id: textId }),
+          Response.makePart("text-delta", {
+            id: textId,
+            delta: "assistant mock response"
+          }),
+          Response.makePart("text-end", { id: textId })
+        )
+      }
+
+      streamParts.push(Response.makePart("finish", {
+        reason: finishReason,
+        usage: mockUsage,
+        response: undefined
+      }))
+
+      return Stream.make(...streamParts) as any
+    },
     generateObject: (_options: any) => Effect.die(new Error("generateObject not implemented in tests")) as any
   }
 }
@@ -1866,7 +2053,50 @@ const makeMockProvider = (
 
       return Effect.succeed(parts)
     },
-    streamText: () => Stream.empty
+    streamText: (_providerOptions: any) => {
+      if (capturedPrompts) {
+        capturedPrompts.push(encodeJson(_providerOptions))
+      }
+      const finishReasons = mockOptions?.finishReasons
+      const currentCall = callCount++
+      const finishReason = finishReasons
+        ? (finishReasons[currentCall] ?? finishReasons[finishReasons.length - 1] ?? "stop")
+        : "stop"
+
+      const mockToolName = mockOptions?.toolName ?? "echo.text"
+      const mockToolParams = mockOptions?.toolParams ?? { text: "hello" }
+
+      const streamParts: Array<any> = [
+        {
+          type: "tool-call",
+          id: `call_${mockToolName}_${currentCall}`,
+          name: mockToolName,
+          params: mockToolParams,
+          providerExecuted: false
+        }
+      ]
+
+      if (finishReason !== "tool-calls") {
+        const textId = `text_${currentCall}`
+        streamParts.push(
+          { type: "text-start", id: textId },
+          { type: "text-delta", id: textId, delta: "assistant mock response" },
+          { type: "text-end", id: textId }
+        )
+      }
+
+      streamParts.push({
+        type: "finish",
+        reason: finishReason,
+        usage: {
+          inputTokens: { uncached: 10, total: 10, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 6, text: 6, reasoning: 0 }
+        },
+        response: undefined
+      })
+
+      return Stream.make(...streamParts)
+    }
   }
 }
 

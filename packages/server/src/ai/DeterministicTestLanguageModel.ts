@@ -74,7 +74,21 @@ export const makeDeterministicTestLanguageModel = (): LanguageModel.Service => (
       new LanguageModel.GenerateTextResponse(parts)
     ) as any
   },
-  streamText: (_options: unknown) => Stream.empty as any,
+  streamText: (options: unknown) => {
+    const text = toResponseText(options)
+    const usage = makeUsage()
+
+    return Stream.make(
+      Response.makePart("text-start", { id: "text:0" }),
+      Response.makePart("text-delta", { id: "text:0", delta: text }),
+      Response.makePart("text-end", { id: "text:0" }),
+      Response.makePart("finish", {
+        reason: "stop",
+        usage,
+        response: undefined
+      })
+    ) as any
+  },
   generateObject: (_options: unknown) =>
     Effect.die(
       new Error("Deterministic test language model does not implement generateObject")
