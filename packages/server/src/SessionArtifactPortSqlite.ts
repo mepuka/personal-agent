@@ -10,8 +10,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import { SessionFileStore } from "./storage/SessionFileStore.js"
 
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+import { sqlInstant } from "./persistence/SqlCodecs.js"
 
 const ListBySessionRequest = Schema.Struct({
   sessionId: Schema.String
@@ -71,7 +70,7 @@ const toSessionArtifactRecord = (row: SessionArtifactRow): SessionArtifactRecord
   turnId: row.turn_id as TurnId | null,
   toolInvocationId: row.tool_invocation_id as ToolInvocationId | null,
   runId: row.run_id,
-  createdAt: decodeSqlInstant(row.created_at)
+  createdAt: sqlInstant.decode(row.created_at)
 })
 
 export class SessionArtifactPortSqlite extends ServiceMap.Service<SessionArtifactPortSqlite>()(

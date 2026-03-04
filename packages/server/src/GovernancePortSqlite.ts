@@ -12,10 +12,7 @@ import type { GovernanceAction, PermissionMode, PolicySelector } from "@template
 import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { TOOL_CATALOG } from "./ai/ToolCatalog.js"
-
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+import { sqlInstant, sqlInstantNullable, sqlJsonColumn } from "./persistence/SqlCodecs.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
 const POLICY_INVALID_REQUEST = "policy:invoke_tool:invalid_request:v1" as PolicyId
@@ -269,7 +266,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             ? 50
             : 500
 
-          const windowStart = DateTime.formatIso(DateTime.removeTime(now))
+          const windowStart = sqlInstant.encode(DateTime.removeTime(now))
           yield* sql.withTransaction(
             Effect.gen(function*() {
               const rows = yield* sql`
@@ -344,7 +341,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             ${entry.sessionId},
             ${entry.decision},
             ${entry.reason},
-            ${toSqlInstant(entry.createdAt)}
+            ${sqlInstant.encode(entry.createdAt)}
           )
         `.unprepared.pipe(
           Effect.asVoid,
@@ -390,8 +387,8 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
             ${record.complianceStatus},
             ${record.policyId},
             ${record.reason},
-            ${toSqlInstant(record.invokedAt)},
-            ${toSqlInstant(record.completedAt)}
+            ${sqlInstant.encode(record.invokedAt)},
+            ${sqlInstant.encode(record.completedAt)}
           )
         `.unprepared.pipe(
           Effect.asVoid,
@@ -602,7 +599,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
                 sessionId: row.session_id as AuditEntryRecord["sessionId"],
                 decision: row.decision as AuditEntryRecord["decision"],
                 reason: row.reason as string,
-                createdAt: fromSqlInstant(row.created_at as string)
+                createdAt: sqlInstant.decode(row.created_at as string)
               }) satisfies AuditEntryRecord
             )
           ),
@@ -671,7 +668,7 @@ const syncBuiltInToolCatalog = (sql: SqlClient.SqlClient) =>
     }
 
     // 2. Atomic converge transaction — upsert all catalog entries
-    const now = encodeSqlInstant(yield* DateTime.now)
+    const now = sqlInstant.encode(yield* DateTime.now)
     yield* sql.withTransaction(
       Effect.gen(function*() {
         for (const entry of TOOL_CATALOG) {
@@ -719,8 +716,8 @@ const decodeToolInvocationRow = (row: ToolInvocationListRow): ToolInvocationReco
   complianceStatus: row.compliance_status,
   policyId: row.policy_id as ToolInvocationRecord["policyId"],
   reason: row.reason,
-  invokedAt: fromSqlInstant(row.invoked_at),
-  completedAt: fromSqlInstant(row.completed_at),
+  invokedAt: sqlInstant.decode(row.invoked_at),
+  completedAt: sqlInstant.decode(row.completed_at),
   policy: row.policy_selector === null || row.policy_decision === null || row.policy_reason_template === null
     ? null
     : {
@@ -741,12 +738,10 @@ const decodeToolInvocationRow = (row: ToolInvocationListRow): ToolInvocationReco
     }
 })
 
+const toolDefinitionIdsJson = sqlJsonColumn(Schema.Array(Schema.String))
 const parseToolDefinitionIds = (value: string): ReadonlyArray<ToolDefinitionId> => {
   try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string").map((item) => item as ToolDefinitionId)
-      : []
+    return toolDefinitionIdsJson.decode(value).map((item) => item as ToolDefinitionId)
   } catch {
     return []
   }
@@ -774,10 +769,6 @@ const selectorMatches = (
 
 const escapeSql = (value: string): string => value.replace(/'/g, "''")
 
-const fromSqlInstant = (value: string) => decodeSqlInstant(value)
-
-const toSqlInstant = (value: AuditEntryRecord["createdAt"] | ToolInvocationRecord["invokedAt"]) =>
-  encodeSqlInstant(value)
 
 const isToolQuotaExceededError = (error: unknown): error is ToolQuotaExceeded =>
   typeof error === "object"

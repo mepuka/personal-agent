@@ -19,16 +19,14 @@ const CompactionCheckpointRowSchema = Schema.Struct({
 })
 type CompactionCheckpointRow = typeof CompactionCheckpointRowSchema.Type
 
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+import { sqlInstant } from "./persistence/SqlCodecs.js"
 
 const decodeRow = (row: CompactionCheckpointRow): CompactionCheckpointRecord => ({
   checkpointId: row.checkpoint_id as CompactionCheckpointId,
   agentId: row.agent_id as AgentId,
   sessionId: row.session_id as SessionId,
   subroutineId: row.subroutine_id,
-  createdAt: decodeSqlInstant(row.created_at),
+  createdAt: sqlInstant.decode(row.created_at),
   summary: row.summary,
   firstKeptTurnId: row.first_kept_turn_id as TurnId | null,
   firstKeptMessageId: row.first_kept_message_id as MessageId | null,
@@ -97,7 +95,7 @@ export class CompactionCheckpointPortSqlite extends ServiceMap.Service<Compactio
             ${record.agentId},
             ${record.sessionId},
             ${record.subroutineId},
-            ${encodeSqlInstant(record.createdAt)},
+            ${sqlInstant.encode(record.createdAt)},
             ${record.summary},
             ${record.firstKeptTurnId},
             ${record.firstKeptMessageId},

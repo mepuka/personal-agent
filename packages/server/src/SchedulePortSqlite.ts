@@ -61,9 +61,7 @@ type ExecutionRow = typeof ExecutionRowSchema.Type
 const ScheduleIdRequest = Schema.Struct({ scheduleId: Schema.String })
 const DueAtRequest = Schema.Struct({ dueAtIso: Schema.String })
 const EmptyRequest = Schema.Struct({})
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()(
   "server/SchedulePortSqlite",
@@ -194,8 +192,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             ${toSqlBoolean(schedule.autoDisableAfterRun)},
             ${schedule.catchUpWindowSeconds},
             ${schedule.maxCatchUpRunsPerTick},
-            ${toSqlInstant(schedule.lastExecutionAt)},
-            ${toSqlInstant(schedule.nextExecutionAt)}
+            ${sqlInstantNullable.encode(schedule.lastExecutionAt)},
+            ${sqlInstantNullable.encode(schedule.nextExecutionAt)}
           )
           ON CONFLICT(schedule_id) DO UPDATE SET
             owner_agent_id = excluded.owner_agent_id,
@@ -219,7 +217,7 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
         )
 
       const listDue: SchedulePort["listDue"] = (now) =>
-        findDueSchedules({ dueAtIso: toRequiredSqlInstant(now) }).pipe(
+        findDueSchedules({ dueAtIso: sqlInstant.encode(now) }).pipe(
           Effect.map((rows) =>
             rows.flatMap((row) => {
               const schedule = decodeScheduleRow(row)
@@ -251,11 +249,11 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               ) VALUES (
                 ${record.executionId},
                 ${record.scheduleId},
-                ${toSqlInstant(record.dueAt)},
+                ${sqlInstant.encode(record.dueAt)},
                 ${record.triggerSource},
                 ${record.outcome},
-                ${toSqlInstant(record.startedAt)},
-                ${toSqlInstant(record.endedAt)},
+                ${sqlInstant.encode(record.startedAt)},
+                ${sqlInstantNullable.encode(record.endedAt)},
                 ${record.skipReason}
               )
             `.unprepared
@@ -269,7 +267,7 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
               yield* sql`
                 UPDATE schedules
                 SET
-                  last_execution_at = ${toSqlInstant(executionFinishedAt(record))},
+                  last_execution_at = ${sqlInstantNullable.encode(executionFinishedAt(record))},
                   schedule_status = 'ScheduleDisabled',
                   next_execution_at = NULL
                 WHERE schedule_id = ${record.scheduleId}
@@ -280,8 +278,8 @@ export class SchedulePortSqlite extends ServiceMap.Service<SchedulePortSqlite>()
             yield* sql`
               UPDATE schedules
               SET
-                last_execution_at = ${toSqlInstant(executionFinishedAt(record))},
-                next_execution_at = ${toSqlInstant(nextExecutionAfterRecord(current, record))}
+                last_execution_at = ${sqlInstantNullable.encode(executionFinishedAt(record))},
+                next_execution_at = ${sqlInstantNullable.encode(nextExecutionAfterRecord(current, record))}
               WHERE schedule_id = ${record.scheduleId}
             `.unprepared
           })
@@ -331,18 +329,18 @@ const decodeScheduleRow = (row: ScheduleRow): ScheduleRecord => ({
   autoDisableAfterRun: row.auto_disable_after_run === 1,
   catchUpWindowSeconds: row.catch_up_window_seconds,
   maxCatchUpRunsPerTick: row.max_catch_up_runs_per_tick,
-  lastExecutionAt: fromSqlInstant(row.last_execution_at),
-  nextExecutionAt: fromSqlInstant(row.next_execution_at)
+  lastExecutionAt: sqlInstantNullable.decode(row.last_execution_at),
+  nextExecutionAt: sqlInstantNullable.decode(row.next_execution_at)
 })
 
 const decodeExecutionRow = (row: ExecutionRow): ScheduledExecutionRecord => ({
   executionId: row.execution_id as ScheduledExecutionId,
   scheduleId: row.schedule_id as ScheduleId,
-  dueAt: fromRequiredSqlInstant(row.due_at),
+  dueAt: sqlInstant.decode(row.due_at),
   triggerSource: row.trigger_source,
   outcome: row.outcome,
-  startedAt: fromRequiredSqlInstant(row.started_at),
-  endedAt: fromSqlInstant(row.ended_at),
+  startedAt: sqlInstant.decode(row.started_at),
+  endedAt: sqlInstantNullable.decode(row.ended_at),
   skipReason: row.skip_reason
 })
 
@@ -373,11 +371,3 @@ const decodeTrigger = (tag: ScheduleRow["trigger_tag"]): Trigger => {
 }
 
 const toSqlBoolean = (value: boolean): number => value ? 1 : 0
-
-const toRequiredSqlInstant = (instant: Instant): string => encodeSqlInstant(instant)
-
-const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : encodeSqlInstant(instant)
-
-const fromRequiredSqlInstant = (value: string): Instant => decodeSqlInstant(value)
-
-const fromSqlInstant = (value: string | null): Instant | null => value === null ? null : fromRequiredSqlInstant(value)

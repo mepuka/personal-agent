@@ -2,20 +2,18 @@ import {
   BackgroundAction,
   type BackgroundAction as BackgroundActionModel
 } from "@template/domain/ports"
-import { Schema } from "effect"
+import { sqlJsonColumn } from "../persistence/SqlCodecs.js"
 
-const BackgroundActionFromJson = Schema.fromJsonString(BackgroundAction)
-const decodeBackgroundActionFromJson = Schema.decodeUnknownSync(BackgroundActionFromJson)
-const encodeBackgroundActionToJson = Schema.encodeSync(BackgroundActionFromJson)
+const backgroundActionJson = sqlJsonColumn(BackgroundAction)
 
 export const encodeBackgroundActionPayloadJson = (action: BackgroundActionModel): string =>
-  encodeBackgroundActionToJson(action)
+  backgroundActionJson.encode(action)
 
 export const decodeBackgroundActionPayloadJson = (
   payloadJson: string
 ): BackgroundActionModel | null => {
   try {
-    return decodeBackgroundActionFromJson(payloadJson)
+    return backgroundActionJson.decode(payloadJson)
   } catch {
     return null
   }

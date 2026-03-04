@@ -19,9 +19,7 @@ type AgentStateRow = typeof AgentStateRowSchema.Type
 
 const AgentIdRequest = Schema.Struct({ agentId: Schema.String })
 const EmptyRequest = Schema.Struct({})
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlite>()(
   "server/AgentStatePortSqlite",
@@ -103,7 +101,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
             ${agentState.maxToolIterations},
             ${agentState.quotaPeriod},
             ${agentState.tokensConsumed},
-            ${toSqlInstant(agentState.budgetResetAt)},
+            ${sqlInstantNullable.encode(agentState.budgetResetAt)},
             CURRENT_TIMESTAMP
           )
           ON CONFLICT(agent_id) DO UPDATE SET
@@ -158,7 +156,7 @@ export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlit
                 max_tool_iterations = ${updated.maxToolIterations},
                 quota_period = ${updated.quotaPeriod},
                 tokens_consumed = ${updated.tokensConsumed},
-                budget_reset_at = ${toSqlInstant(updated.budgetResetAt)},
+                budget_reset_at = ${sqlInstantNullable.encode(updated.budgetResetAt)},
                 updated_at = CURRENT_TIMESTAMP
               WHERE agent_id = ${updated.agentId}
             `.unprepared
@@ -198,7 +196,7 @@ const decodeAgentStateRow = (row: AgentStateRow): AgentState => ({
   maxToolIterations: row.max_tool_iterations,
   quotaPeriod: row.quota_period,
   tokensConsumed: row.tokens_consumed,
-  budgetResetAt: fromSqlInstant(row.budget_reset_at)
+  budgetResetAt: sqlInstantNullable.decode(row.budget_reset_at)
 })
 
 const normalizeBudgetWindow = (state: AgentState, now: Instant): AgentState => {
@@ -241,6 +239,3 @@ const nextBudgetReset = (from: Instant, period: AgentState["quotaPeriod"]): Inst
   }
 }
 
-const fromSqlInstant = (value: string | null): Instant | null => value === null ? null : decodeSqlInstant(value)
-
-const toSqlInstant = (instant: Instant | null): string | null => instant === null ? null : encodeSqlInstant(instant)

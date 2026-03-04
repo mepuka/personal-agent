@@ -43,13 +43,9 @@ const AgentServiceRequest = Schema.Struct({
   serviceId: Schema.String
 })
 
-const CapabilitiesFromJsonString = Schema.fromJsonString(Schema.Array(ServiceCapability))
-const InstantFromSqlString = Schema.DateTimeUtcFromString
+import { sqlInstant, sqlJsonColumn } from "./persistence/SqlCodecs.js"
 
-const decodeCapabilitiesJson = Schema.decodeUnknownSync(CapabilitiesFromJsonString)
-const encodeCapabilitiesJson = Schema.encodeSync(CapabilitiesFromJsonString)
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+const capabilitiesJson = sqlJsonColumn(Schema.Array(ServiceCapability))
 
 // ---------------------------------------------------------------------------
 // Service implementation
@@ -96,7 +92,7 @@ export class IntegrationPortSqlite extends ServiceMap.Service<IntegrationPortSql
             ${service.endpoint},
             ${service.transport},
             ${service.identifier},
-            ${encodeSqlInstant(service.createdAt)}
+            ${sqlInstant.encode(service.createdAt)}
           )
           ON CONFLICT(service_id) DO UPDATE SET
             name = excluded.name,
@@ -168,9 +164,9 @@ export class IntegrationPortSqlite extends ServiceMap.Service<IntegrationPortSql
             ${integration.agentId},
             ${integration.serviceId},
             ${integration.status},
-            ${encodeCapabilitiesJson(integration.capabilities)},
-            ${encodeSqlInstant(integration.createdAt)},
-            ${encodeSqlInstant(integration.updatedAt)}
+            ${capabilitiesJson.encode(integration.capabilities)},
+            ${sqlInstant.encode(integration.createdAt)},
+            ${sqlInstant.encode(integration.updatedAt)}
           )
           ON CONFLICT(integration_id) DO UPDATE SET
             agent_id = excluded.agent_id,
@@ -219,7 +215,7 @@ const decodeServiceRow = (row: ExternalServiceRow): ExternalServiceRecord =>
     endpoint: row.endpoint,
     transport: row.transport,
     identifier: row.identifier,
-    createdAt: decodeSqlInstant(row.created_at)
+    createdAt: sqlInstant.decode(row.created_at)
   }) as ExternalServiceRecord
 
 const decodeIntegrationRow = (row: IntegrationRow): IntegrationRecord =>
@@ -228,7 +224,7 @@ const decodeIntegrationRow = (row: IntegrationRow): IntegrationRecord =>
     agentId: row.agent_id as AgentId,
     serviceId: row.service_id as ExternalServiceId,
     status: row.status,
-    capabilities: decodeCapabilitiesJson(row.capabilities_json),
-    createdAt: decodeSqlInstant(row.created_at),
-    updatedAt: decodeSqlInstant(row.updated_at)
+    capabilities: capabilitiesJson.decode(row.capabilities_json),
+    createdAt: sqlInstant.decode(row.created_at),
+    updatedAt: sqlInstant.decode(row.updated_at)
   }) as IntegrationRecord

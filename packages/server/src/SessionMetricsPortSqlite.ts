@@ -8,8 +8,7 @@ import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
+import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 const MetricsRowSchema = Schema.Struct({
   session_id: Schema.String,
@@ -32,8 +31,8 @@ const toMetricsRecord = (row: MetricsRow): SessionMetricsRecord => ({
   fileTouches: row.file_touches,
   lastCompactionAt: row.last_compaction_at === null
     ? null
-    : decodeSqlInstant(row.last_compaction_at),
-  updatedAt: decodeSqlInstant(row.updated_at)
+    : sqlInstant.decode(row.last_compaction_at),
+  updatedAt: sqlInstant.decode(row.updated_at)
 })
 
 const shouldTriggerByThresholds = (
@@ -104,7 +103,7 @@ export class SessionMetricsPortSqlite extends ServiceMap.Service<SessionMetricsP
             ${Math.max(0, Math.floor(deltas.fileTouches ?? 0))},
             ${deltas.lastCompactionAt === undefined || deltas.lastCompactionAt === null
               ? null
-              : DateTime.formatIso(deltas.lastCompactionAt)},
+              : sqlInstant.encode(deltas.lastCompactionAt)},
             CURRENT_TIMESTAMP
           )
           ON CONFLICT(session_id) DO UPDATE SET

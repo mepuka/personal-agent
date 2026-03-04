@@ -1,12 +1,9 @@
 import type { SessionId, TurnId } from "@template/domain/ids"
 import type { ExecuteCompactionPayload } from "@template/domain/ports"
-import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
+import { Effect, Layer, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 
-const decodeSqlInstant = Schema.decodeUnknownSync(Schema.DateTimeUtcFromString)
-
-const toSqlInstant = (instant: ExecuteCompactionPayload["triggeredAt"]): string =>
-  DateTime.formatIso(instant)
+import { sqlInstant } from "./persistence/SqlCodecs.js"
 
 type SessionCompactionStateRow = {
   readonly session_id: string
@@ -73,7 +70,7 @@ const toPendingPayload = (
     sessionId,
     conversationId: row.pending_conversation_id as ExecuteCompactionPayload["conversationId"],
     turnId: row.pending_turn_id as ExecuteCompactionPayload["turnId"],
-    triggeredAt: decodeSqlInstant(row.pending_triggered_at)
+    triggeredAt: sqlInstant.decode(row.pending_triggered_at)
   }
 }
 
@@ -144,7 +141,7 @@ export class CompactionRunStatePortSqlite extends ServiceMap.Service<CompactionR
                 pending_turn_id = ${payload.turnId},
                 pending_agent_id = ${payload.agentId},
                 pending_conversation_id = ${payload.conversationId},
-                pending_triggered_at = ${toSqlInstant(payload.triggeredAt)},
+                pending_triggered_at = ${sqlInstant.encode(payload.triggeredAt)},
                 updated_at = CURRENT_TIMESTAMP
               WHERE session_id = ${payload.sessionId}
             `.unprepared

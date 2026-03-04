@@ -32,9 +32,7 @@ const CheckpointRowSchema = Schema.Struct({
 type CheckpointRow = typeof CheckpointRowSchema.Type
 
 const CheckpointIdRequest = Schema.Struct({ checkpointId: Schema.String })
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 const decodeCheckpointRow = (row: CheckpointRow): CheckpointRecord => ({
   checkpointId: row.checkpoint_id as CheckpointId,
@@ -48,12 +46,12 @@ const decodeCheckpointRow = (row: CheckpointRow): CheckpointRecord => ({
   payloadJson: row.payload_json,
   payloadHash: row.payload_hash,
   status: row.status,
-  requestedAt: decodeSqlInstant(row.requested_at),
-  decidedAt: row.decided_at ? decodeSqlInstant(row.decided_at) : null,
+  requestedAt: sqlInstant.decode(row.requested_at),
+  decidedAt: sqlInstantNullable.decode(row.decided_at),
   decidedBy: row.decided_by,
-  consumedAt: row.consumed_at ? decodeSqlInstant(row.consumed_at) : null,
+  consumedAt: sqlInstantNullable.decode(row.consumed_at),
   consumedBy: row.consumed_by,
-  expiresAt: row.expires_at ? decodeSqlInstant(row.expires_at) : null
+  expiresAt: sqlInstantNullable.decode(row.expires_at)
 })
 
 export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlite>()(
@@ -95,12 +93,12 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
             ${record.payloadJson},
             ${record.payloadHash},
             ${record.status},
-            ${encodeSqlInstant(record.requestedAt)},
-            ${record.decidedAt ? encodeSqlInstant(record.decidedAt) : null},
+            ${sqlInstant.encode(record.requestedAt)},
+            ${sqlInstantNullable.encode(record.decidedAt)},
             ${record.decidedBy},
-            ${record.consumedAt ? encodeSqlInstant(record.consumedAt) : null},
+            ${sqlInstantNullable.encode(record.consumedAt)},
             ${record.consumedBy},
-            ${record.expiresAt ? encodeSqlInstant(record.expiresAt) : null}
+            ${sqlInstantNullable.encode(record.expiresAt)}
           )
         `.unprepared.pipe(
           Effect.asVoid,
@@ -161,7 +159,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
         decidedAt
       ) =>
         Effect.gen(function*() {
-          const atStr = encodeSqlInstant(decidedAt)
+          const atStr = sqlInstant.encode(decidedAt)
           const updatedRows = yield* sql`
             UPDATE checkpoints
             SET status = ${decision},
@@ -215,7 +213,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
         consumedAt
       ) =>
         Effect.gen(function*() {
-          const atStr = encodeSqlInstant(consumedAt)
+          const atStr = sqlInstant.encode(consumedAt)
           const updatedRows = yield* sql`
             UPDATE checkpoints
             SET status = 'Consumed',
@@ -267,7 +265,7 @@ export class CheckpointPortSqlite extends ServiceMap.Service<CheckpointPortSqlit
       const listPending: CheckpointPort["listPending"] = (agentId) =>
         Effect.gen(function*() {
           const now = yield* DateTime.now
-          const nowStr = encodeSqlInstant(now)
+          const nowStr = sqlInstant.encode(now)
           const rows = agentId
             ? yield* sql`
                 SELECT
