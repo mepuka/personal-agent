@@ -38,18 +38,20 @@ export function ContextBar() {
         const filled = Math.round((pct / 100) * barWidth)
         const empty = barWidth - filled
         const prefix = i < visible.length - 1 ? " \u251C" : " \u2514"
+        const color = SEGMENT_COLORS[key] ?? theme.textMuted
         return (
-          <text
-            key={key}
-            content={`${prefix} ${label} ${"\u2588".repeat(filled)}${"\u2591".repeat(empty)} ${pct}%`}
-            fg={SEGMENT_COLORS[key] ?? theme.textMuted}
-          />
+          <text key={key}>
+            <span fg={theme.textMuted}>{`${prefix} ${label} `}</span>
+            <span fg={color}>{"\u2588".repeat(filled)}</span>
+            <span fg={theme.border}>{"\u2591".repeat(empty)}</span>
+            <span fg={theme.textMuted}>{` ${pct}%`}</span>
+          </text>
         )
       })}
-      <text
-        content={`  ${"\u2588".repeat(summaryFilled)}${"\u2591".repeat(barWidth - summaryFilled)}`}
-        fg={summaryColor(totalPct)}
-      />
+      <text>
+        <span fg={summaryColor(totalPct)}>{`  ${"\u2588".repeat(summaryFilled)}`}</span>
+        <span fg={theme.border}>{"\u2591".repeat(barWidth - summaryFilled)}</span>
+      </text>
       <text
         content={`  ${formatTokens(usage.totalTokens)} / ${formatTokens(usage.capacityTokens)}`}
         fg={theme.textMuted}

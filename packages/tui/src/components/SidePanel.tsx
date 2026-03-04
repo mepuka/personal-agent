@@ -21,7 +21,9 @@ export function SidePanel() {
     <box
       flexDirection="column"
       flexGrow={1}
-      border={["left"]}
+      flexBasis={0}
+      maxWidth="20%"
+      border={["top", "left", "bottom"]}
       borderStyle="single"
       borderColor={theme.border}
       paddingLeft={1}

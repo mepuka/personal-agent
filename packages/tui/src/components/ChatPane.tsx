@@ -28,7 +28,8 @@ export function ChatPane() {
     <box
       flexDirection="column"
       flexGrow={4}
-      border={true}
+      flexBasis={0}
+      border={["top", "bottom", "left"]}
       borderStyle="single"
       borderColor={theme.border}
       padding={1}
