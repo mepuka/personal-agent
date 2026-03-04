@@ -1,29 +1,29 @@
 import { describe, expect, it } from "@effect/vitest"
-import { DateTime } from "effect"
+import { DateTime, Option } from "effect"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import * as Response from "effect/unstable/ai/Response"
 import {
   inferToolChoice,
-  toProviderConfigOverride,
   makeUserTurn,
   makeAssistantTurn,
-  sanitizePromptForAnthropic,
   toPromptText,
   toTurnModelFailure,
   isRequiresApprovalToolFailure,
   toModelFailureMessage,
   toModelFailureAuditReason,
-  isProviderCreditExhaustedReason,
-  normalizeModelFailureReason,
-  looksLikeProviderCreditExhausted,
-  zeroUsage,
-  addOptional,
-  mergeUsage,
-  makeLoopCapResponse,
   TurnModelFailure,
   type ProcessTurnPayload
 } from "../src/turn/TurnProcessingWorkflow.js"
+import { toProviderConfigOverride } from "../src/ai/ProviderGenerationConfig.js"
+import { sanitizePromptForAnthropic } from "../src/ai/ProviderPromptPolicy.js"
+import {
+  isProviderCreditExhaustedReason,
+  looksLikeProviderCreditExhausted,
+  normalizeProviderModelFailureReason
+} from "../src/ai/ProviderErrorNormalization.js"
 import { RequiresApprovalToolFailure } from "../src/ai/ToolRegistry.js"
+import { addOptional, makeLoopCapResponse, mergeUsage, zeroUsage } from "../src/turn/TurnLoopUsage.js"
+import { findPendingToolCallIdForReplay } from "../src/turn/replay/TurnReplayHelpers.js"
 
 const makePayload = (overrides: Partial<ProcessTurnPayload> = {}): ProcessTurnPayload => ({
   turnId: overrides.turnId ?? "turn:test-1",
@@ -220,6 +220,143 @@ describe("looksLikeProviderCreditExhausted", () => {
   })
 })
 
+describe("findPendingToolCallIdForReplay", () => {
+  it("returns exact unresolved tool-call id", () => {
+    const history = Prompt.fromMessages([
+      Prompt.assistantMessage({
+        content: [
+          Prompt.makePart("tool-call", {
+            id: "toolu_exact",
+            name: "shell_execute",
+            params: { command: "ps aux" },
+            providerExecuted: false
+          })
+        ]
+      })
+    ])
+
+    const result = findPendingToolCallIdForReplay(history, {
+      toolName: "shell_execute",
+      input: { command: "ps aux" }
+    })
+
+    expect(Option.isSome(result)).toBe(true)
+    if (Option.isSome(result)) {
+      expect(result.value).toBe("toolu_exact")
+    }
+  })
+
+  it("does not return resolved tool-call ids", () => {
+    const history = Prompt.fromMessages([
+      Prompt.assistantMessage({
+        content: [
+          Prompt.makePart("tool-call", {
+            id: "toolu_resolved",
+            name: "shell_execute",
+            params: { command: "ps aux" },
+            providerExecuted: false
+          })
+        ]
+      }),
+      Prompt.toolMessage({
+        content: [
+          Prompt.makePart("tool-result", {
+            id: "toolu_resolved",
+            name: "shell_execute",
+            isFailure: false,
+            result: { ok: true }
+          })
+        ]
+      })
+    ])
+
+    const result = findPendingToolCallIdForReplay(history, {
+      toolName: "shell_execute",
+      input: { command: "ps aux" }
+    })
+
+    expect(Option.isNone(result)).toBe(true)
+  })
+
+  it("matches input regardless of object key order", () => {
+    const history = Prompt.fromMessages([
+      Prompt.assistantMessage({
+        content: [
+          Prompt.makePart("tool-call", {
+            id: "toolu_order",
+            name: "shell_execute",
+            params: { b: 2, a: 1 },
+            providerExecuted: false
+          })
+        ]
+      })
+    ])
+
+    const result = findPendingToolCallIdForReplay(history, {
+      toolName: "shell_execute",
+      input: { a: 1, b: 2 }
+    })
+
+    expect(Option.isSome(result)).toBe(true)
+    if (Option.isSome(result)) {
+      expect(result.value).toBe("toolu_order")
+    }
+  })
+
+  it("falls back to unique unresolved call by tool name when params differ", () => {
+    const history = Prompt.fromMessages([
+      Prompt.assistantMessage({
+        content: [
+          Prompt.makePart("tool-call", {
+            id: "toolu_unique_name",
+            name: "shell_execute",
+            params: { command: "ps aux", timeoutMs: 30_000 },
+            providerExecuted: false
+          })
+        ]
+      })
+    ])
+
+    const result = findPendingToolCallIdForReplay(history, {
+      toolName: "shell_execute",
+      input: { command: "ps aux" }
+    })
+
+    expect(Option.isSome(result)).toBe(true)
+    if (Option.isSome(result)) {
+      expect(result.value).toBe("toolu_unique_name")
+    }
+  })
+
+  it("returns none when multiple unresolved calls exist for same tool with no exact match", () => {
+    const history = Prompt.fromMessages([
+      Prompt.assistantMessage({
+        content: [
+          Prompt.makePart("tool-call", {
+            id: "toolu_1",
+            name: "shell_execute",
+            params: { command: "ls" },
+            providerExecuted: false
+          }),
+          Prompt.makePart("tool-call", {
+            id: "toolu_2",
+            name: "shell_execute",
+            params: { command: "pwd" },
+            providerExecuted: false
+          })
+        ]
+      })
+    ])
+
+    const result = findPendingToolCallIdForReplay(history, {
+      toolName: "shell_execute",
+      input: { command: "ps aux" }
+    })
+
+    expect(Option.isNone(result)).toBe(true)
+  })
+})
+
 describe("isProviderCreditExhaustedReason", () => {
   it("returns true for prefixed reasons", () => {
     expect(isProviderCreditExhaustedReason("provider_credit_exhausted: something")).toBe(true)
@@ -230,30 +367,30 @@ describe("isProviderCreditExhaustedReason", () => {
   })
 })
 
-describe("normalizeModelFailureReason", () => {
+describe("normalizeProviderModelFailureReason", () => {
   it("returns 'model_error' for empty string", () => {
-    expect(normalizeModelFailureReason("")).toBe("model_error")
+    expect(normalizeProviderModelFailureReason("")).toBe("model_error")
   })
 
   it("returns 'model_error' for whitespace-only", () => {
-    expect(normalizeModelFailureReason("   ")).toBe("model_error")
+    expect(normalizeProviderModelFailureReason("   ")).toBe("model_error")
   })
 
   it("preserves already-prefixed credit exhausted reasons", () => {
-    expect(normalizeModelFailureReason("provider_credit_exhausted: foo")).toBe("provider_credit_exhausted: foo")
+    expect(normalizeProviderModelFailureReason("provider_credit_exhausted: foo")).toBe("provider_credit_exhausted: foo")
   })
 
   it("wraps credit-like reasons with prefix", () => {
-    expect(normalizeModelFailureReason("Your credit balance is too low"))
+    expect(normalizeProviderModelFailureReason("Your credit balance is too low"))
       .toBe("provider_credit_exhausted: Your credit balance is too low")
   })
 
   it("returns other reasons as-is", () => {
-    expect(normalizeModelFailureReason("timeout")).toBe("timeout")
+    expect(normalizeProviderModelFailureReason("timeout")).toBe("timeout")
   })
 
   it("trims whitespace", () => {
-    expect(normalizeModelFailureReason("  timeout  ")).toBe("timeout")
+    expect(normalizeProviderModelFailureReason("  timeout  ")).toBe("timeout")
   })
 })
 

@@ -2,9 +2,9 @@ import type { ContentBlock } from "@template/domain/ports"
 import type { ModelFinishReason } from "@template/domain/status"
 import { Effect, Schema } from "effect"
 import type * as Response from "effect/unstable/ai/Response"
+import { decodeUnknownJsonEffect, encodeUnknownJsonEffect } from "../json/JsonStringCodecs.js"
 
-const JsonFromString = Schema.UnknownFromJsonString
-const encodeUnknownJson = Schema.encodeUnknownEffect(JsonFromString)
+const encodeUnknownJson = encodeUnknownJsonEffect
 
 export const encodePartsToContentBlocks = (
   parts: ReadonlyArray<Response.Part<any>>
@@ -65,7 +65,7 @@ export const encodeUsageToJson = (
 
 export const decodeUsageFromJson = (
   json: string
-): Effect.Effect<unknown, Schema.SchemaError> => Schema.decodeUnknownEffect(JsonFromString)(json)
+): Effect.Effect<unknown, Schema.SchemaError> => decodeUnknownJsonEffect(json)
 
 export const encodeFinishReason = (
   reason: Response.FinishReason

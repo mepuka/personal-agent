@@ -1,5 +1,3 @@
-import * as Anthropic from "@effect/ai-anthropic"
-import * as OpenAi from "@effect/ai-openai"
 import { DateTime, Effect, Layer, Option, Ref, Schema, Stream } from "effect"
 import * as Chat from "effect/unstable/ai/Chat"
 import * as LanguageModel from "effect/unstable/ai/LanguageModel"
@@ -48,6 +46,9 @@ import {
   encodeUsageToJson
 } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
+import { normalizeProviderModelFailureReason, isProviderCreditExhaustedReason } from "../ai/ProviderErrorNormalization.js"
+import { sanitizeInitialPromptForProvider, sanitizePromptForProvider } from "../ai/ProviderPromptPolicy.js"
+import { applyProviderConfigOverrideToStream, toProviderConfigOverride } from "../ai/ProviderGenerationConfig.js"
 import { PromptCatalog } from "../ai/PromptCatalog.js"
 import { makeToolCallId } from "../ai/ToolCallId.js"
 import {
@@ -71,50 +72,28 @@ import {
   SessionTurnPortTag
 } from "../PortTags.js"
 import {
-  parseJsonRecordOption,
-  safeJsonParseUnknown
-} from "../json/JsonCodec.js"
+  decodeJsonStringOption,
+  encodeUnknownJsonEffect,
+  encodeUnknownJsonSync
+} from "../json/JsonStringCodecs.js"
 import { isRecoveredToolErrorOutput } from "./RecoveredToolError.js"
 import { injectMemoriesIntoSystemPrompt } from "./MemoryInjector.js"
 import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
+import { ProcessTurnPayloadSchema } from "./TurnPayloadSchemas.js"
+import type { InvokeToolReplayExecution } from "./TurnPayloadSchemas.js"
+import { makeLoopCapResponse, mergeUsage, zeroUsage } from "./TurnLoopUsage.js"
+import {
+  findPendingToolCallIdForReplay,
+  parseReplayInputJson,
+  parseReplayOutputJson
+} from "./replay/TurnReplayHelpers.js"
 import {
   emitTurnLiveEvent,
   TurnEventEmitterTag,
   type LiveTurnStreamEvent
 } from "./TurnEventEmitter.js"
 
-const InvokeToolReplayExecution = Schema.Struct({
-  replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
-  toolName: Schema.String,
-  inputJson: Schema.String,
-  outputJson: Schema.String,
-  isError: Schema.Boolean
-})
-type InvokeToolReplayExecution = typeof InvokeToolReplayExecution.Type
-
-export const ProcessTurnPayload = Schema.Struct({
-  turnId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String,
-  agentId: Schema.String,
-  userId: Schema.String,
-  channelId: Schema.String,
-  content: Schema.String,
-  contentBlocks: Schema.Array(ContentBlockSchema),
-  createdAt: Schema.DateTimeUtc,
-  inputTokens: Schema.Number,
-  checkpointId: Schema.optionalKey(Schema.String),
-  invokeToolReplay: Schema.optionalKey(InvokeToolReplayExecution),
-  modelOverride: Schema.optionalKey(Schema.Struct({
-    provider: Schema.String,
-    modelId: Schema.String
-  })),
-  generationConfigOverride: Schema.optionalKey(Schema.Struct({
-    temperature: Schema.optionalKey(Schema.Number),
-    maxOutputTokens: Schema.optionalKey(Schema.Number),
-    topP: Schema.optionalKey(Schema.Number)
-  }))
-})
+export const ProcessTurnPayload = ProcessTurnPayloadSchema
 export type ProcessTurnPayload = typeof ProcessTurnPayload.Type
 
 const TurnIterationStats = Schema.Struct({
@@ -184,76 +163,7 @@ const PolicyDecisionSchema = Schema.Struct({
 })
 
 const PersistTurnError = Schema.Union([SessionNotFound, ContextWindowExceeded])
-
-export const toProviderConfigOverride = (
-  provider: string,
-  config: {
-    readonly temperature?: number
-    readonly maxOutputTokens?: number
-    readonly topP?: number
-  }
-): Record<string, unknown> => {
-  const overrides: Record<string, unknown> = {}
-  if (config.temperature !== undefined) overrides.temperature = config.temperature
-  if (config.topP !== undefined) overrides.top_p = config.topP
-
-  switch (provider) {
-    case "anthropic":
-      if (config.maxOutputTokens !== undefined) overrides.max_tokens = config.maxOutputTokens
-      break
-    case "openai":
-    case "openrouter":
-    case "google":
-      if (config.maxOutputTokens !== undefined) overrides.max_output_tokens = config.maxOutputTokens
-      break
-  }
-  return overrides
-}
-
-const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)
-
-const applyProviderConfigOverrideToStream = (
-  provider: string,
-  overrides: Record<string, unknown>,
-  stream: Stream.Stream<Response.StreamPart<any>, unknown, any>
-): Stream.Stream<Response.StreamPart<any>, unknown, any> =>
-  Stream.unwrap(
-    Effect.gen(function*() {
-      if (Object.keys(overrides).length === 0) {
-        return stream
-      }
-
-      if (provider === "anthropic") {
-        const existing = yield* Effect.serviceOption(Anthropic.AnthropicLanguageModel.Config)
-        const mergedConfig = {
-          ...(Option.isSome(existing) ? existing.value : {}),
-          ...overrides
-        }
-        return stream.pipe(
-          Stream.provideService(
-            Anthropic.AnthropicLanguageModel.Config,
-            mergedConfig as any
-          )
-        )
-      }
-
-      if (provider === "openai" || provider === "openrouter" || provider === "google") {
-        const existing = yield* Effect.serviceOption(OpenAi.OpenAiLanguageModel.Config)
-        const mergedConfig = {
-          ...(Option.isSome(existing) ? existing.value : {}),
-          ...overrides
-        }
-        return stream.pipe(
-          Stream.provideService(
-            OpenAi.OpenAiLanguageModel.Config,
-            mergedConfig as any
-          )
-        )
-      }
-
-      return stream
-    })
-  )
+const encodeUnknownJson = encodeUnknownJsonEffect
 
 export const inferToolChoice = (
   rawUserContent: string
@@ -274,52 +184,6 @@ export const inferToolChoice = (
 
   return {}
 }
-
-export const sanitizePromptForAnthropic = (prompt: Prompt.Prompt): Prompt.Prompt => {
-  const sanitizedMessages: Array<Prompt.Message> = []
-
-  for (const message of prompt.content) {
-    switch (message.role) {
-      case "system": {
-        const content = message.content.trim()
-        if (content.length === 0) {
-          break
-        }
-        sanitizedMessages.push({ ...message, content })
-        break
-      }
-      case "user": {
-        const content = message.content.filter(
-          (part) => part.type !== "text" || part.text.trim().length > 0
-        )
-        if (content.length === 0) {
-          break
-        }
-        sanitizedMessages.push({ ...message, content })
-        break
-      }
-      case "assistant": {
-        const content = message.content.filter(
-          (part) => part.type !== "text" || part.text.trim().length > 0
-        )
-        if (content.length === 0) {
-          break
-        }
-        sanitizedMessages.push({ ...message, content })
-        break
-      }
-      case "tool": {
-        sanitizedMessages.push(message)
-        break
-      }
-    }
-  }
-
-  return Prompt.fromMessages(sanitizedMessages)
-}
-
-const sanitizeInitialPromptForAnthropic = (input: Prompt.RawInput): Prompt.RawInput =>
-  sanitizePromptForAnthropic(Prompt.make(input))
 
 export const TurnProcessingWorkflow = Workflow.make({
   name: "TurnProcessingWorkflow",
@@ -448,7 +312,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
               createdAt: DateTime.formatIso(payload.createdAt)
             }
           } as const
-          const checkpointPayload = Schema.encodeSync(Schema.UnknownFromJsonString)(replayPayload)
+          const checkpointPayload = encodeUnknownJsonSync(replayPayload)
           const newCheckpointId = (`checkpoint:${crypto.randomUUID()}`) as CheckpointId
           yield* checkpointPort.create({
             checkpointId: newCheckpointId,
@@ -924,14 +788,6 @@ const toInvokeToolReplayContentBlocks = (
   }
 ]
 
-const parseReplayInputJson = (
-  inputJson: string
-): Option.Option<Record<string, unknown>> =>
-  parseJsonRecordOption(inputJson)
-
-const parseReplayOutputJson = (outputJson: string): unknown =>
-  safeJsonParseUnknown(outputJson)
-
 const validateToolBlockPairing = (
   contentBlocks: ReadonlyArray<ContentBlock>
 ): Option.Option<string> => {
@@ -979,16 +835,43 @@ const appendInvokeToolReplayToHistory = (params: {
   readonly output: unknown
 }) =>
   Ref.update(params.chat.history, (history) => {
+    const pendingToolCallId = findPendingToolCallIdForReplay(history, {
+      toolName: params.toolName,
+      input: params.input
+    })
+    const replayToolCallId = Option.getOrElse(
+      pendingToolCallId,
+      () => params.toolCallId
+    )
+
     const alreadyInjected = history.content.some(
       (message) =>
         message.role === "tool"
         && message.content.some(
-          (part) => part.type === "tool-result" && part.id === params.toolCallId
+          (part) => part.type === "tool-result" && part.id === replayToolCallId
         )
     )
 
     if (alreadyInjected) {
       return history
+    }
+
+    if (Option.isSome(pendingToolCallId)) {
+      return Prompt.concat(
+        history,
+        Prompt.fromMessages([
+          Prompt.toolMessage({
+            content: [
+              Prompt.makePart("tool-result", {
+                id: replayToolCallId,
+                name: params.toolName,
+                isFailure: false,
+                result: params.output
+              })
+            ]
+          })
+        ])
+      )
     }
 
     return Prompt.concat(
@@ -997,7 +880,7 @@ const appendInvokeToolReplayToHistory = (params: {
         Prompt.assistantMessage({
           content: [
             Prompt.makePart("tool-call", {
-              id: params.toolCallId,
+              id: replayToolCallId,
               name: params.toolName,
               params: params.input,
               providerExecuted: false
@@ -1007,7 +890,7 @@ const appendInvokeToolReplayToHistory = (params: {
         Prompt.toolMessage({
           content: [
             Prompt.makePart("tool-result", {
-              id: params.toolCallId,
+              id: replayToolCallId,
               name: params.toolName,
               isFailure: false,
               result: params.output
@@ -1058,14 +941,13 @@ const processWithToolLoop = Effect.fn("TurnProcessingWorkflow.processWithToolLoo
     const currentIteration = iteration + 1
 
     return Effect.gen(function*() {
-      if (params.resolvedProvider === "anthropic") {
-        yield* Ref.update(params.chat.history, sanitizePromptForAnthropic)
-      }
+      yield* Ref.update(
+        params.chat.history,
+        (prompt) => sanitizePromptForProvider(params.resolvedProvider, prompt)
+      )
 
       const promptForIteration: Prompt.RawInput = iteration === 0
-        ? (params.resolvedProvider === "anthropic"
-            ? sanitizeInitialPromptForAnthropic(params.initialPrompt)
-            : params.initialPrompt)
+        ? sanitizeInitialPromptForProvider(params.resolvedProvider, params.initialPrompt)
         : Prompt.empty
 
       const toolkitBundle = yield* params.toolRegistry.makeToolkit(
@@ -1417,29 +1299,7 @@ export const toModelFailureAuditReason = (
     ? "turn_processing_provider_credit_exhausted"
     : "turn_processing_model_error"
 
-export const isProviderCreditExhaustedReason = (reason: string): boolean =>
-  reason.startsWith("provider_credit_exhausted:")
-
-export const normalizeModelFailureReason = (reason: string): string => {
-  const trimmed = reason.trim()
-  if (trimmed.length === 0) {
-    return "model_error"
-  }
-  if (isProviderCreditExhaustedReason(trimmed)) {
-    return trimmed
-  }
-  return looksLikeProviderCreditExhausted(trimmed)
-    ? `provider_credit_exhausted: ${trimmed}`
-    : trimmed
-}
-
-export const looksLikeProviderCreditExhausted = (reason: string): boolean => {
-  const normalized = reason.toLowerCase()
-  return normalized.includes("credit balance is too low")
-    || normalized.includes("insufficient credits")
-    || normalized.includes("insufficient_quota")
-    || normalized.includes("billing")
-}
+export const normalizeModelFailureReason = normalizeProviderModelFailureReason
 
 const ModelUsageTotalsJson = Schema.Struct({
   inputTokens: Schema.optional(
@@ -1453,16 +1313,14 @@ const ModelUsageTotalsJson = Schema.Struct({
     })
   )
 })
-const decodeModelUsageTotals = Schema.decodeOption(
-  Schema.fromJsonString(ModelUsageTotalsJson)
-)
+const decodeModelUsageTotals = decodeJsonStringOption(ModelUsageTotalsJson)
 
 export const extractTotalTokensFromUsageJson = (modelUsageJson: string | null): number => {
   if (modelUsageJson === null) {
     return 0
   }
-  const parsed = Option.getOrNull(decodeModelUsageTotals(modelUsageJson))
-  if (parsed === null) {
+  const parsed = Option.getOrUndefined(decodeModelUsageTotals(modelUsageJson))
+  if (parsed === undefined) {
     return 0
   }
 
@@ -1472,51 +1330,3 @@ export const extractTotalTokensFromUsageJson = (modelUsageJson: string | null): 
     ? Math.max(0, Math.floor(inputTotal + outputTotal))
     : 0
 }
-
-export const zeroUsage = (): Response.Usage =>
-  new Response.Usage({
-    inputTokens: {
-      uncached: 0,
-      total: 0,
-      cacheRead: 0,
-      cacheWrite: 0
-    },
-    outputTokens: {
-      total: 0,
-      text: 0,
-      reasoning: 0
-    }
-  })
-
-export const addOptional = (a: number | undefined, b: number | undefined): number =>
-  (a ?? 0) + (b ?? 0)
-
-export const mergeUsage = (left: Response.Usage, right: Response.Usage): Response.Usage =>
-  new Response.Usage({
-    inputTokens: {
-      uncached: addOptional(left.inputTokens.uncached, right.inputTokens.uncached),
-      total: addOptional(left.inputTokens.total, right.inputTokens.total),
-      cacheRead: addOptional(left.inputTokens.cacheRead, right.inputTokens.cacheRead),
-      cacheWrite: addOptional(left.inputTokens.cacheWrite, right.inputTokens.cacheWrite)
-    },
-    outputTokens: {
-      total: addOptional(left.outputTokens.total, right.outputTokens.total),
-      text: addOptional(left.outputTokens.text, right.outputTokens.text),
-      reasoning: addOptional(left.outputTokens.reasoning, right.outputTokens.reasoning)
-    }
-  })
-
-export const makeLoopCapResponse = (
-  maxIterations: number,
-  usage: Response.Usage
-): LanguageModel.GenerateTextResponse<any> =>
-  new LanguageModel.GenerateTextResponse([
-    Response.makePart("text", {
-      text: `Stopped after reaching max tool iterations (${maxIterations}).`
-    }),
-    Response.makePart("finish", {
-      reason: "other",
-      usage,
-      response: undefined
-    })
-  ])

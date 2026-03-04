@@ -1,5 +1,3 @@
-import * as Anthropic from "@effect/ai-anthropic"
-import * as OpenAi from "@effect/ai-openai"
 import type {
   AgentId,
   AuditEntryId,
@@ -18,6 +16,7 @@ import type * as Response from "effect/unstable/ai/Response"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { encodeUsageToJson } from "../ai/ContentBlockCodec.js"
 import { ModelRegistry } from "../ai/ModelRegistry.js"
+import { applyProviderConfigOverrideToEffect, toProviderConfigOverride } from "../ai/ProviderGenerationConfig.js"
 import { PromptCatalog } from "../ai/PromptCatalog.js"
 import { type CheckpointSignal, ToolRegistry, type ToolRegistryService } from "../ai/ToolRegistry.js"
 import {
@@ -25,7 +24,7 @@ import {
   GovernancePortTag,
   SessionMetricsPortTag
 } from "../PortTags.js"
-import { makeLoopCapResponse, mergeUsage, toProviderConfigOverride, zeroUsage } from "../turn/TurnProcessingWorkflow.js"
+import { makeLoopCapResponse, mergeUsage, zeroUsage } from "../turn/TurnLoopUsage.js"
 import type { LoadedSubroutine } from "./SubroutineCatalog.js"
 import { TraceWriter } from "./TraceWriter.js"
 
@@ -402,23 +401,25 @@ const subroutineToolLoop = (params: {
         toolkit: toolkitBundle.toolkit
       })
 
-      // Apply generation config via provider-specific withConfigOverride
+      // Apply generation config through shared provider utility
       const providerOverrides = toProviderConfigOverride(
         params.resolvedProvider,
         params.effectiveGenerationConfig
       )
-      const configuredEffect = Object.keys(providerOverrides).length > 0
-        ? (params.resolvedProvider === "anthropic"
-          ? Anthropic.AnthropicLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect)
-          : OpenAi.OpenAiLanguageModel.withConfigOverride(providerOverrides as any)(generateTextEffect))
-        : generateTextEffect
+      const configuredEffect = applyProviderConfigOverrideToEffect(
+        params.resolvedProvider,
+        providerOverrides,
+        generateTextEffect
+      )
 
       const response = yield* configuredEffect.pipe(
         Effect.provide(Layer.merge(toolkitBundle.handlerLayer, params.lmLayer)),
         Effect.withSpan("SubroutineRunner.generateText")
       )
 
-      const toolCallsThisIteration = response.content.filter((part) => part.type === "tool-call").length
+      const toolCallsThisIteration = response.content.filter(
+        (part: Response.Part<any>) => part.type === "tool-call"
+      ).length
       const nextToolCallsTotal = toolCallsTotal + toolCallsThisIteration
       const mergedParts = [...allParts, ...response.content]
       const mergedUsage = mergeUsage(usage, response.usage)

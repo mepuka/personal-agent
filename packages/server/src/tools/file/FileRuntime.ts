@@ -30,6 +30,7 @@ import {
   type FileVersionStamp,
   type ResolvedFilePath
 } from "./FileTypes.js"
+import { stableJsonStringify } from "../../json/CanonicalJson.js"
 
 const textEncoder = new TextEncoder()
 
@@ -40,31 +41,13 @@ const toErrorMessage = (error: unknown): string =>
 
 const contentBytes = (content: string): number => textEncoder.encode(content).length
 
-const canonicalize = (input: unknown): unknown => {
-  if (Array.isArray(input)) {
-    return input.map(canonicalize)
-  }
-
-  if (input !== null && typeof input === "object") {
-    const objectInput = input as Record<string, unknown>
-    return Object.keys(objectInput)
-      .sort((a, b) => a.localeCompare(b))
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = canonicalize(objectInput[key])
-        return acc
-      }, {})
-  }
-
-  return input
-}
-
 const computePlanFingerprint = (
   plan: Omit<FilePlan, "fingerprint">
 ): Effect.Effect<string> =>
   Effect.promise(() =>
     crypto.subtle.digest(
       "SHA-256",
-      new TextEncoder().encode(JSON.stringify(canonicalize(plan)))
+      new TextEncoder().encode(stableJsonStringify(plan))
     )
   ).pipe(
     Effect.map((buffer) =>

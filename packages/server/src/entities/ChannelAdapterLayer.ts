@@ -1,4 +1,5 @@
 import { ChannelNotFound } from "@template/domain/errors"
+import type { GenerationConfigOverride, ModelOverride } from "@template/domain/config"
 import type { AgentId, ChannelId, SessionId } from "@template/domain/ids"
 import type { ChannelCapability, ChannelType } from "@template/domain/status"
 import { Effect, Stream } from "effect"
@@ -15,27 +16,13 @@ type InitializePayload = {
 type ReceiveMessagePayload = {
   readonly content: string
   readonly userId: string
-  readonly modelOverride?: {
-    readonly provider: string
-    readonly modelId: string
-  }
-  readonly generationConfigOverride?: {
-    readonly temperature?: number
-    readonly maxOutputTokens?: number
-    readonly topP?: number
-  }
+  readonly modelOverride?: ModelOverride
+  readonly generationConfigOverride?: GenerationConfigOverride
 }
 
 type SetModelPreferencePayload = {
-  readonly modelOverride?: {
-    readonly provider: string
-    readonly modelId: string
-  } | null
-  readonly generationConfigOverride?: {
-    readonly temperature?: number
-    readonly maxOutputTokens?: number
-    readonly topP?: number
-  } | null
+  readonly modelOverride?: ModelOverride | null
+  readonly generationConfigOverride?: GenerationConfigOverride | null
 }
 
 type ChannelAddress = {

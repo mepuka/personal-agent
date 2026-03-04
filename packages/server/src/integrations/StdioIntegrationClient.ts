@@ -18,6 +18,7 @@ import {
 } from "effect"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
+import { decodeJsonStringOption } from "../json/JsonStringCodecs.js"
 
 export type IntegrationRuntimeHealth = "healthy" | "degraded"
 
@@ -55,8 +56,7 @@ type CapabilityDiscoveryEntry = typeof CapabilityDiscoveryEntry.Type
 const CapabilityDiscoveryPayload = Schema.Struct({
   capabilities: Schema.Array(CapabilityDiscoveryEntry)
 })
-const CapabilityDiscoveryPayloadJson = Schema.fromJsonString(CapabilityDiscoveryPayload)
-const decodeCapabilityDiscoveryPayload = Schema.decodeOption(CapabilityDiscoveryPayloadJson)
+const decodeCapabilityDiscoveryPayload = decodeJsonStringOption(CapabilityDiscoveryPayload)
 
 const normalizeCapabilityType = (value: unknown): "tool" | "resource" | "prompt" | null => {
   if (typeof value !== "string") {

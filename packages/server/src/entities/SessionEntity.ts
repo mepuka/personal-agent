@@ -1,10 +1,10 @@
 import { TurnStreamEvent } from "@template/domain/events"
 import type { ConversationId, SessionId } from "@template/domain/ids"
-import { CHECKPOINT_REPLAY_PAYLOAD_VERSION, ContentBlock } from "@template/domain/ports"
 import { Effect, Schema, Stream } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
 import { SessionTurnPortTag } from "../PortTags.js"
+import { ProcessTurnPayloadEntityFields } from "../turn/TurnPayloadSchemas.js"
 import { TurnProcessingRuntime } from "../turn/TurnProcessingRuntime.js"
 import { TurnProcessingError } from "../turn/TurnProcessingWorkflow.js"
 
@@ -21,41 +21,11 @@ const StartSessionRpc = Rpc.make("startSession", {
   primaryKey: ({ sessionId }) => `start:${sessionId}`
 }).annotate(ClusterSchema.Persisted, true)
 
-const ProcessTurnPayloadFields = {
-  turnId: Schema.String,
-  sessionId: Schema.String,
-  conversationId: Schema.String,
-  agentId: Schema.String,
-  userId: Schema.String,
-  channelId: Schema.String,
-  content: Schema.String,
-  contentBlocks: Schema.Array(ContentBlock),
-  createdAt: Schema.DateTimeUtcFromString,
-  inputTokens: Schema.Number,
-  checkpointId: Schema.optionalKey(Schema.String),
-  invokeToolReplay: Schema.optionalKey(Schema.Struct({
-    replayPayloadVersion: Schema.Literal(CHECKPOINT_REPLAY_PAYLOAD_VERSION),
-    toolName: Schema.String,
-    inputJson: Schema.String,
-    outputJson: Schema.String,
-    isError: Schema.Boolean
-  })),
-  modelOverride: Schema.optionalKey(Schema.Struct({
-    provider: Schema.String,
-    modelId: Schema.String
-  })),
-  generationConfigOverride: Schema.optionalKey(Schema.Struct({
-    temperature: Schema.optionalKey(Schema.Number),
-    maxOutputTokens: Schema.optionalKey(Schema.Number),
-    topP: Schema.optionalKey(Schema.Number)
-  }))
-} as const
-
 // NOTE: stream + Persisted is broken when success schema contains Transform
 // fields (e.g. DateTimeUtcFromString). See docs/issues/effect-cluster-stream-
 // persisted-transform-bug.md for root cause analysis.
 const ProcessTurnRpc = Rpc.make("processTurn", {
-  payload: ProcessTurnPayloadFields,
+  payload: ProcessTurnPayloadEntityFields,
   success: TurnStreamEvent,
   error: TurnProcessingError,
   stream: true

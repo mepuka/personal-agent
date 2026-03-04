@@ -1,22 +1,13 @@
-import { Option, Schema } from "effect"
-
-const JsonUnknown = Schema.fromJsonString(Schema.Unknown)
-const decodeJsonUnknown = Schema.decodeOption(JsonUnknown)
-
-const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
+import type { Option } from "effect"
+import { decodeJsonRecordOption, decodeUnknownJsonOrInput } from "./JsonStringCodecs.js"
 
 export const parseJsonRecordOption = (
   value: string
-): Option.Option<Record<string, unknown>> => {
-  const parsed = Option.getOrNull(decodeJsonUnknown(value))
-  return isJsonRecord(parsed)
-    ? Option.some(parsed)
-    : Option.none()
-}
+): Option.Option<Record<string, unknown>> =>
+  decodeJsonRecordOption(value)
 
 export const safeJsonParseUnknown = (value: string): unknown | string =>
-  Option.getOrElse(decodeJsonUnknown(value), () => value)
+  decodeUnknownJsonOrInput(value)
 
 export const safeJsonStringify = (value: unknown): string => {
   try {

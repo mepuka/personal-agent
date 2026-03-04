@@ -8,6 +8,7 @@ import {
 } from "@template/domain/ports"
 import type { CheckpointAction } from "@template/domain/status"
 import { Effect, Schema } from "effect"
+import { decodeUnknownJsonOption } from "../json/JsonStringCodecs.js"
 import { canonicalJsonStringify, makeCheckpointPayloadHash } from "./ReplayHash.js"
 
 export type ReplayCheckpointValidationReason =
@@ -27,7 +28,7 @@ export interface ReplayTurnContextExpectation {
   readonly channelId: string
 }
 
-const decodeReplayPayloadJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+const decodeReplayPayloadJson = decodeUnknownJsonOption
 const decodeInvokeToolReplayPayload = Schema.decodeUnknownOption(InvokeToolReplayPayload)
 const decodeReadMemoryReplayPayload = Schema.decodeUnknownOption(ReadMemoryReplayPayload)
 

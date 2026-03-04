@@ -344,7 +344,7 @@ export class ChannelCore extends ServiceMap.Service<ChannelCore>()(
         readonly content: string
         readonly contentBlocks: ReadonlyArray<ContentBlock>
         readonly userId: string
-        readonly modelOverride?: { readonly provider: string; readonly modelId: string } | undefined
+        readonly modelOverride?: ProcessTurnPayload["modelOverride"] | undefined
         readonly generationConfigOverride?: {
           readonly temperature?: number
           readonly maxOutputTokens?: number

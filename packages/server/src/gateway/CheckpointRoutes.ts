@@ -19,10 +19,11 @@ import {
   internalServerError,
   sseStreamResponse
 } from "./RouteCommon.js"
+import { decodeUnknownJsonOption } from "../json/JsonStringCodecs.js"
 import { toSseTextStream, withFailedTurnEvent } from "./TurnStreamTransport.js"
 
 const decodeDecideCheckpointRequest = Schema.decodeUnknownOption(DecideCheckpointRequest)
-const decodeJsonBody = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+const decodeJsonBody = decodeUnknownJsonOption
 
 // ---------------------------------------------------------------------------
 // Routes

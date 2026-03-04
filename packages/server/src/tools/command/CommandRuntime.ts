@@ -18,8 +18,14 @@ import {
   type CommandResult
 } from "./CommandTypes.js"
 import { SandboxRuntime } from "../../safety/SandboxRuntime.js"
+import { stableJsonStringify } from "../../json/CanonicalJson.js"
+import { toErrorMessage } from "../../runtime/ErrorMessage.js"
 
 export interface CommandRuntimeService {
+  readonly prepare: (params: {
+    readonly context: CommandInvocationContext
+    readonly request: CommandRequest
+  }) => Effect.Effect<CommandPlan, CommandExecutionError>
   readonly execute: (params: {
     readonly context: CommandInvocationContext
     readonly request: CommandRequest
@@ -39,42 +45,19 @@ const BLOCKED_ENV_KEYS = new Set([
 ])
 const BLOCKED_ENV_KEY_PREFIXES = ["BASH_FUNC_"]
 
-const canonicalize = (input: unknown): unknown => {
-  if (Array.isArray(input)) {
-    return input.map(canonicalize)
-  }
-
-  if (input !== null && typeof input === "object") {
-    const objectInput = input as Record<string, unknown>
-    return Object.keys(objectInput)
-      .sort((a, b) => a.localeCompare(b))
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = canonicalize(objectInput[key])
-        return acc
-      }, {})
-  }
-
-  return input
-}
-
 const computePlanFingerprint = (
   plan: Omit<CommandPlan, "fingerprint">
 ): Effect.Effect<string> =>
   Effect.promise(() =>
     crypto.subtle.digest(
       "SHA-256",
-      new TextEncoder().encode(JSON.stringify(canonicalize(plan)))
+      new TextEncoder().encode(stableJsonStringify(plan))
     )
   ).pipe(
     Effect.map((buffer) =>
       Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("")
     )
   )
-
-const toErrorMessage = (error: unknown): string =>
-  typeof error === "object" && error !== null && "message" in error
-    ? String((error as { readonly message?: unknown }).message)
-    : String(error)
 
 const isNotFoundError = (error: unknown): boolean =>
   typeof error === "object"
@@ -513,7 +496,7 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
           { discard: true }
         )
 
-      const execute: CommandRuntimeService["execute"] = ({ context, request }) =>
+      const prepare: CommandRuntimeService["prepare"] = ({ context, request }) =>
         sandboxRuntime.require(context).pipe(
           Effect.andThen(buildBasePlan(request)),
           Effect.tapError((error) =>
@@ -537,32 +520,40 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
                   plan: basePlan,
                   error
                 })
+              )
+            )
+          )
+        )
+
+      const execute: CommandRuntimeService["execute"] = ({ context, request }) =>
+        prepare({
+          context,
+          request
+        }).pipe(
+          Effect.flatMap((finalPlan) =>
+            backend.executePlan(finalPlan).pipe(
+              Effect.tap((result) =>
+                runAfterHooks({
+                  context,
+                  request,
+                  plan: finalPlan,
+                  result
+                })
               ),
-              Effect.flatMap((finalPlan) =>
-                backend.executePlan(finalPlan).pipe(
-                  Effect.tap((result) =>
-                    runAfterHooks({
-                      context,
-                      request,
-                      plan: finalPlan,
-                      result
-                    })
-                  ),
-                  Effect.tapError((error) =>
-                    runOnErrorHooks({
-                      context,
-                      request,
-                      plan: finalPlan,
-                      error
-                    })
-                  )
-                )
+              Effect.tapError((error) =>
+                runOnErrorHooks({
+                  context,
+                  request,
+                  plan: finalPlan,
+                  error
+                })
               )
             )
           )
         )
 
       return {
+        prepare,
         execute
       } satisfies CommandRuntimeService
     })

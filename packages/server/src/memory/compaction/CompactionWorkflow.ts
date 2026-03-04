@@ -5,9 +5,10 @@ import {
   type ExecuteCompactionPayload
 } from "@template/domain/ports"
 import type { AuditEntryId, CompactionCheckpointId } from "@template/domain/ids"
-import { Cause, DateTime, Effect, Schema } from "effect"
+import { Cause, DateTime, Effect } from "effect"
 import * as Workflow from "effect/unstable/workflow/Workflow"
 import { CompactionRunStatePortSqlite } from "../../CompactionRunStatePortSqlite.js"
+import { encodeUnknownJsonSync } from "../../json/JsonStringCodecs.js"
 import {
   CompactionCheckpointPortTag,
   GovernancePortTag
@@ -23,7 +24,7 @@ export const CompactionWorkflow = Workflow.make({
 
 const toFailureMessage = (cause: Cause.Cause<unknown>): string =>
   Cause.pretty(cause).slice(0, 1000)
-const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
+const encodeJson = encodeUnknownJsonSync
 
 const toFailedResult = (
   payload: ExecuteCompactionPayload,

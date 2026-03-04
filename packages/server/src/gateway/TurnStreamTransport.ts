@@ -1,9 +1,8 @@
 import type { TurnFailureCode, TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
-import { Schema, Stream } from "effect"
+import { Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
+import { encodeUnknownJsonSync } from "../json/JsonStringCodecs.js"
 import { toTurnFailureCode, toTurnFailureIdentity, toTurnFailureMessage } from "../turn/TurnFailureMapping.js"
-
-const encodeToJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 
 export interface FailedTurnEventOptions {
   readonly fallbackMessage: string
@@ -16,7 +15,7 @@ export interface FailedTurnEventOptions {
 }
 
 export const encodeTurnEventJson = (event: TurnStreamEvent): string =>
-  encodeToJson(event)
+  encodeUnknownJsonSync(event)
 
 export const toSseEvent = (event: TurnStreamEvent): Sse.Event => ({
   _tag: "Event",
