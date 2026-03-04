@@ -5,12 +5,12 @@ import { ContextWindowExceeded, SessionNotFound } from "../../domain/src/errors.
 import type { SessionId, TurnId } from "../../domain/src/ids.js"
 import {
   ContentBlock as ContentBlockSchema,
-  type Instant,
   type SessionState,
   type SessionTurnPort,
   type TurnRecord
 } from "../../domain/src/ports.js"
 import { AgentRole, ModelFinishReason } from "../../domain/src/status.js"
+import { sqlInstant, sqlJsonColumn } from "./persistence/SqlCodecs.js"
 
 const SessionRowSchema = Schema.Struct({
   session_id: Schema.String,
@@ -39,15 +39,9 @@ type TurnRow = typeof TurnRowSchema.Type
 const SessionIdRequest = Schema.Struct({ sessionId: Schema.String })
 const TurnIdRequest = Schema.Struct({ turnId: Schema.String })
 
-const ContentBlocksFromJsonString = Schema.fromJsonString(Schema.Array(ContentBlockSchema))
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-
+const contentBlocksJson = sqlJsonColumn(Schema.Array(ContentBlockSchema))
 const decodeSessionRowSchema = Schema.decodeUnknownSync(SessionRowSchema)
 const decodeTurnRowSchema = Schema.decodeUnknownSync(TurnRowSchema)
-const decodeContentBlocksJson = Schema.decodeUnknownSync(ContentBlocksFromJsonString)
-const encodeContentBlocksJson = Schema.encodeSync(ContentBlocksFromJsonString)
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
 
 export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSqlite>()(
   "server/SessionTurnPortSqlite",
@@ -196,10 +190,10 @@ export class SessionTurnPortSqlite extends ServiceMap.Service<SessionTurnPortSql
                 ${turn.participantAgentId},
                 ${turn.message.messageId},
                 ${turn.message.content},
-                ${encodeContentBlocksJson(turn.message.contentBlocks)},
+                ${contentBlocksJson.encode(turn.message.contentBlocks)},
                 ${turn.modelFinishReason},
                 ${turn.modelUsageJson},
-                ${toSqlInstant(turn.createdAt)}
+                ${sqlInstant.encode(turn.createdAt)}
               )
             `.unprepared
           })
@@ -316,14 +310,10 @@ const decodeTurnRow = (row: TurnRow): TurnRecord => {
       messageId: decoded.message_id as TurnRecord["message"]["messageId"],
       role: decoded.participant_role,
       content: decoded.message_content,
-      contentBlocks: decodeContentBlocksJson(decoded.content_blocks_json)
+      contentBlocks: contentBlocksJson.decode(decoded.content_blocks_json)
     },
     modelFinishReason: decoded.model_finish_reason,
     modelUsageJson: decoded.model_usage_json,
-    createdAt: fromRequiredSqlInstant(decoded.created_at)
+    createdAt: sqlInstant.decode(decoded.created_at)
   }
 }
-
-const toSqlInstant = (instant: Instant): string => encodeSqlInstant(instant)
-
-const fromRequiredSqlInstant = (value: string): Instant => decodeSqlInstant(value)
