@@ -8,6 +8,7 @@ import { Effect, FileSystem, Layer, Path, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { gzipSync, gunzipSync } from "node:zlib"
 import { AgentConfig } from "../ai/AgentConfig.js"
+import { safeJsonStringify } from "../json/JsonCodec.js"
 import { StorageLayout } from "./StorageLayout.js"
 
 const textEncoder = new TextEncoder()
@@ -239,12 +240,4 @@ export class ArtifactStoreFsCas extends ServiceMap.Service<ArtifactStoreFsCas>()
   }
 ) {
   static layer = Layer.effect(this, this.make)
-}
-
-const safeJsonStringify = (value: unknown): string => {
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return JSON.stringify({ value: String(value) })
-  }
 }

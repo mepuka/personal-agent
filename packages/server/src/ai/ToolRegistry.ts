@@ -57,6 +57,7 @@ import {
   toCheckpointToolFailure,
   validateInvokeToolCheckpoint
 } from "../checkpoints/ReplayCheckpointValidator.js"
+import { safeJsonParseUnknown, safeJsonStringify } from "../json/JsonCodec.js"
 import type { CommandInvocationContext } from "../tools/command/CommandTypes.js"
 import { ToolExecution } from "../tools/ToolExecution.js"
 
@@ -542,7 +543,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
         materializeStoredOutputJson(outputJson, artifactStore).pipe(
           Effect.flatMap((materializedOutputJson) =>
             Effect.suspend(() => {
-              const parsed = safeJsonParse(materializedOutputJson)
+              const parsed = safeJsonParseUnknown(materializedOutputJson)
               if (isToolFailurePayload(parsed)) {
                 return Effect.fail(fromToolFailurePayload(parsed))
               }
@@ -1348,7 +1349,7 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
           }
 
           const replayPayload = validatedCheckpoint.result.payload
-          const parsedInput = safeJsonParse(replayPayload.inputJson)
+          const parsedInput = safeJsonParseUnknown(replayPayload.inputJson)
           if (!isJsonRecord(parsedInput)) {
             return {
               turnId: replayTurnId,
@@ -1434,22 +1435,6 @@ export class ToolRegistry extends ServiceMap.Service<ToolRegistry>()(
   static layer = Layer.effect(this, this.make)
 }
 
-const safeJsonStringify = (value: unknown): string => {
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return JSON.stringify({ value: String(value) })
-  }
-}
-
-const safeJsonParse = (value: string): unknown => {
-  try {
-    return JSON.parse(value)
-  } catch {
-    return value
-  }
-}
-
 const utf8ByteLength = (value: string): number =>
   new TextEncoder().encode(value).byteLength
 
@@ -1520,7 +1505,7 @@ const materializeStoredOutputJson = (
   artifactStore: Pick<ArtifactStorePort, "getBytes">
 ): Effect.Effect<string> =>
   Effect.gen(function*() {
-    const parsed = safeJsonParse(storedOutputJson)
+    const parsed = safeJsonParseUnknown(storedOutputJson)
     if (!isToolOutputArtifactEnvelope(parsed)) {
       return storedOutputJson
     }

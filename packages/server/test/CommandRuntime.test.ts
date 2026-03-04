@@ -1,21 +1,30 @@
 import { NodeServices } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
+import type { AgentId } from "@template/domain/ids"
 import { DateTime, Effect, Layer } from "effect"
-import { mkdirSync, rmSync, symlinkSync } from "node:fs"
-import { basename, join } from "node:path"
+import { symlinkSync } from "node:fs"
 import { CommandBackend, type CommandBackendService } from "../src/tools/command/CommandBackend.js"
 import { CommandHookError } from "../src/tools/command/CommandErrors.js"
 import { CommandHooks, type CommandHook } from "../src/tools/command/CommandHooks.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
 import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   type CommandInvocationContext,
   type CommandResult
 } from "../src/tools/command/CommandTypes.js"
+import { cleanupTextFixture, makeTextFixture } from "./TestTextFixtures.js"
 
 const defaultContext: CommandInvocationContext = {
-  source: "tool"
+  source: "cli"
 }
+
+const sensitiveSources: ReadonlyArray<CommandInvocationContext["source"]> = [
+  "tool",
+  "checkpoint_replay",
+  "schedule",
+  "integration"
+]
 
 const makeResult = (exitCode = 0): CommandResult => {
   const now = DateTime.fromDateUnsafe(new Date("2026-02-28T00:00:00.000Z"))
@@ -45,6 +54,7 @@ const makeRuntimeLayer = (params: {
         params.executePlan ?? (() => Effect.succeed(makeResult()))
       )
     ),
+    Layer.provide(SandboxRuntime.layer),
     Layer.provide(NodeServices.layer)
   )
 
@@ -86,6 +96,7 @@ describe("CommandRuntime", () => {
       const result = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo runtime-order"
         }
       })
@@ -130,6 +141,7 @@ describe("CommandRuntime", () => {
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo blocked"
         }
       }).pipe(Effect.flip)
@@ -164,6 +176,7 @@ describe("CommandRuntime", () => {
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo widen-timeout"
         }
       }).pipe(Effect.flip)
@@ -195,6 +208,7 @@ describe("CommandRuntime", () => {
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo widen-output"
         }
       }).pipe(Effect.flip)
@@ -216,6 +230,7 @@ describe("CommandRuntime", () => {
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo bad-env-request",
           envOverrides: {
             PATH: "/tmp"
@@ -249,6 +264,7 @@ describe("CommandRuntime", () => {
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "echo bad-env-hook"
         }
       }).pipe(Effect.flip)
@@ -260,18 +276,18 @@ describe("CommandRuntime", () => {
   })
 
   it.effect("denies cwd symlink escapes that resolve outside the workspace", () => {
-    const fixtureRoot = join(process.cwd(), "tmp", `command-runtime-symlink-${crypto.randomUUID()}`)
-    const escapeLink = join(fixtureRoot, "escape")
-    const relativeCwd = join("tmp", basename(fixtureRoot), "escape")
+    const fixture = makeTextFixture("command-runtime-symlink")
+    const escapeLink = fixture.absolute("escape")
+    const relativeCwd = fixture.relative("escape")
 
     return Effect.gen(function*() {
-      mkdirSync(fixtureRoot, { recursive: true })
       symlinkSync("/tmp", escapeLink, "dir")
 
       const runtime = yield* CommandRuntime
       const error = yield* runtime.execute({
         context: defaultContext,
         request: {
+          mode: "Shell",
           command: "pwd",
           cwd: relativeCwd
         }
@@ -282,9 +298,60 @@ describe("CommandRuntime", () => {
       Effect.provide(makeRuntimeLayer({})),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
+
+  for (const source of sensitiveSources) {
+    it.effect(`requires sandbox context for sensitive source=${source}`, () =>
+      Effect.gen(function*() {
+        const runtime = yield* CommandRuntime
+        const error = yield* runtime.execute({
+          context: {
+            source,
+            agentId: "agent:runtime-test" as AgentId
+          },
+          request: {
+            mode: "Shell",
+            command: "echo blocked"
+          }
+        }).pipe(Effect.flip)
+
+        expect(error._tag).toBe("SandboxViolation")
+      }).pipe(
+        Effect.provide(makeRuntimeLayer({}))
+      ))
+  }
+
+  for (const source of sensitiveSources) {
+    it.effect(`allows sensitive source=${source} when entered in sandbox context`, () =>
+      Effect.gen(function*() {
+        const runtime = yield* CommandRuntime
+        const sandboxRuntime = yield* SandboxRuntime
+        const result = yield* sandboxRuntime.enter(
+          "agent:runtime-test" as AgentId,
+          runtime.execute({
+            context: {
+              source,
+              agentId: "agent:runtime-test" as AgentId
+            },
+            request: {
+              mode: "Shell",
+              command: "echo allowed"
+            }
+          })
+        )
+
+        expect(result.exitCode).toBe(0)
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            makeRuntimeLayer({}),
+            SandboxRuntime.layer
+          )
+        )
+      ))
+  }
 })

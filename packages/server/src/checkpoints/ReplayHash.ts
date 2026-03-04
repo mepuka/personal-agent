@@ -1,12 +1,5 @@
 import { Effect } from "effect"
-
-const safeJsonStringify = (value: unknown): string => {
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return JSON.stringify({ value: String(value) })
-  }
-}
+import { safeJsonStringify } from "../json/JsonCodec.js"
 
 const canonicalize = (input: unknown): unknown => {
   if (Array.isArray(input)) {

@@ -1,4 +1,4 @@
-import { DateTime, Deferred, Duration, Effect, Layer, Option, Ref, Stream } from "effect"
+import { DateTime, Deferred, Duration, Effect, Layer, Option, Ref, Schedule, Stream } from "effect"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import {
@@ -183,25 +183,34 @@ const waitForIdleTimeout = (params: {
 }): Effect.Effect<never, CliIdleTimeout> =>
   Effect.gen(function*() {
     const pollIntervalMs = Math.min(Math.max(Math.floor(params.idleTimeoutMs / 4), 50), 250)
+    const timeoutSignal = yield* Deferred.make<void, CliIdleTimeout>()
 
-    while (true) {
-      yield* Effect.sleep(Duration.millis(pollIntervalMs))
-
+    const checkIdleTimeout = Effect.gen(function*() {
       const isRunning = yield* params.handle.isRunning.pipe(
         Effect.catch(() => Effect.succeed(false))
       )
       if (!isRunning) {
-        continue
+        return
       }
 
       const lastOutputAt = yield* Ref.get(params.lastOutputAtRef)
       if (Date.now() - lastOutputAt >= params.idleTimeoutMs) {
         yield* terminateHandle(params.handle).pipe(Effect.forkScoped)
-        return yield* new CliIdleTimeout({
+        yield* Deferred.fail(timeoutSignal, new CliIdleTimeout({
           idleTimeoutMs: params.idleTimeoutMs
-        })
+        }))
       }
-    }
+    })
+
+    return yield* Effect.raceFirst(
+      Deferred.await(timeoutSignal).pipe(
+        Effect.flatMap(() => Effect.never)
+      ),
+      checkIdleTimeout.pipe(
+        Effect.repeat(Schedule.spaced(Duration.millis(pollIntervalMs))),
+        Effect.flatMap(() => Effect.never)
+      )
+    )
   })
 
 const runLocal = (

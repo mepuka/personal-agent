@@ -14,6 +14,7 @@ import * as Chat from "effect/unstable/ai/Chat"
 import * as Prompt from "effect/unstable/ai/Prompt"
 import { AgentConfig } from "../../ai/AgentConfig.js"
 import { PromptCatalog } from "../../ai/PromptCatalog.js"
+import { safeJsonParseUnknown, safeJsonStringify } from "../../json/JsonCodec.js"
 import {
   ArtifactStorePortTag,
   CompactionCheckpointPortTag,
@@ -80,7 +81,7 @@ const toArtifactReferences = (
   }))
 
 const parseToolOutputPreview = (outputJson: string): string => {
-  const parsed = safeJsonParse(outputJson)
+  const parsed = safeJsonParseUnknown(outputJson)
   if (
     typeof parsed === "object"
     && parsed !== null
@@ -346,20 +347,4 @@ export class CompactionCoordinator extends ServiceMap.Service<CompactionCoordina
   }
 ) {
   static layer = Layer.effect(this, this.make)
-}
-
-const safeJsonStringify = (value: unknown): string => {
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return JSON.stringify({ value: String(value) })
-  }
-}
-
-const safeJsonParse = (value: string): unknown => {
-  try {
-    return JSON.parse(value)
-  } catch {
-    return value
-  }
 }

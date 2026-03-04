@@ -1,20 +1,28 @@
 import { NodeServices } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
-import type { SessionId } from "@template/domain/ids"
+import type { AgentId, SessionId } from "@template/domain/ids"
 import { Effect, Layer } from "effect"
-import { basename, join } from "node:path"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import type { CommandInvocationContext } from "../src/tools/command/CommandTypes.js"
 import { FileHookError } from "../src/tools/file/FileErrors.js"
 import { FileHooks, type FileHook } from "../src/tools/file/FileHooks.js"
 import { FilePathPolicy } from "../src/tools/file/FilePathPolicy.js"
 import { FileReadTracker } from "../src/tools/file/FileReadTracker.js"
 import { FileRuntime } from "../src/tools/file/FileRuntime.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
+import { cleanupTextFixture, makeTextFixture } from "./TestTextFixtures.js"
 
 const defaultContext: CommandInvocationContext = {
-  source: "tool",
+  source: "cli",
   sessionId: "session:file-runtime" as SessionId
 }
+
+const sensitiveSources: ReadonlyArray<CommandInvocationContext["source"]> = [
+  "tool",
+  "checkpoint_replay",
+  "schedule",
+  "integration"
+]
 
 const makeRuntimeLayer = (hooks?: ReadonlyArray<FileHook>) => {
   const fileHooksLayer = hooks === undefined
@@ -29,21 +37,16 @@ const makeRuntimeLayer = (hooks?: ReadonlyArray<FileHook>) => {
     Layer.provide(fileHooksLayer),
     Layer.provide(fileReadTrackerLayer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(SandboxRuntime.layer),
     Layer.provide(NodeServices.layer)
   )
 }
 
-const makeFixture = (name: string): string => {
-  const fixtureRoot = join(process.cwd(), "tmp", `${name}-${crypto.randomUUID()}`)
-  mkdirSync(fixtureRoot, { recursive: true })
-  return fixtureRoot
-}
-
 describe("FileRuntime", () => {
   it.effect("reads files and runs before/after hooks in order", () => {
-    const fixtureRoot = makeFixture("file-runtime-read")
-    const relativePath = join("tmp", basename(fixtureRoot), "sample.txt")
-    const absolutePath = join(process.cwd(), relativePath)
+    const fixture = makeTextFixture("file-runtime-read")
+    const relativePath = fixture.relative("sample.txt")
+    const absolutePath = fixture.absolute("sample.txt")
     const order: Array<string> = []
 
     writeFileSync(absolutePath, "hello runtime", "utf8")
@@ -76,7 +79,7 @@ describe("FileRuntime", () => {
       ])),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
@@ -109,9 +112,9 @@ describe("FileRuntime", () => {
   )
 
   it.effect("rejects stale writes after tracked reads", () => {
-    const fixtureRoot = makeFixture("file-runtime-stale")
-    const relativePath = join("tmp", basename(fixtureRoot), "stale.txt")
-    const absolutePath = join(process.cwd(), relativePath)
+    const fixture = makeTextFixture("file-runtime-stale")
+    const relativePath = fixture.relative("stale.txt")
+    const absolutePath = fixture.absolute("stale.txt")
 
     writeFileSync(absolutePath, "initial", "utf8")
 
@@ -138,16 +141,16 @@ describe("FileRuntime", () => {
       Effect.provide(makeRuntimeLayer()),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
 
   it.effect("allows untracked writes and records bytes written", () => {
-    const fixtureRoot = makeFixture("file-runtime-write")
-    const relativePath = join("tmp", basename(fixtureRoot), "write.txt")
-    const absolutePath = join(process.cwd(), relativePath)
+    const fixture = makeTextFixture("file-runtime-write")
+    const relativePath = fixture.relative("write.txt")
+    const absolutePath = fixture.absolute("write.txt")
 
     return Effect.gen(function*() {
       const runtime = yield* FileRuntime
@@ -165,15 +168,15 @@ describe("FileRuntime", () => {
       Effect.provide(makeRuntimeLayer()),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
 
   it.effect("maps beforeWrite hook failures to FileHookRejected", () => {
-    const fixtureRoot = makeFixture("file-runtime-hook-reject")
-    const relativePath = join("tmp", basename(fixtureRoot), "hook.txt")
+    const fixture = makeTextFixture("file-runtime-hook-reject")
+    const relativePath = fixture.relative("hook.txt")
 
     return Effect.gen(function*() {
       const runtime = yield* FileRuntime
@@ -203,16 +206,16 @@ describe("FileRuntime", () => {
       ])),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
 
   it.effect("edits files with a unique match and returns unified diff", () => {
-    const fixtureRoot = makeFixture("file-runtime-edit")
-    const relativePath = join("tmp", basename(fixtureRoot), "edit.txt")
-    const absolutePath = join(process.cwd(), relativePath)
+    const fixture = makeTextFixture("file-runtime-edit")
+    const relativePath = fixture.relative("edit.txt")
+    const absolutePath = fixture.absolute("edit.txt")
 
     writeFileSync(absolutePath, "hello world\n", "utf8")
 
@@ -233,18 +236,18 @@ describe("FileRuntime", () => {
       Effect.provide(makeRuntimeLayer()),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
 
   it.effect("rejects ambiguous and missing edit targets", () => {
-    const fixtureRoot = makeFixture("file-runtime-edit-failures")
-    const ambiguousRelativePath = join("tmp", basename(fixtureRoot), "ambiguous.txt")
-    const ambiguousAbsolutePath = join(process.cwd(), ambiguousRelativePath)
-    const missingRelativePath = join("tmp", basename(fixtureRoot), "missing.txt")
-    const missingAbsolutePath = join(process.cwd(), missingRelativePath)
+    const fixture = makeTextFixture("file-runtime-edit-failures")
+    const ambiguousRelativePath = fixture.relative("ambiguous.txt")
+    const ambiguousAbsolutePath = fixture.absolute("ambiguous.txt")
+    const missingRelativePath = fixture.relative("missing.txt")
+    const missingAbsolutePath = fixture.absolute("missing.txt")
 
     writeFileSync(ambiguousAbsolutePath, "token\nmiddle\ntoken\n", "utf8")
     writeFileSync(missingAbsolutePath, "another file", "utf8")
@@ -275,9 +278,65 @@ describe("FileRuntime", () => {
       Effect.provide(makeRuntimeLayer()),
       Effect.ensuring(
         Effect.sync(() => {
-          rmSync(fixtureRoot, { recursive: true, force: true })
+          cleanupTextFixture(fixture)
         })
       )
     )
   })
+
+  for (const source of sensitiveSources) {
+    it.effect(`requires sandbox context for sensitive file source=${source}`, () =>
+      Effect.gen(function*() {
+        const runtime = yield* FileRuntime
+        const error = yield* runtime.read({
+          context: {
+            source,
+            agentId: "agent:file-runtime-test" as AgentId
+          },
+          path: `tmp/file-runtime-missing-${crypto.randomUUID()}.txt`
+        }).pipe(Effect.flip)
+        expect(error._tag).toBe("SandboxViolation")
+      }).pipe(
+        Effect.provide(makeRuntimeLayer())
+      ))
+  }
+
+  for (const source of sensitiveSources) {
+    it(`allows sensitive file source=${source} when inside sandbox context`, async () => {
+      const fixture = makeTextFixture("file-runtime-sandbox")
+      const relativePath = fixture.relative("sandbox.txt")
+      const absolutePath = fixture.absolute("sandbox.txt")
+      writeFileSync(absolutePath, "sandboxed", "utf8")
+
+      try {
+        await Effect.runPromise(
+          Effect.gen(function*() {
+            const runtime = yield* FileRuntime
+            const sandboxRuntime = yield* SandboxRuntime
+            const result = yield* sandboxRuntime.enter(
+              "agent:file-runtime-test" as AgentId,
+              runtime.read({
+                context: {
+                  source,
+                  agentId: "agent:file-runtime-test" as AgentId
+                },
+                path: relativePath
+              })
+            )
+
+            expect(result.content).toBe("sandboxed")
+          }).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                makeRuntimeLayer(),
+                SandboxRuntime.layer
+              )
+            )
+          )
+        )
+      } finally {
+        cleanupTextFixture(fixture)
+      }
+    })
+  }
 })

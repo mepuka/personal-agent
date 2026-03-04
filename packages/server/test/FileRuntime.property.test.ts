@@ -3,16 +3,17 @@ import { describe, expect, it } from "@effect/vitest"
 import type { SessionId } from "@template/domain/ids"
 import { Effect, Layer } from "effect"
 import fc from "fast-check"
-import { basename, join } from "node:path"
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import type { CommandInvocationContext } from "../src/tools/command/CommandTypes.js"
 import { FileHooks } from "../src/tools/file/FileHooks.js"
 import { FilePathPolicy } from "../src/tools/file/FilePathPolicy.js"
 import { FileReadTracker } from "../src/tools/file/FileReadTracker.js"
 import { FileRuntime } from "../src/tools/file/FileRuntime.js"
+import { cleanupTextFixture, makeTextFixture } from "./TestTextFixtures.js"
 
 const defaultContext: CommandInvocationContext = {
-  source: "tool",
+  source: "cli",
   sessionId: "session:file-runtime-property" as SessionId
 }
 
@@ -24,14 +25,9 @@ const makeLayer = () => {
     Layer.provide(FileHooks.layer),
     Layer.provide(FileReadTracker.layer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(SandboxRuntime.layer),
     Layer.provide(NodeServices.layer)
   )
-}
-
-const makeFixture = (name: string): string => {
-  const fixtureRoot = join(process.cwd(), "tmp", `${name}-${crypto.randomUUID()}`)
-  mkdirSync(fixtureRoot, { recursive: true })
-  return fixtureRoot
 }
 
 describe("FileRuntime property tests", () => {
@@ -71,9 +67,9 @@ describe("FileRuntime property tests", () => {
         fc.stringMatching(/^[a-z]{0,20}$/),
         fc.stringMatching(/^[a-z]{0,20}$/),
         async (prefix, suffix, replacement) => {
-          const fixtureRoot = makeFixture("file-runtime-prop-unique")
-          const relativePath = join("tmp", basename(fixtureRoot), "unique.txt")
-          const absolutePath = join(process.cwd(), relativePath)
+          const fixture = makeTextFixture("file-runtime-prop-unique")
+          const relativePath = fixture.relative("unique.txt")
+          const absolutePath = fixture.absolute("unique.txt")
           const token = "TOKEN_UNIQUE"
           const original = `${prefix}${token}${suffix}`
           writeFileSync(absolutePath, original, "utf8")
@@ -98,7 +94,7 @@ describe("FileRuntime property tests", () => {
             const next = readFileSync(absolutePath, "utf8")
             expect(next).toBe(`${prefix}${replacement}${suffix}`)
           } finally {
-            rmSync(fixtureRoot, { recursive: true, force: true })
+            cleanupTextFixture(fixture)
           }
         }
       ),
@@ -113,9 +109,9 @@ describe("FileRuntime property tests", () => {
       fc.asyncProperty(
         fc.stringMatching(/^[a-z]{0,12}$/),
         async (separator) => {
-          const fixtureRoot = makeFixture("file-runtime-prop-ambiguous")
-          const relativePath = join("tmp", basename(fixtureRoot), "ambiguous.txt")
-          const absolutePath = join(process.cwd(), relativePath)
+          const fixture = makeTextFixture("file-runtime-prop-ambiguous")
+          const relativePath = fixture.relative("ambiguous.txt")
+          const absolutePath = fixture.absolute("ambiguous.txt")
           writeFileSync(absolutePath, `TOKEN${separator}TOKEN`, "utf8")
 
           try {
@@ -136,7 +132,7 @@ describe("FileRuntime property tests", () => {
             )
             expect(error._tag).toBe("FileEditAmbiguous")
           } finally {
-            rmSync(fixtureRoot, { recursive: true, force: true })
+            cleanupTextFixture(fixture)
           }
         }
       ),
@@ -151,8 +147,8 @@ describe("FileRuntime property tests", () => {
       fc.asyncProperty(
         fc.string({ maxLength: 200 }),
         async (payload) => {
-          const fixtureRoot = makeFixture("file-runtime-prop-roundtrip")
-          const relativePath = join("tmp", basename(fixtureRoot), "roundtrip.txt")
+          const fixture = makeTextFixture("file-runtime-prop-roundtrip")
+          const relativePath = fixture.relative("roundtrip.txt")
 
           try {
             await Effect.runPromise(
@@ -176,7 +172,7 @@ describe("FileRuntime property tests", () => {
               )
             )
           } finally {
-            rmSync(fixtureRoot, { recursive: true, force: true })
+            cleanupTextFixture(fixture)
           }
         }
       ),
@@ -191,8 +187,8 @@ describe("FileRuntime property tests", () => {
       fc.asyncProperty(
         fc.array(fc.string({ maxLength: 80 }), { minLength: 1, maxLength: 6 }),
         async (payloads) => {
-          const fixtureRoot = makeFixture("file-runtime-prop-temp-cleanup")
-          const relativePath = join("tmp", basename(fixtureRoot), "cleanup.txt")
+          const fixture = makeTextFixture("file-runtime-prop-temp-cleanup")
+          const relativePath = fixture.relative("cleanup.txt")
 
           try {
             await Effect.runPromise(
@@ -212,10 +208,10 @@ describe("FileRuntime property tests", () => {
               )
             )
 
-            const leftovers = readdirSync(fixtureRoot).filter((entry) => entry.endsWith(".tmp"))
+            const leftovers = readdirSync(fixture.root).filter((entry) => entry.endsWith(".tmp"))
             expect(leftovers).toHaveLength(0)
           } finally {
-            rmSync(fixtureRoot, { recursive: true, force: true })
+            cleanupTextFixture(fixture)
           }
         }
       ),

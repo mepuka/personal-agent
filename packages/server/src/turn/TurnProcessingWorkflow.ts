@@ -70,6 +70,10 @@ import {
   SessionMetricsPortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
+import {
+  parseJsonRecordOption,
+  safeJsonParseUnknown
+} from "../json/JsonCodec.js"
 import { injectMemoriesIntoSystemPrompt } from "./MemoryInjector.js"
 import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
 
@@ -863,29 +867,13 @@ const toInvokeToolReplayContentBlocks = (
   }
 ]
 
-const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-
 const parseReplayInputJson = (
   inputJson: string
-): Option.Option<Record<string, unknown>> => {
-  try {
-    const parsed = JSON.parse(inputJson)
-    return isJsonRecord(parsed)
-      ? Option.some(parsed)
-      : Option.none()
-  } catch {
-    return Option.none()
-  }
-}
+): Option.Option<Record<string, unknown>> =>
+  parseJsonRecordOption(inputJson)
 
-const parseReplayOutputJson = (outputJson: string): unknown => {
-  try {
-    return JSON.parse(outputJson)
-  } catch {
-    return outputJson
-  }
-}
+const parseReplayOutputJson = (outputJson: string): unknown =>
+  safeJsonParseUnknown(outputJson)
 
 const validateToolBlockPairing = (
   contentBlocks: ReadonlyArray<ContentBlock>
@@ -1288,23 +1276,36 @@ export const looksLikeProviderCreditExhausted = (reason: string): boolean => {
     || normalized.includes("billing")
 }
 
+const ModelUsageTotalsJson = Schema.Struct({
+  inputTokens: Schema.optional(
+    Schema.Struct({
+      total: Schema.optional(Schema.Number)
+    })
+  ),
+  outputTokens: Schema.optional(
+    Schema.Struct({
+      total: Schema.optional(Schema.Number)
+    })
+  )
+})
+const decodeModelUsageTotals = Schema.decodeOption(
+  Schema.fromJsonString(ModelUsageTotalsJson)
+)
+
 export const extractTotalTokensFromUsageJson = (modelUsageJson: string | null): number => {
   if (modelUsageJson === null) {
     return 0
   }
-  try {
-    const parsed = JSON.parse(modelUsageJson) as {
-      readonly inputTokens?: { readonly total?: number }
-      readonly outputTokens?: { readonly total?: number }
-    }
-    const inputTotal = parsed.inputTokens?.total ?? 0
-    const outputTotal = parsed.outputTokens?.total ?? 0
-    return Number.isFinite(inputTotal + outputTotal)
-      ? Math.max(0, Math.floor(inputTotal + outputTotal))
-      : 0
-  } catch {
+  const parsed = Option.getOrNull(decodeModelUsageTotals(modelUsageJson))
+  if (parsed === null) {
     return 0
   }
+
+  const inputTotal = parsed.inputTokens?.total ?? 0
+  const outputTotal = parsed.outputTokens?.total ?? 0
+  return Number.isFinite(inputTotal + outputTotal)
+    ? Math.max(0, Math.floor(inputTotal + outputTotal))
+    : 0
 }
 
 export const zeroUsage = (): Response.Usage =>

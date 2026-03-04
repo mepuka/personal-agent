@@ -1,5 +1,5 @@
 import type { TurnFailedEvent, TurnStreamEvent } from "@template/domain/events"
-import { Effect, Layer, ServiceMap, Stream } from "effect"
+import { Effect, Layer, Option, Schema, ServiceMap, Stream } from "effect"
 import * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
 import {
   type ProcessTurnPayload,
@@ -171,27 +171,17 @@ export const _test = {
 }
 
 const isRecoveredToolErrorOutput = (outputJson: string): boolean => {
-  try {
-    const parsed = JSON.parse(outputJson)
-    return isToolErrorPayload(parsed)
-  } catch {
-    return false
-  }
+  return Option.isSome(decodeRecoveredToolErrorPayload(outputJson))
 }
 
-const isToolErrorPayload = (value: unknown): value is {
-  readonly ok: false
-  readonly errorCode: string
-  readonly message: string
-} =>
-  typeof value === "object"
-  && value !== null
-  && "ok" in value
-  && (value as { readonly ok?: unknown }).ok === false
-  && "errorCode" in value
-  && typeof (value as { readonly errorCode?: unknown }).errorCode === "string"
-  && "message" in value
-  && typeof (value as { readonly message?: unknown }).message === "string"
+const RecoveredToolErrorPayload = Schema.Struct({
+  ok: Schema.Literal(false),
+  errorCode: Schema.String,
+  message: Schema.String
+})
+const decodeRecoveredToolErrorPayload = Schema.decodeOption(
+  Schema.fromJsonString(RecoveredToolErrorPayload)
+)
 
 const makeExecutionId = Effect.fn("TurnProcessingRuntime.makeExecutionId")(function*(idempotencyKey: string) {
   const buffer = yield* Effect.promise(() =>

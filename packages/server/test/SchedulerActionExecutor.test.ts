@@ -114,7 +114,12 @@ describe("SchedulerActionExecutor", () => {
       expect(captured).toHaveLength(1)
       expect(captured[0].context.source).toBe("schedule")
       expect(captured[0].context.agentId).toBe("agent:schedule-owner")
-      expect(captured[0].request.command).toBe("echo context")
+      expect(captured[0].request.mode).toBe("Shell")
+      expect(
+        captured[0].request.mode === "Shell"
+          ? captured[0].request.command
+          : null
+      ).toBe("echo context")
     }).pipe(
       Effect.provide(makeTestLayer(
         { decision: "Allow" },
@@ -127,6 +132,32 @@ describe("SchedulerActionExecutor", () => {
         }
       ))
     )
+  })
+
+  it.effect("command action is wrapped by governance enforceSandbox", () => {
+    const sandboxCalls: Array<AgentId> = []
+
+    return Effect.gen(function*() {
+      const executor = yield* SchedulerActionExecutor
+      const ownerAgentId = "agent:sandbox-owner" as AgentId
+      const ticket = makeTicket({
+        ownerAgentId,
+        action: toCommandAction("echo sandbox")
+      })
+
+      const outcome = yield* executor.execute(ticket)
+
+      expect(outcome).toBe("ExecutionSucceeded")
+      expect(sandboxCalls).toEqual([ownerAgentId])
+    }).pipe(Effect.provide(makeTestLayer(
+      { decision: "Allow" },
+      {
+        enforceSandbox: (agentId, effect) =>
+          Effect.sync(() => {
+            sandboxCalls.push(agentId)
+          }).pipe(Effect.andThen(effect))
+      }
+    )))
   })
 
   it.effect("command action fails when command runtime exits non-zero", () =>
@@ -433,6 +464,7 @@ const makeTestLayer = (
     }) => Effect.Effect<CommandResult, CommandExecutionError>
     readonly subroutines?: ReadonlyArray<LoadedSubroutine>
     readonly runner?: SubroutineRunnerService
+    readonly enforceSandbox?: GovernancePort["enforceSandbox"]
   } = {}
 ) => {
   const governanceLayer = Layer.succeed(GovernancePortTag, {
@@ -452,7 +484,7 @@ const makeTestLayer = (
     listToolInvocationsBySession: () => Effect.succeed({ items: [], totalCount: 0 }),
     listPoliciesForAgent: () => Effect.succeed([]),
     listAuditEntries: () => Effect.succeed([]),
-    enforceSandbox: (_agentId, effect) => effect
+    enforceSandbox: options.enforceSandbox ?? ((_agentId, effect) => effect)
   } as GovernancePort)
 
   const commandRuntimeLayer = Layer.succeed(CommandRuntime, {
