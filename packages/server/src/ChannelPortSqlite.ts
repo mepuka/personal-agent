@@ -4,6 +4,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 import type { AgentId, ChannelId, ConversationId, SessionId } from "../../domain/src/ids.js"
 import type { ChannelPort, ChannelRecord, ChannelSummaryRecord } from "../../domain/src/ports.js"
+import { sqlInstant, sqlInstantNullable, sqlJsonColumn } from "./persistence/SqlCodecs.js"
 import { ChannelCapability, ChannelType } from "../../domain/src/status.js"
 
 const ChannelRowSchema = Schema.Struct({
@@ -32,18 +33,9 @@ const ChannelSummaryRowSchema = Schema.Struct({
 type ChannelSummaryRow = typeof ChannelSummaryRowSchema.Type
 
 const ChannelIdRequest = Schema.Struct({ channelId: Schema.String })
-const CapabilitiesFromJsonString = Schema.fromJsonString(Schema.Array(ChannelCapability))
-const ModelOverrideFromJsonString = Schema.fromJsonString(ModelOverrideSchema)
-const GenerationConfigOverrideFromJsonString = Schema.fromJsonString(GenerationConfigOverrideSchema)
-const InstantFromSqlString = Schema.DateTimeUtcFromString
-const decodeCapabilitiesJson = Schema.decodeUnknownSync(CapabilitiesFromJsonString)
-const encodeCapabilitiesJson = Schema.encodeSync(CapabilitiesFromJsonString)
-const decodeModelOverrideJson = Schema.decodeUnknownSync(ModelOverrideFromJsonString)
-const encodeModelOverrideJson = Schema.encodeSync(ModelOverrideFromJsonString)
-const decodeGenerationConfigOverrideJson = Schema.decodeUnknownSync(GenerationConfigOverrideFromJsonString)
-const encodeGenerationConfigOverrideJson = Schema.encodeSync(GenerationConfigOverrideFromJsonString)
-const decodeSqlInstant = Schema.decodeUnknownSync(InstantFromSqlString)
-const encodeSqlInstant = Schema.encodeSync(InstantFromSqlString)
+const capabilitiesJson = sqlJsonColumn(Schema.Array(ChannelCapability))
+const modelOverrideJson = sqlJsonColumn(ModelOverrideSchema)
+const generationConfigOverrideJson = sqlJsonColumn(GenerationConfigOverrideSchema)
 
 export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
   "server/ChannelPortSqlite",
@@ -162,10 +154,10 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
             ${channel.agentId},
             ${channel.activeSessionId},
             ${channel.activeConversationId},
-            ${encodeCapabilitiesJson(channel.capabilities)},
-            ${channel.modelOverride ? encodeModelOverrideJson(channel.modelOverride) : null},
-            ${channel.generationConfigOverride ? encodeGenerationConfigOverrideJson(channel.generationConfigOverride) : null},
-            ${encodeSqlInstant(channel.createdAt)}
+            ${capabilitiesJson.encode(channel.capabilities)},
+            ${channel.modelOverride ? modelOverrideJson.encode(channel.modelOverride) : null},
+            ${channel.generationConfigOverride ? generationConfigOverrideJson.encode(channel.generationConfigOverride) : null},
+            ${sqlInstant.encode(channel.createdAt)}
           )
           ON CONFLICT(channel_id) DO UPDATE SET
             channel_type = excluded.channel_type,
@@ -194,20 +186,20 @@ export class ChannelPortSqlite extends ServiceMap.Service<ChannelPortSqlite>()(
           if ("modelOverride" in update && "generationConfigOverride" in update) {
             yield* sql`
               UPDATE channels SET
-                model_override_json = ${update.modelOverride ? encodeModelOverrideJson(update.modelOverride) : null},
-                generation_config_override_json = ${update.generationConfigOverride ? encodeGenerationConfigOverrideJson(update.generationConfigOverride) : null}
+                model_override_json = ${update.modelOverride ? modelOverrideJson.encode(update.modelOverride) : null},
+                generation_config_override_json = ${update.generationConfigOverride ? generationConfigOverrideJson.encode(update.generationConfigOverride) : null}
               WHERE channel_id = ${channelId}
             `.unprepared
           } else if ("modelOverride" in update) {
             yield* sql`
               UPDATE channels SET
-                model_override_json = ${update.modelOverride ? encodeModelOverrideJson(update.modelOverride) : null}
+                model_override_json = ${update.modelOverride ? modelOverrideJson.encode(update.modelOverride) : null}
               WHERE channel_id = ${channelId}
             `.unprepared
           } else if ("generationConfigOverride" in update) {
             yield* sql`
               UPDATE channels SET
-                generation_config_override_json = ${update.generationConfigOverride ? encodeGenerationConfigOverrideJson(update.generationConfigOverride) : null}
+                generation_config_override_json = ${update.generationConfigOverride ? generationConfigOverrideJson.encode(update.generationConfigOverride) : null}
               WHERE channel_id = ${channelId}
             `.unprepared
           }
@@ -236,12 +228,12 @@ const decodeChannelRow = (row: ChannelRow): ChannelRecord => ({
   agentId: row.agent_id as AgentId,
   activeSessionId: row.active_session_id as SessionId,
   activeConversationId: row.active_conversation_id as ConversationId,
-  capabilities: decodeCapabilitiesJson(row.capabilities_json),
-  modelOverride: row.model_override_json ? decodeModelOverrideJson(row.model_override_json) : null,
+  capabilities: capabilitiesJson.decode(row.capabilities_json),
+  modelOverride: row.model_override_json ? modelOverrideJson.decode(row.model_override_json) : null,
   generationConfigOverride: row.generation_config_override_json
-    ? decodeGenerationConfigOverrideJson(row.generation_config_override_json)
+    ? generationConfigOverrideJson.decode(row.generation_config_override_json)
     : null,
-  createdAt: decodeSqlInstant(row.created_at)
+  createdAt: sqlInstant.decode(row.created_at)
 })
 
 const decodeChannelSummaryRow = (row: ChannelSummaryRow): ChannelSummaryRecord => ({
@@ -250,7 +242,7 @@ const decodeChannelSummaryRow = (row: ChannelSummaryRow): ChannelSummaryRecord =
   agentId: row.agent_id as ChannelSummaryRecord["agentId"],
   activeSessionId: row.active_session_id as ChannelSummaryRecord["activeSessionId"],
   activeConversationId: row.active_conversation_id as ChannelSummaryRecord["activeConversationId"],
-  createdAt: decodeSqlInstant(row.created_at),
-  lastTurnAt: row.last_turn_at ? decodeSqlInstant(row.last_turn_at) : null,
+  createdAt: sqlInstant.decode(row.created_at),
+  lastTurnAt: sqlInstantNullable.decode(row.last_turn_at),
   messageCount: row.message_count
 })
