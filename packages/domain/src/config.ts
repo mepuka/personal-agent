@@ -10,6 +10,7 @@
 import { Schema } from "effect"
 
 import { MemoryRoutinesConfig } from "./memory.js"
+import { MemoryTier, SensitivityLevel } from "./status.js"
 import {
   DEFAULT_ARTIFACT_COMPRESSION,
   DEFAULT_ARTIFACT_PREVIEW_MAX_BYTES,
@@ -153,6 +154,15 @@ export type RuntimeConfig = typeof RuntimeConfigSchema.Type
 
 const defaultRuntimeConfig = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
 
+export const MemoryInjectionConfigSchema = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  maxTokens: Schema.optionalKey(Schema.Number),
+  tiers: Schema.optionalKey(Schema.Array(MemoryTier)),
+  perTierFetchLimit: Schema.optionalKey(Schema.Number),
+  allowedSensitivities: Schema.optionalKey(Schema.Array(SensitivityLevel))
+})
+export type MemoryInjectionConfig = typeof MemoryInjectionConfigSchema.Type
+
 export const AgentProfileSchema = Schema.Struct({
   persona: PersonaSchema,
   promptBindings: AgentPromptBindingsSchema,
@@ -161,6 +171,7 @@ export const AgentProfileSchema = Schema.Struct({
   runtime: RuntimeConfigSchema.pipe(
     Schema.withDecodingDefaultKey(() => defaultRuntimeConfig)
   ),
+  memoryInjection: Schema.optionalKey(MemoryInjectionConfigSchema),
   memoryRoutines: Schema.optionalKey(MemoryRoutinesConfig)
 })
 export type AgentProfile = typeof AgentProfileSchema.Type

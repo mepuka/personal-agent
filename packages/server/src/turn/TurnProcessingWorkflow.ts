@@ -66,9 +66,11 @@ import {
   AgentStatePortTag,
   CheckpointPortTag,
   GovernancePortTag,
+  MemoryPortTag,
   SessionMetricsPortTag,
   SessionTurnPortTag
 } from "../PortTags.js"
+import { injectMemoriesIntoSystemPrompt } from "./MemoryInjector.js"
 import { PostCommitWorkflow } from "./PostCommitWorkflow.js"
 
 const InvokeToolReplayExecution = Schema.Struct({
@@ -284,6 +286,7 @@ export const layer = TurnProcessingWorkflow.toLayer(
     const promptCatalog = yield* PromptCatalog
     const modelRegistry = yield* ModelRegistry
     const checkpointPort = yield* CheckpointPortTag
+    const memoryPort = yield* MemoryPortTag
 
     const invokeToolReplay = payload.invokeToolReplay
 
@@ -510,8 +513,19 @@ export const layer = TurnProcessingWorkflow.toLayer(
         promptBindings.turn.systemPromptRef
       ).pipe(Effect.orDie)
 
+      const enrichedSystemPrompt = yield* (
+        invokeToolReplay === undefined
+          ? injectMemoriesIntoSystemPrompt({
+            baseSystemPrompt,
+            memoryPort,
+            agentId: payload.agentId as AgentId,
+            profile
+          })
+          : Effect.succeed(baseSystemPrompt)
+      )
+
       const currentHistory = yield* Ref.get(chat.history)
-      const withSystem = Prompt.setSystem(currentHistory, baseSystemPrompt)
+      const withSystem = Prompt.setSystem(currentHistory, enrichedSystemPrompt)
       yield* Ref.set(chat.history, withSystem)
 
       if (invokeToolReplay !== undefined) {
