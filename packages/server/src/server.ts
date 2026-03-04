@@ -18,6 +18,10 @@ import { FilePathPolicy } from "./tools/file/FilePathPolicy.js"
 import { FileReadTracker } from "./tools/file/FileReadTracker.js"
 import { FileRuntime } from "./tools/file/FileRuntime.js"
 import { ToolExecution } from "./tools/ToolExecution.js"
+import { SandboxRuntime } from "./safety/SandboxRuntime.js"
+import { ExternalServiceClientRegistry } from "./integrations/ExternalServiceClientRegistry.js"
+import { StdioIntegrationClient } from "./integrations/StdioIntegrationClient.js"
+import { RuntimeSupervisor } from "./runtime/RuntimeSupervisor.js"
 import { SessionIdleMonitor } from "./memory/SessionIdleMonitor.js"
 import { SubroutineCatalog } from "./memory/SubroutineCatalog.js"
 import { SubroutineControlPlane } from "./memory/SubroutineControlPlane.js"
@@ -108,7 +112,11 @@ const exposeAsPortTagLayer = <Port, Impl, E, R>(
 const agentStatePortSqliteLayer = sqliteBackedLayer(AgentStatePortSqlite.layer)
 const sessionTurnPortSqliteLayer = sqliteBackedLayer(SessionTurnPortSqlite.layer)
 const schedulePortSqliteLayer = sqliteBackedLayer(SchedulePortSqlite.layer)
-const governancePortSqliteLayer = sqliteBackedLayer(GovernancePortSqlite.layer)
+const sandboxRuntimeLayer = SandboxRuntime.layer
+const runtimeSupervisorLayer = RuntimeSupervisor.layer
+const governancePortSqliteLayer = sqliteBackedLayer(GovernancePortSqlite.layer).pipe(
+  Layer.provide(sandboxRuntimeLayer)
+)
 
 const agentStatePortTagLayer = exposeAsPortTagLayer(
   AgentStatePortTag,
@@ -216,6 +224,17 @@ const agentConfigLayer = AgentConfig.layer.pipe(
   Layer.orDie
 )
 
+const stdioIntegrationClientLayer = StdioIntegrationClient.layer
+
+const externalServiceClientRegistryLayer = ExternalServiceClientRegistry.layer.pipe(
+  Layer.provide(Layer.mergeAll(
+    integrationPortTagLayer,
+    runtimeSupervisorLayer,
+    agentConfigLayer,
+    stdioIntegrationClientLayer
+  ))
+)
+
 const modelRegistryLayer = ModelRegistry.layer.pipe(
   Layer.provide(agentConfigLayer)
 )
@@ -312,6 +331,7 @@ const commandRuntimeLayer = CommandRuntime.layer.pipe(
   Layer.provide(Layer.mergeAll(
     commandHooksLayer,
     commandBackendLayer,
+    sandboxRuntimeLayer,
     BunServices.layer
   ))
 )
@@ -329,6 +349,7 @@ const fileRuntimeLayer = FileRuntime.layer.pipe(
     fileHooksLayer,
     fileReadTrackerLayer,
     filePathPolicyLayer,
+    sandboxRuntimeLayer,
     BunServices.layer
   ))
 )
@@ -390,7 +411,8 @@ const subroutineControlPlaneLayer = SubroutineControlPlane.layer.pipe(
   Layer.provide(Layer.mergeAll(
     subroutineRunnerLayer,
     subroutineCatalogLayer,
-    governancePortTagLayer
+    governancePortTagLayer,
+    runtimeSupervisorLayer
   ))
 )
 
@@ -415,7 +437,8 @@ const schedulerDispatchLayer = SchedulerDispatchLoop.layer.pipe(
 )
 
 const schedulerTickLayer = SchedulerTickService.layer.pipe(
-  Layer.provide(schedulerDispatchLayer)
+  Layer.provide(schedulerDispatchLayer),
+  Layer.provide(runtimeSupervisorLayer)
 )
 
 const transcriptProjectorLayer = TranscriptProjector.layer.pipe(
@@ -472,7 +495,8 @@ const sessionIdleMonitorLayer = SessionIdleMonitor.layer.pipe(
     channelPortTagLayer,
     subroutineControlPlaneLayer,
     subroutineCatalogLayer,
-    agentConfigLayer
+    agentConfigLayer,
+    runtimeSupervisorLayer
   ))
 )
 
@@ -547,7 +571,8 @@ const integrationEntityLayer = whenEnabled(
     Layer.provide(Layer.mergeAll(
       clusterLayer,
       integrationPortTagLayer,
-      agentConfigLayer
+      agentConfigLayer,
+      externalServiceClientRegistryLayer
     ))
   )
 )
@@ -604,6 +629,8 @@ const PortsLive = entityLayer.pipe(
   Layer.provideMerge(subroutineControlPlaneLayer),
   Layer.provideMerge(transcriptProjectorLayer),
   Layer.provideMerge(sessionIdleMonitorLayer),
+  Layer.provideMerge(externalServiceClientRegistryLayer),
+  Layer.provideMerge(runtimeSupervisorLayer),
   Layer.provideMerge(clusterLayer)
 )
 

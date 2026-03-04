@@ -4,6 +4,7 @@ import type { Instant } from "@template/domain/ports"
 import { DateTime, Duration, Effect, Layer, Ref, Schedule, ServiceMap } from "effect"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { ChannelPortTag } from "../PortTags.js"
+import { RuntimeSupervisor } from "../runtime/RuntimeSupervisor.js"
 import { SubroutineCatalog } from "./SubroutineCatalog.js"
 import { SubroutineControlPlane } from "./SubroutineControlPlane.js"
 
@@ -15,6 +16,7 @@ export class SessionIdleMonitor extends ServiceMap.Service<SessionIdleMonitor>()
       const controlPlane = yield* SubroutineControlPlane
       const catalog = yield* SubroutineCatalog
       const agentConfig = yield* AgentConfig
+      const runtimeSupervisor = yield* RuntimeSupervisor
 
       // Track sessionId::subroutineId -> lastFiredAt to prevent repeated firing
       const lastFiredRef = yield* Ref.make(new Map<string, Instant>())
@@ -80,7 +82,7 @@ export class SessionIdleMonitor extends ServiceMap.Service<SessionIdleMonitor>()
       )
 
       const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(DEFAULT_IDLE_CHECK_INTERVAL_SECONDS)))
-      yield* Effect.forkScoped(loop)
+      yield* runtimeSupervisor.start("runtime.session.idle-monitor", loop)
 
       return {} as const
     })

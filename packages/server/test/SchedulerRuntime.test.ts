@@ -55,6 +55,35 @@ describe("SchedulerRuntime", () => {
       )).toBe(true)
     }).pipe(Effect.provide(runtimeTestLayer)))
 
+  it.effect("serializes concurrent claimDue calls to preserve forbid invariants", () =>
+    Effect.gen(function*() {
+      const schedulePort = yield* SchedulePortMemory
+      const runtime = yield* SchedulerRuntime
+      const now = instant("2026-02-24T12:00:00.000Z")
+      const schedule = makeSchedule({
+        scheduleId: "schedule:forbid-race" as ScheduleId,
+        concurrencyPolicy: "ConcurrencyForbid",
+        nextExecutionAt: now
+      })
+
+      yield* schedulePort.upsertSchedule(schedule)
+
+      const [left, right] = yield* Effect.all(
+        [runtime.claimDue(now), runtime.claimDue(now)],
+        { concurrency: "unbounded" }
+      )
+
+      const totalClaimed = left.length + right.length
+      const executions = yield* schedulePort.listExecutions()
+
+      expect(totalClaimed).toBe(1)
+      expect(executions.some((record) =>
+        record.scheduleId === schedule.scheduleId &&
+        record.outcome === "ExecutionSkipped" &&
+        record.skipReason === "ConcurrencyForbid"
+      )).toBe(true)
+    }).pipe(Effect.provide(runtimeTestLayer)))
+
   it.effect("replace policy marks old run replaced and blocks its completion", () =>
     Effect.gen(function*() {
       const schedulePort = yield* SchedulePortMemory

@@ -21,6 +21,9 @@ import {
   channelCapabilitiesForType,
   isSupportedChannelAdapterType
 } from "../entities/ChannelAdapterProfiles.js"
+import { ExternalServiceClientRegistry } from "../integrations/ExternalServiceClientRegistry.js"
+import { RuntimeSupervisor } from "../runtime/RuntimeSupervisor.js"
+import { SchedulerTickService } from "../scheduler/SchedulerTickService.js"
 import {
   badRequest,
   extractPathParam,
@@ -324,7 +327,100 @@ const setModelPreference = HttpRouter.add(
 const health = HttpRouter.add(
   "GET",
   "/health",
-  () => HttpServerResponse.json({ status: "ok", service: "personal-agent" })
+  () =>
+    Effect.gen(function*() {
+      const runtimeSupervisorOption = yield* Effect.serviceOption(RuntimeSupervisor)
+      const schedulerTickServiceOption = yield* Effect.serviceOption(SchedulerTickService)
+      const integrationRegistryOption = yield* Effect.serviceOption(ExternalServiceClientRegistry)
+
+      const supervisorSnapshot = yield* Option.match(runtimeSupervisorOption, {
+        onNone: () => Effect.succeed(null),
+        onSome: (runtimeSupervisor) => runtimeSupervisor.snapshot().pipe(Effect.map((snapshot) => snapshot))
+      })
+
+      const lastSchedulerTick = yield* Option.match(schedulerTickServiceOption, {
+        onNone: () => Effect.succeed(null),
+        onSome: (tickService) => tickService.getLastTickResult()
+      })
+
+      const integrationSnapshot = yield* Option.match(integrationRegistryOption, {
+        onNone: () =>
+          Effect.succeed({
+            summary: {
+              total: 0,
+              connected: 0,
+              initializing: 0,
+              error: 0,
+              disconnected: 0,
+              degraded: 0
+            },
+            integrations: [] as ReadonlyArray<{
+              readonly integrationId: string
+              readonly serviceId: string
+              readonly status: string
+              readonly health: string
+              readonly pid: number | null
+              readonly lastError: string | null
+              readonly updatedAt: string
+            }>
+          }),
+        onSome: (registry) =>
+          registry.snapshot().pipe(
+            Effect.map((snapshot) => ({
+              summary: snapshot.summary,
+              integrations: snapshot.integrations.map((integration) => ({
+                integrationId: integration.integrationId,
+                serviceId: integration.serviceId,
+                status: integration.status,
+                health: integration.health,
+                pid: integration.pid,
+                lastError: integration.lastError,
+                updatedAt: DateTime.formatIso(integration.updatedAt)
+              }))
+            }))
+          )
+      })
+
+      return yield* HttpServerResponse.json({
+        status: "ok",
+        service: "personal-agent",
+        runtime: {
+          supervisor: supervisorSnapshot === null
+            ? null
+            : {
+                activeWorkerCount: supervisorSnapshot.activeWorkerCount,
+                supervisedFiberCount: supervisorSnapshot.supervisedFiberCount,
+                workers: supervisorSnapshot.workers.map((worker) => ({
+                  key: worker.key,
+                  status: worker.status,
+                  startedAt: DateTime.formatIso(worker.startedAt)
+                }))
+              },
+          loops: supervisorSnapshot === null
+            ? []
+            : supervisorSnapshot.workers.map((worker) => ({
+                key: worker.key,
+                status: worker.status
+              })),
+          scheduler: {
+            lastTick: lastSchedulerTick === null
+              ? null
+              : {
+                  tickedAt: DateTime.formatIso(lastSchedulerTick.tickedAt),
+                  claimed: lastSchedulerTick.claimed,
+                  dispatched: lastSchedulerTick.dispatched,
+                  accepted: lastSchedulerTick.accepted,
+                  outcome: lastSchedulerTick.outcome,
+                  errorMessage: lastSchedulerTick.errorMessage
+                }
+          }
+        },
+        integrations: integrationSnapshot
+      })
+    }).pipe(
+      Effect.withSpan("ChannelRoutes.health"),
+      Effect.catchCause(() => internalServerError())
+    )
 )
 
 // ---------------------------------------------------------------------------

@@ -302,8 +302,11 @@ describe("ChannelRoutes e2e", () => {
       )
       const client = yield* HttpClient.HttpClient
       const response = yield* client.get("/health")
-      const body = yield* response.json
-      expect(body).toEqual({ status: "ok", service: "personal-agent" })
+      const body = (yield* response.json) as any
+      expect(body.status).toBe("ok")
+      expect(body.service).toBe("personal-agent")
+      expect(body.runtime).toBeDefined()
+      expect(body.integrations).toBeDefined()
     }).pipe(
       Effect.provide(NodeHttpServer.layerTest),
       Effect.ensuring(cleanupDatabase(dbPath))

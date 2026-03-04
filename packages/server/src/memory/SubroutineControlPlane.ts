@@ -6,8 +6,9 @@ import type { AgentId, AuditEntryId, ConversationId, SessionId, TurnId } from "@
 import type { SubroutineTriggerType } from "@template/domain/status"
 import type { AuditEntryRecord, Instant } from "@template/domain/ports"
 import type { AuthorizationDecision } from "@template/domain/status"
-import { DateTime, Effect, Layer, Queue, Ref, ServiceMap } from "effect"
+import { DateTime, Effect, Layer, Queue, Ref, Semaphore, ServiceMap } from "effect"
 import { GovernancePortTag } from "../PortTags.js"
+import { RuntimeSupervisor } from "../runtime/RuntimeSupervisor.js"
 import { SubroutineCatalog } from "./SubroutineCatalog.js"
 import { SubroutineRunner, type SubroutineContext } from "./SubroutineRunner.js"
 
@@ -123,10 +124,12 @@ export class SubroutineControlPlane extends ServiceMap.Service<SubroutineControl
       const runner = yield* SubroutineRunner
       const catalog = yield* SubroutineCatalog
       const governancePort = yield* GovernancePortTag
+      const runtimeSupervisor = yield* RuntimeSupervisor
 
       const queue = yield* Queue.dropping<QueuedDispatch>(DEFAULT_SUBROUTINE_QUEUE_CAPACITY)
       const dedupeState = yield* Ref.make(new Map<string, DedupeEntry>())
       const inFlight = yield* Ref.make(new Set<string>())
+      const enqueueLock = yield* Semaphore.make(1)
 
       // 4a. enqueue — never fails
       const enqueue: SubroutineControlPlaneService["enqueue"] = (request) =>
@@ -145,51 +148,65 @@ export class SubroutineControlPlane extends ServiceMap.Service<SubroutineControl
           const loaded = lookupResult.loaded
           const windowSeconds = loaded.config.dedupeWindowSeconds ?? DEFAULT_SUBROUTINE_DEDUPE_WINDOW_SECONDS
 
-          // 2. Compute dedupe key
-          const dedupeKey = makeDedupeKey(request)
+          const enqueueResult = yield* enqueueLock.withPermits(1)(
+            Effect.gen(function*() {
+              // 2. Compute dedupe key
+              const dedupeKey = makeDedupeKey(request)
 
-          // 3. Check for duplicate
-          const currentDedupeMap = yield* Ref.get(dedupeState)
-          if (isDuplicate(currentDedupeMap, dedupeKey, request.enqueuedAt, windowSeconds)) {
+              // 3. Check for duplicate
+              const currentDedupeMap = yield* Ref.get(dedupeState)
+              if (isDuplicate(currentDedupeMap, dedupeKey, request.enqueuedAt, windowSeconds)) {
+                return { accepted: false, reason: "deduped", runId: null } satisfies EnqueueResult
+              }
+
+              // 4. Generate runId
+              const runId = crypto.randomUUID()
+
+              // 5. Record in dedupe map
+              yield* Ref.update(dedupeState, (map) => {
+                const next = new Map(map)
+                next.set(dedupeKey, { acceptedAt: request.enqueuedAt })
+                return next
+              })
+
+              // 6. Prune expired dedupe entries (older than 2× max window = 120s)
+              const pruneThresholdMs = 2 * DEFAULT_SUBROUTINE_DEDUPE_WINDOW_SECONDS * 1000
+              const nowMs = DateTime.toEpochMillis(request.enqueuedAt)
+              yield* Ref.update(dedupeState, (map) => {
+                const next = new Map<string, DedupeEntry>()
+                for (const [k, v] of map) {
+                  if (nowMs - DateTime.toEpochMillis(v.acceptedAt) < pruneThresholdMs) {
+                    next.set(k, v)
+                  }
+                }
+                return next
+              })
+
+              // 7. Offer to queue
+              const offered = yield* Queue.offer(queue, { ...request, runId })
+              if (!offered) {
+                // Undo dedupe entry
+                yield* Ref.update(dedupeState, (map) => {
+                  const next = new Map(map)
+                  next.delete(dedupeKey)
+                  return next
+                })
+                return { accepted: false, reason: "queue_full", runId: null } satisfies EnqueueResult
+              }
+
+              return { accepted: true, reason: "dispatched", runId } satisfies EnqueueResult
+            })
+          )
+
+          if (enqueueResult.reason === "deduped") {
             yield* writeControlPlaneAudit(governancePort, request, "memory_subroutine_skipped").pipe(
               Effect.ignore
             )
-            return { accepted: false, reason: "deduped", runId: null } satisfies EnqueueResult
+            return enqueueResult
           }
 
-          // 4. Generate runId
-          const runId = crypto.randomUUID()
-
-          // 5. Record in dedupe map
-          yield* Ref.update(dedupeState, (map) => {
-            const next = new Map(map)
-            next.set(dedupeKey, { acceptedAt: request.enqueuedAt })
-            return next
-          })
-
-          // 6. Prune expired dedupe entries (older than 2× max window = 120s)
-          const pruneThresholdMs = 2 * DEFAULT_SUBROUTINE_DEDUPE_WINDOW_SECONDS * 1000
-          const nowMs = DateTime.toEpochMillis(request.enqueuedAt)
-          yield* Ref.update(dedupeState, (map) => {
-            const next = new Map<string, DedupeEntry>()
-            for (const [k, v] of map) {
-              if (nowMs - DateTime.toEpochMillis(v.acceptedAt) < pruneThresholdMs) {
-                next.set(k, v)
-              }
-            }
-            return next
-          })
-
-          // 7. Offer to queue
-          const offered = yield* Queue.offer(queue, { ...request, runId })
-          if (!offered) {
-            // Undo dedupe entry
-            yield* Ref.update(dedupeState, (map) => {
-              const next = new Map(map)
-              next.delete(dedupeKey)
-              return next
-            })
-            return { accepted: false, reason: "queue_full", runId: null } satisfies EnqueueResult
+          if (!enqueueResult.accepted) {
+            return enqueueResult
           }
 
           // 8. Audit dispatch
@@ -198,7 +215,7 @@ export class SubroutineControlPlane extends ServiceMap.Service<SubroutineControl
           )
 
           // 9. Return success
-          return { accepted: true, reason: "dispatched", runId } satisfies EnqueueResult
+          return enqueueResult
         })
 
       // 4b. processOne — handles a single queued dispatch
@@ -307,8 +324,8 @@ export class SubroutineControlPlane extends ServiceMap.Service<SubroutineControl
           return results
         })
 
-      // Fork worker as scoped fiber — clean shutdown when scope closes
-      yield* Effect.forkScoped(workerLoop)
+      // Start worker under lifecycle ownership
+      yield* runtimeSupervisor.start("runtime.subroutine.control-plane.worker", workerLoop)
 
       return { enqueue, dispatchByTrigger } satisfies SubroutineControlPlaneService
     })

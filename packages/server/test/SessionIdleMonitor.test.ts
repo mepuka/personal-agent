@@ -12,6 +12,7 @@ import {
   type SubroutineControlPlaneService
 } from "../src/memory/SubroutineControlPlane.js"
 import { SessionIdleMonitor } from "../src/memory/SessionIdleMonitor.js"
+import { RuntimeSupervisor } from "../src/runtime/RuntimeSupervisor.js"
 import type { LoadedSubroutine } from "../src/memory/SubroutineCatalog.js"
 import { withTestPromptsConfig } from "./TestPromptConfig.js"
 
@@ -149,6 +150,7 @@ const makeTestLayer = (opts: {
     Layer.provide(channelPortLayer),
     Layer.provide(controlPlaneLayer),
     Layer.provide(catalogLayer),
+    Layer.provide(RuntimeSupervisor.layer),
     Layer.provide(makeAgentConfigLayer())
   )
 }
@@ -322,6 +324,7 @@ describe("SessionIdleMonitor", () => {
         Layer.provide(channelPortLayer),
         Layer.provide(controlPlaneLayer),
         Layer.provide(catalogLayer),
+        Layer.provide(RuntimeSupervisor.layer),
         Layer.provide(makeAgentConfigLayer())
       )
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Exit, Layer, Queue, Ref, Scope } from "effect"
 import { TestClock } from "effect/testing"
+import { RuntimeSupervisor } from "../src/runtime/RuntimeSupervisor.js"
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
 import { SchedulerTickService } from "../src/scheduler/SchedulerTickService.js"
 
@@ -16,7 +17,10 @@ describe("SchedulerTickService", () => {
       })
 
       yield* Layer.build(
-        SchedulerTickService.layer.pipe(Layer.provide(mockLayer))
+        SchedulerTickService.layer.pipe(
+          Layer.provide(mockLayer),
+          Layer.provide(RuntimeSupervisor.layer)
+        )
       )
 
       // First tick fires immediately on construction
@@ -46,7 +50,10 @@ describe("SchedulerTickService", () => {
       })
 
       yield* Layer.build(
-        SchedulerTickService.layer.pipe(Layer.provide(mockLayer))
+        SchedulerTickService.layer.pipe(
+          Layer.provide(mockLayer),
+          Layer.provide(RuntimeSupervisor.layer)
+        )
       )
 
       // First tick fires and dies (caught by catchCause)
@@ -69,7 +76,10 @@ describe("SchedulerTickService", () => {
 
       const scope = yield* Scope.make()
       yield* Layer.buildWithScope(scope)(
-        SchedulerTickService.layer.pipe(Layer.provide(mockLayer))
+        SchedulerTickService.layer.pipe(
+          Layer.provide(mockLayer),
+          Layer.provide(RuntimeSupervisor.layer)
+        )
       )
 
       // First tick fires

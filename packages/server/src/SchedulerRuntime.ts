@@ -7,7 +7,7 @@ import type {
   TriggerSource
 } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
-import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, ServiceMap } from "effect"
+import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, Semaphore, ServiceMap } from "effect"
 import { SchedulePortTag } from "./PortTags.js"
 
 export interface ExecutionTicket {
@@ -31,90 +31,97 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
       const replacedExecutionIds = yield* Ref.make(
         HashSet.empty<ScheduledExecutionId>()
       )
+      const stateLock = yield* Semaphore.make(1)
 
       const claimDue = (now: Instant) =>
-        Effect.gen(function*() {
-          const due = yield* schedulePort.listDue(now)
-          const sorted = [...due].sort(compareDueCandidates)
-          const claimed: Array<ExecutionTicket> = []
+        stateLock.withPermits(1)(
+          Effect.gen(function*() {
+            const due = yield* schedulePort.listDue(now)
+            const sorted = [...due].sort(compareDueCandidates)
+            const claimed: Array<ExecutionTicket> = []
 
-          for (const candidate of sorted) {
-            const ticket = yield* claimCandidate(
-              candidate.schedule,
-              candidate.dueAt,
-              candidate.triggerSource,
-              now
-            )
-            if (ticket !== null) {
-              claimed.push(ticket)
+            for (const candidate of sorted) {
+              const ticket = yield* claimCandidate(
+                candidate.schedule,
+                candidate.dueAt,
+                candidate.triggerSource,
+                now
+              )
+              if (ticket !== null) {
+                claimed.push(ticket)
+              }
             }
-          }
 
-          return claimed as ReadonlyArray<ExecutionTicket>
-        })
+            return claimed as ReadonlyArray<ExecutionTicket>
+          })
+        )
 
       const triggerNow = (schedule: ScheduleRecord, now: Instant) =>
-        Effect.gen(function*() {
-          if (schedule.scheduleStatus !== "ScheduleActive") {
-            yield* recordSkippedExecution({
-              scheduleId: schedule.scheduleId,
-              dueAt: now,
-              triggerSource: "Manual",
-              startedAt: now,
-              endedAt: now,
-              reason: "ManualTriggerInactive"
-            })
-            return null
-          }
+        stateLock.withPermits(1)(
+          Effect.gen(function*() {
+            if (schedule.scheduleStatus !== "ScheduleActive") {
+              yield* recordSkippedExecution({
+                scheduleId: schedule.scheduleId,
+                dueAt: now,
+                triggerSource: "Manual",
+                startedAt: now,
+                endedAt: now,
+                reason: "ManualTriggerInactive"
+              })
+              return null
+            }
 
-          return yield* claimCandidate(schedule, now, "Manual", now)
-        })
+            return yield* claimCandidate(schedule, now, "Manual", now)
+          })
+        )
 
       const completeExecution = (
         ticket: ExecutionTicket,
         outcome: ExecutionOutcome,
         endedAt: Instant
       ) =>
-        Effect.gen(function*() {
-          const isReplaced = yield* Ref.get(replacedExecutionIds).pipe(
-            Effect.map((set) => HashSet.has(set, ticket.executionId))
-          )
-          if (isReplaced) {
-            return false
-          }
+        stateLock.withPermits(1)(
+          Effect.gen(function*() {
+            const isReplaced = yield* Ref.get(replacedExecutionIds).pipe(
+              Effect.map((set) => HashSet.has(set, ticket.executionId))
+            )
+            if (isReplaced) {
+              return false
+            }
 
-          const map = yield* Ref.get(inFlightBySchedule)
-          const inFlight = Option.getOrElse(
-            HashMap.get(map, ticket.scheduleId),
-            () => [] as ReadonlyArray<ExecutionTicket>
-          )
-          const isInFlight = inFlight.some(
-            (current) => current.executionId === ticket.executionId
-          )
-          if (!isInFlight) {
-            return false
-          }
+            const map = yield* Ref.get(inFlightBySchedule)
+            const inFlight = Option.getOrElse(
+              HashMap.get(map, ticket.scheduleId),
+              () => [] as ReadonlyArray<ExecutionTicket>
+            )
+            const isInFlight = inFlight.some(
+              (current) => current.executionId === ticket.executionId
+            )
+            if (!isInFlight) {
+              return false
+            }
 
-          const remaining = inFlight.filter(
-            (current) => current.executionId !== ticket.executionId
-          )
-          yield* Ref.set(
-            inFlightBySchedule,
-            HashMap.set(map, ticket.scheduleId, remaining)
-          )
-          yield* schedulePort.recordExecution({
-            executionId: ticket.executionId,
-            scheduleId: ticket.scheduleId,
-            dueAt: ticket.dueAt,
-            triggerSource: ticket.triggerSource,
-            outcome,
-            startedAt: ticket.startedAt,
-            endedAt,
-            skipReason: null
+            const remaining = inFlight.filter(
+              (current) => current.executionId !== ticket.executionId
+            )
+            yield* Ref.set(
+              inFlightBySchedule,
+              HashMap.set(map, ticket.scheduleId, remaining)
+            )
+            yield* schedulePort.recordExecution({
+              executionId: ticket.executionId,
+              scheduleId: ticket.scheduleId,
+              dueAt: ticket.dueAt,
+              triggerSource: ticket.triggerSource,
+              outcome,
+              startedAt: ticket.startedAt,
+              endedAt,
+              skipReason: null
+            })
+
+            return true
           })
-
-          return true
-        })
+        )
 
       const claimCandidate = (
         schedule: ScheduleRecord,

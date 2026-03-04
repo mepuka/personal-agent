@@ -23,6 +23,7 @@ import {
   type SubroutineResult,
   type SubroutineRunnerService
 } from "../src/memory/SubroutineRunner.js"
+import { RuntimeSupervisor } from "../src/runtime/RuntimeSupervisor.js"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,7 +152,12 @@ const makeTestLayer = (options?: {
   const governanceLayer = Layer.succeed(GovernancePortTag, governance.port as any)
 
   return SubroutineControlPlane.layer.pipe(
-    Layer.provide(Layer.mergeAll(catalogLayer, runnerLayer, governanceLayer))
+    Layer.provide(Layer.mergeAll(
+      catalogLayer,
+      runnerLayer,
+      governanceLayer,
+      RuntimeSupervisor.layer
+    ))
   )
 }
 
@@ -290,6 +296,28 @@ describe("SubroutineControlPlane", () => {
       expect(second.accepted).toBe(false)
       expect(second.reason).toBe("deduped")
       expect(second.runId).toBeNull()
+    }).pipe(Effect.scoped, Effect.provide(layer))
+
+    await Effect.runPromise(program)
+  })
+
+  it("concurrent duplicate enqueue preserves dedupe consistency", async () => {
+    const layer = makeTestLayer()
+
+    const program = Effect.gen(function*() {
+      const cp = yield* SubroutineControlPlane
+      const req = makeDispatchRequest()
+
+      const [left, right] = yield* Effect.all(
+        [cp.enqueue(req), cp.enqueue(req)],
+        { concurrency: "unbounded" }
+      )
+
+      const acceptedCount = [left, right].filter((result) => result.accepted).length
+      const dedupedCount = [left, right].filter((result) => result.reason === "deduped").length
+
+      expect(acceptedCount).toBe(1)
+      expect(dedupedCount).toBe(1)
     }).pipe(Effect.scoped, Effect.provide(layer))
 
     await Effect.runPromise(program)

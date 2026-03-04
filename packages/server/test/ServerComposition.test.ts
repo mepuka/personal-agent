@@ -50,6 +50,7 @@ import { IntegrationPortSqlite } from "../src/IntegrationPortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import { SchedulePortSqlite } from "../src/SchedulePortSqlite.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import {
@@ -71,6 +72,7 @@ import { layer as SchedulerCommandLayer } from "../src/scheduler/SchedulerComman
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
 import { SchedulerTickService } from "../src/scheduler/SchedulerTickService.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
+import { RuntimeSupervisor } from "../src/runtime/RuntimeSupervisor.js"
 import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
 import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
@@ -154,6 +156,8 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
+  const runtimeSupervisorLayer = RuntimeSupervisor.layer
 
   const agentStatePortSqliteLayer = AgentStatePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
@@ -165,7 +169,8 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(sqlInfrastructureLayer)
   )
   const governancePortSqliteLayer = GovernancePortSqlite.layer.pipe(
-    Layer.provide(sqlInfrastructureLayer)
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(sandboxRuntimeLayer)
   )
 
   const agentStatePortTagLayer = Layer.effect(
@@ -331,6 +336,7 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(Layer.mergeAll(
       CommandHooksDefaultLayer,
       commandBackendLayer,
+      sandboxRuntimeLayer,
       platformLayer
     ))
   )
@@ -344,6 +350,7 @@ const makePortsLiveLayer = (dbPath: string) => {
       FileHooksDefaultLayer,
       FileReadTracker.layer,
       filePathPolicyLayer,
+      sandboxRuntimeLayer,
       platformLayer
     ))
   )
@@ -412,7 +419,8 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provide(Layer.mergeAll(
       subroutineRunnerLayer,
       subroutineCatalogLayer,
-      governancePortTagLayer
+      governancePortTagLayer,
+      runtimeSupervisorLayer
     ))
   )
 
@@ -445,7 +453,8 @@ const makePortsLiveLayer = (dbPath: string) => {
   )
 
   const schedulerTickLayer = SchedulerTickService.layer.pipe(
-    Layer.provide(schedulerDispatchLayer)
+    Layer.provide(schedulerDispatchLayer),
+    Layer.provide(runtimeSupervisorLayer)
   )
 
   const workflowEngineLayer = ClusterWorkflowEngine.layer.pipe(
@@ -500,7 +509,8 @@ const makePortsLiveLayer = (dbPath: string) => {
       channelPortTagLayer,
       subroutineControlPlaneLayer,
       subroutineCatalogLayer,
-      agentConfigLayer
+      agentConfigLayer,
+      runtimeSupervisorLayer
     ))
   )
 
@@ -544,6 +554,7 @@ const makePortsLiveLayer = (dbPath: string) => {
     Layer.provideMerge(subroutineRunnerLayer),
     Layer.provideMerge(subroutineControlPlaneLayer),
     Layer.provideMerge(sessionIdleMonitorLayer),
+    Layer.provideMerge(runtimeSupervisorLayer),
     Layer.provideMerge(clusterLayer)
   )
 }
