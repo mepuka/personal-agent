@@ -1,12 +1,13 @@
 import { describe, expect, it } from "@effect/vitest"
 import type { IntegrationPort } from "@template/domain/ports"
-import { Effect, Exit, Layer } from "effect"
+import { DateTime, Effect, Exit, Layer, Ref } from "effect"
 import { Entity, ShardingConfig } from "effect/unstable/cluster"
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentConfig } from "../src/ai/AgentConfig.js"
 import { IntegrationEntity, layer as IntegrationEntityLayer } from "../src/entities/IntegrationEntity.js"
+import { ExternalServiceClientRegistry, type RuntimeIntegrationStatus } from "../src/integrations/ExternalServiceClientRegistry.js"
 import { IntegrationPortSqlite } from "../src/IntegrationPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
@@ -62,6 +63,7 @@ describe("IntegrationEntity", () => {
       const client = yield* makeClient("int:test-1")
 
       yield* client.connect({
+        agentId: "agent:default",
         serviceId: "svc:test",
         name: "Test Service",
         endpoint: "http://localhost:9999",
@@ -86,6 +88,7 @@ describe("IntegrationEntity", () => {
       const client = yield* makeClient("int:test-2")
 
       yield* client.connect({
+        agentId: "agent:default",
         serviceId: "svc:test-dc",
         name: "Disconnect Service",
         endpoint: "http://localhost:8888",
@@ -123,6 +126,7 @@ describe("IntegrationEntity", () => {
       const client = yield* makeClient("int:test-idem")
 
       yield* client.connect({
+        agentId: "agent:default",
         serviceId: "svc:idem",
         name: "Idempotent Service",
         endpoint: "http://localhost:7777",
@@ -131,6 +135,7 @@ describe("IntegrationEntity", () => {
 
       // Second connect should not error (upsert semantics)
       yield* client.connect({
+        agentId: "agent:default",
         serviceId: "svc:idem",
         name: "Idempotent Service",
         endpoint: "http://localhost:7777",
@@ -166,10 +171,98 @@ const makeTestLayer = (dbPath: string) => {
     })
   ).pipe(Layer.provide(integrationPortSqliteLayer))
 
+  const integrationRegistryLayer = Layer.effect(
+    ExternalServiceClientRegistry,
+    Effect.gen(function*() {
+      const integrationPort = yield* IntegrationPortTag
+      const statusesRef = yield* Ref.make(new Map<string, RuntimeIntegrationStatus>())
+
+      return ExternalServiceClientRegistry.of({
+        connect: ({ integrationId, agentId, service }) =>
+          Effect.gen(function*() {
+            const now = yield* DateTime.now
+            yield* integrationPort.createService(service)
+            yield* integrationPort.createIntegration({
+              integrationId,
+              agentId,
+              serviceId: service.serviceId,
+              status: "Connected",
+              capabilities: [],
+              createdAt: now,
+              updatedAt: now
+            })
+            yield* Ref.update(statusesRef, (map) => {
+              const next = new Map(map)
+              next.set(integrationId, {
+                integrationId,
+                agentId,
+                serviceId: service.serviceId,
+                status: "Connected",
+                health: "healthy",
+                capabilities: [],
+                pid: null,
+                lastError: null,
+                updatedAt: now
+              })
+              return next
+            })
+          }),
+        disconnect: (serviceId) =>
+          Effect.gen(function*() {
+            const now = yield* DateTime.now
+            yield* Ref.update(statusesRef, (map) => {
+              const next = new Map(map)
+              for (const [integrationId, status] of next) {
+                if (status.serviceId === serviceId) {
+                  next.set(integrationId, {
+                    ...status,
+                    status: "Disconnected",
+                    health: "degraded",
+                    lastError: null,
+                    updatedAt: now
+                  })
+                }
+              }
+              return next
+            })
+
+            const statuses = yield* Ref.get(statusesRef)
+            for (const status of statuses.values()) {
+              if (status.serviceId === serviceId) {
+                yield* integrationPort.updateStatus(status.integrationId, "Disconnected")
+              }
+            }
+          }),
+        getStatus: (integrationId) =>
+          Ref.get(statusesRef).pipe(
+            Effect.map((map) => map.get(integrationId) ?? null)
+          ),
+        snapshot: () =>
+          Ref.get(statusesRef).pipe(
+            Effect.map((map) => {
+              const integrations = [...map.values()]
+              return {
+                integrations,
+                summary: {
+                  total: integrations.length,
+                  connected: integrations.filter((item) => item.status === "Connected").length,
+                  initializing: integrations.filter((item) => item.status === "Initializing").length,
+                  error: integrations.filter((item) => item.status === "Error").length,
+                  disconnected: integrations.filter((item) => item.status === "Disconnected").length,
+                  degraded: integrations.filter((item) => item.health === "degraded").length
+                }
+              }
+            })
+          )
+      })
+    })
+  ).pipe(Layer.provide(integrationPortTagLayer))
+
   return Layer.mergeAll(
     sqlInfrastructureLayer,
     integrationPortSqliteLayer,
     integrationPortTagLayer,
+    integrationRegistryLayer,
     agentConfigLayer,
     ShardingConfig.layer()
   )

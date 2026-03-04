@@ -2,6 +2,7 @@ import type { AgentId, ConversationId, SessionId } from "@template/domain/ids"
 import type {
   BackgroundActionMemorySubroutine,
   ChannelSummaryRecord,
+  GovernancePort,
   SessionState
 } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
@@ -67,6 +68,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 
           return yield* dispatchAction({
             ticket,
+            governancePort: governance,
             channelPort,
             sessionTurnPort,
             commandRuntime,
@@ -95,6 +97,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 
 const dispatchAction = (params: {
   readonly ticket: ExecutionTicket
+  readonly governancePort: Pick<GovernancePort, "enforceSandbox">
   readonly channelPort: {
     readonly list: (query?: {
       readonly agentId?: AgentId
@@ -175,9 +178,14 @@ const dispatchAction = (params: {
             agentId: params.ticket.ownerAgentId
           },
           request: {
+            mode: "Shell",
             command
           }
         }).pipe(
+          (effect) => params.governancePort.enforceSandbox(
+            params.ticket.ownerAgentId,
+            effect
+          ),
           Effect.matchEffect({
             onFailure: (error) =>
               Effect.gen(function*() {

@@ -29,6 +29,7 @@ import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import {
   ArtifactStorePortTag,
   CheckpointPortTag,
@@ -343,9 +344,11 @@ const makeTestLayer = (
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
-    Layer.provide(sqlInfrastructureLayer)
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(sandboxRuntimeLayer)
   )
   const governanceTagLayer = Layer.effect(
     GovernancePortTag,
@@ -383,6 +386,7 @@ const makeTestLayer = (
   const commandRuntimeLayer = CommandRuntime.layer.pipe(
     Layer.provide(CommandHooksDefaultLayer),
     Layer.provide(commandBackendLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
   const filePathPolicyLayer = FilePathPolicy.layer.pipe(
@@ -392,6 +396,7 @@ const makeTestLayer = (
     Layer.provide(FileHooksDefaultLayer),
     Layer.provide(FileReadTracker.layer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
   const toolExecutionLayer = ToolExecution.layer.pipe(
@@ -861,8 +866,12 @@ describe("SubroutineRunner checkpoint", () => {
     const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
     const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
     const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+    const sandboxRuntimeLayer = SandboxRuntime.layer
 
-    const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
+      Layer.provide(sqlInfrastructureLayer),
+      Layer.provide(sandboxRuntimeLayer)
+    )
     const governanceTagLayer = Layer.effect(
       GovernancePortTag,
       Effect.gen(function*() { return (yield* GovernancePortSqlite) as GovernancePort })
@@ -885,6 +894,7 @@ describe("SubroutineRunner checkpoint", () => {
     const commandRuntimeLayer = CommandRuntime.layer.pipe(
       Layer.provide(CommandHooksDefaultLayer),
       Layer.provide(commandBackendLayer),
+      Layer.provide(sandboxRuntimeLayer),
       Layer.provide(NodeServices.layer)
     )
     const filePathPolicyLayer = FilePathPolicy.layer.pipe(Layer.provide(NodeServices.layer))
@@ -892,6 +902,7 @@ describe("SubroutineRunner checkpoint", () => {
       Layer.provide(FileHooksDefaultLayer),
       Layer.provide(FileReadTracker.layer),
       Layer.provide(filePathPolicyLayer),
+      Layer.provide(sandboxRuntimeLayer),
       Layer.provide(NodeServices.layer)
     )
     const toolExecutionLayer = ToolExecution.layer.pipe(

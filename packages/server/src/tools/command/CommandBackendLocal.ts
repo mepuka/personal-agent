@@ -52,14 +52,26 @@ export const layer = Layer.effect(
     const executePlan: CommandBackendService["executePlan"] = (
       plan: CommandPlan
     ): Effect.Effect<CommandResult, CommandExecutionFailed | CommandSpawnFailed | CommandTimeout> =>
-      cliRuntime.run({
-        mode: "Shell",
-        command: plan.command,
-        cwd: plan.cwd,
-        env: plan.env,
-        timeoutMs: plan.timeoutMs,
-        outputLimitBytes: plan.outputLimitBytes
-      }).pipe(
+      cliRuntime.run(
+        plan.mode === "Shell"
+          ? {
+              mode: "Shell",
+              command: plan.command,
+              cwd: plan.cwd,
+              env: plan.env,
+              timeoutMs: plan.timeoutMs,
+              outputLimitBytes: plan.outputLimitBytes
+            }
+          : {
+              mode: "Argv",
+              command: plan.executable,
+              args: plan.args,
+              cwd: plan.cwd,
+              env: plan.env,
+              timeoutMs: plan.timeoutMs,
+              outputLimitBytes: plan.outputLimitBytes
+            }
+      ).pipe(
         Effect.mapError(mapCliErrorToCommandError)
       )
 

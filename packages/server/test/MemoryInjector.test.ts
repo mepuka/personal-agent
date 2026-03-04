@@ -10,25 +10,36 @@ import { buildMemoryBlock, injectMemoriesIntoSystemPrompt } from "../src/turn/Me
 
 const makeItem = (
   overrides: Partial<MemoryItemRecord> & { content: string; tier?: MemoryTier }
-): MemoryItemRecord => ({
-  memoryItemId: `mem:${crypto.randomUUID()}`,
-  agentId: "agent:test" as AgentId,
-  tier: overrides.tier ?? "SemanticMemory",
-  scope: "GlobalScope",
-  source: "AgentSource",
-  content: overrides.content,
-  metadataJson: null,
-  generatedByTurnId: null,
-  sessionId: null,
-  sensitivity: overrides.sensitivity ?? "Internal",
-  wasGeneratedBy: null,
-  wasAttributedTo: null,
-  governedByRetention: null,
-  lastAccessTime: null,
-  createdAt: overrides.createdAt ?? DateTime.fromDateUnsafe(new Date("2026-01-15T10:00:00Z")),
-  updatedAt: overrides.updatedAt ?? DateTime.fromDateUnsafe(new Date("2026-01-15T10:00:00Z")),
-  ...overrides
-})
+): MemoryItemRecord => {
+  const {
+    content,
+    tier,
+    sensitivity,
+    createdAt,
+    updatedAt,
+    ...rest
+  } = overrides
+
+  return {
+    memoryItemId: `mem:${crypto.randomUUID()}` as MemoryItemRecord["memoryItemId"],
+    agentId: "agent:test" as AgentId,
+    tier: tier ?? "SemanticMemory",
+    scope: "GlobalScope",
+    source: "AgentSource",
+    content,
+    metadataJson: null,
+    generatedByTurnId: null,
+    sessionId: null,
+    sensitivity: sensitivity ?? "Internal",
+    wasGeneratedBy: null,
+    wasAttributedTo: null,
+    governedByRetention: null,
+    lastAccessTime: null,
+    createdAt: createdAt ?? DateTime.fromDateUnsafe(new Date("2026-01-15T10:00:00Z")),
+    updatedAt: updatedAt ?? DateTime.fromDateUnsafe(new Date("2026-01-15T10:00:00Z")),
+    ...rest
+  }
+}
 
 const makeMemoryPort = (items: ReadonlyArray<MemoryItemRecord>): MemoryPort => ({
   search: () => Effect.succeed({ items: [], cursor: null, totalCount: 0 }),

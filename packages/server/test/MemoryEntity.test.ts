@@ -14,6 +14,7 @@ import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 
 const AGENT_ID = "agent:mem-entity" as AgentId
 
@@ -313,6 +314,7 @@ const makeTestLayer = (
 ) => {
   const sqlInfrastructureLayer = makeSqlInfrastructureLayer(dbPath)
   const {
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     memorySqliteLayer,
@@ -321,6 +323,7 @@ const makeTestLayer = (
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     memorySqliteLayer,
@@ -335,6 +338,7 @@ const makeClusterLayer = (
 ) => {
   const sqlInfrastructureLayer = makeSqlInfrastructureLayer(dbPath)
   const {
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     memorySqliteLayer,
@@ -355,6 +359,7 @@ const makeClusterLayer = (
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     memorySqliteLayer,
@@ -378,7 +383,9 @@ const makeMemoryGovernanceLayers = (
   sqlInfrastructureLayer: ReturnType<typeof makeSqlInfrastructureLayer>,
   forcedDecision: AuthorizationDecision
 ) => {
+  const sandboxRuntimeLayer = SandboxRuntime.layer
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(sqlInfrastructureLayer)
   )
   const governanceTagLayer = Layer.effect(
@@ -409,6 +416,7 @@ const makeMemoryGovernanceLayers = (
   ).pipe(Layer.provide(memorySqliteLayer))
 
   return {
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     memorySqliteLayer,

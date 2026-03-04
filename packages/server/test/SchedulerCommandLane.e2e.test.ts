@@ -17,6 +17,7 @@ import { join } from "node:path"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import {
   ChannelPortTag,
   GovernancePortTag,
@@ -169,12 +170,14 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const schedulePortSqliteLayer = SchedulePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
   )
   const governancePortSqliteLayer = GovernancePortSqlite.layer.pipe(
-    Layer.provide(sqlInfrastructureLayer)
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(sandboxRuntimeLayer)
   )
 
   const schedulePortTagLayer = Layer.effect(
@@ -212,6 +215,7 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
   const commandRuntimeLayer = CommandRuntime.layer.pipe(
     Layer.provide(CommandHooksDefaultLayer),
     Layer.provide(commandBackendLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
 

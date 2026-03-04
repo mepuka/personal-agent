@@ -7,6 +7,7 @@ import { layer as CommandBackendLocalLayer } from "../src/tools/command/CommandB
 import { CommandBackend, type CommandBackendService } from "../src/tools/command/CommandBackend.js"
 import { CommandHooks } from "../src/tools/command/CommandHooks.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import {
   TRUNCATED_OUTPUT_MARKER,
   type CommandInvocationContext,
@@ -14,7 +15,7 @@ import {
 } from "../src/tools/command/CommandTypes.js"
 
 const defaultContext: CommandInvocationContext = {
-  source: "tool"
+  source: "cli"
 }
 
 const blockedEnvKeys = new Set([
@@ -49,6 +50,7 @@ const makeRuntimeLayer = (executePlan?: CommandBackendService["executePlan"]) =>
         executePlan ?? (() => Effect.succeed(makeResult()))
       )
     ),
+    Layer.provide(SandboxRuntime.layer),
     Layer.provide(NodeServices.layer)
   )
 
@@ -69,6 +71,7 @@ describe("CommandRuntime property tests", () => {
               return yield* runtime.execute({
                 context: defaultContext,
                 request: {
+                  mode: "Shell",
                   command: "echo traversal",
                   cwd
                 }
@@ -124,6 +127,7 @@ describe("CommandRuntime property tests", () => {
               yield* runtime.execute({
                 context: defaultContext,
                 request: {
+                  mode: "Shell",
                   command,
                   envOverrides: record
                 }
@@ -139,6 +143,7 @@ describe("CommandRuntime property tests", () => {
               yield* runtime.execute({
                 context: defaultContext,
                 request: {
+                  mode: "Shell",
                   command,
                   envOverrides: reversed
                 }
@@ -176,6 +181,7 @@ describe("CommandRuntime property tests", () => {
             Effect.gen(function*() {
               const backend = yield* CommandBackend
               return yield* backend.executePlan({
+                mode: "Shell",
                 command,
                 cwd: process.cwd(),
                 timeoutMs: 5_000,

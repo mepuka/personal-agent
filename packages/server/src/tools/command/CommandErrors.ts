@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { SandboxViolation } from "@template/domain/errors"
 
 export class CommandValidationError extends Schema.ErrorClass<CommandValidationError>("CommandValidationError")({
   _tag: Schema.tag("CommandValidationError"),
@@ -51,6 +52,7 @@ export type CommandExecutionError =
   | CommandSpawnFailed
   | CommandTimeout
   | CommandExecutionFailed
+  | SandboxViolation
 
 export const toCommandHookReason = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "reason" in error) {

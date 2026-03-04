@@ -21,22 +21,50 @@ export interface CommandInvocationContext {
   readonly toolName?: ToolName
 }
 
-export interface CommandRequest {
-  readonly command: string
+interface CommandRequestBase {
   readonly cwd?: string
   readonly timeoutMs?: number
   readonly outputLimitBytes?: number
   readonly envOverrides?: Readonly<Record<string, string>>
 }
 
-export interface CommandPlan {
+export interface ShellCommandRequest extends CommandRequestBase {
+  readonly mode: "Shell"
   readonly command: string
+}
+
+export interface ArgvCommandRequest extends CommandRequestBase {
+  readonly mode: "Argv"
+  readonly executable: string
+  readonly args?: ReadonlyArray<string>
+}
+
+export type CommandRequest =
+  | ShellCommandRequest
+  | ArgvCommandRequest
+
+interface CommandPlanBase {
   readonly cwd: string
   readonly timeoutMs: number
   readonly outputLimitBytes: number
   readonly env: Readonly<Record<string, string | undefined>>
   readonly fingerprint: string
 }
+
+export interface ShellCommandPlan extends CommandPlanBase {
+  readonly mode: "Shell"
+  readonly command: string
+}
+
+export interface ArgvCommandPlan extends CommandPlanBase {
+  readonly mode: "Argv"
+  readonly executable: string
+  readonly args: ReadonlyArray<string>
+}
+
+export type CommandPlan =
+  | ShellCommandPlan
+  | ArgvCommandPlan
 
 export interface CommandPlanPatch {
   readonly cwd?: string

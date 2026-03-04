@@ -19,7 +19,7 @@ type AgentStateRow = typeof AgentStateRowSchema.Type
 
 const AgentIdRequest = Schema.Struct({ agentId: Schema.String })
 const EmptyRequest = Schema.Struct({})
-import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
+import { sqlInstantNullable } from "./persistence/SqlCodecs.js"
 
 export class AgentStatePortSqlite extends ServiceMap.Service<AgentStatePortSqlite>()(
   "server/AgentStatePortSqlite",
@@ -238,4 +238,3 @@ const nextBudgetReset = (from: Instant, period: AgentState["quotaPeriod"]): Inst
     }
   }
 }
-

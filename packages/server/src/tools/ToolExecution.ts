@@ -1,7 +1,5 @@
 import { Effect, FileSystem, Layer, Option, Path, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
-import { type CliRuntimeError } from "./cli/CliErrors.js"
-import { CliRuntime } from "./cli/CliRuntime.js"
 import { CommandRuntime } from "./command/CommandRuntime.js"
 import type { CommandInvocationContext } from "./command/CommandTypes.js"
 import {
@@ -202,6 +200,8 @@ const mapCommandErrorToToolFailure = (error: unknown): ToolExecutionFailure => {
       )
     case "CommandExecutionFailed":
       return fail("ShellExecutionFailed", tagged.reason ?? "shell execution failed")
+    case "SandboxViolation":
+      return fail("SandboxViolation", tagged.reason ?? "sandbox violation")
     default:
       return fail("ShellExecutionFailed", toErrorMessage(error))
   }
@@ -238,6 +238,8 @@ const mapFileErrorToToolFailure = (error: unknown): ToolExecutionFailure => {
       return fail(errorCode, error.reason)
     case "FileWriteFailed":
       return fail(errorCode, error.reason)
+    case "SandboxViolation":
+      return fail(errorCode, error.reason)
   }
 }
 
@@ -246,13 +248,11 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
-      const cliRuntime = yield* CliRuntime
       const commandRuntime = yield* CommandRuntime
       const fileRuntime = yield* FileRuntime
       const filePathPolicy = yield* FilePathPolicy
       const fs = yield* FileSystem.FileSystem
       const pathService = yield* Path.Path
-      const inheritedEnv = process.env as Record<string, string | undefined>
       const workspaceRoot = pathService.resolve(process.cwd())
 
       const splitTrimmedLines = (output: string): Array<string> =>
@@ -400,33 +400,50 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
           Effect.mapError(mapFileErrorToToolFailure)
         )
 
-      const mapCliRuntimeErrorForTool = (params: {
+      const mapCommandRuntimeErrorForFileTool = (params: {
         readonly operation: "FileList" | "FileFind" | "FileGrep"
         readonly binary: string
-        readonly error: CliRuntimeError
+        readonly error: unknown
       }): ToolExecutionFailure => {
-        switch (params.error._tag) {
-          case "CliValidationError":
-            return fail(`${params.operation}InvalidRequest`, params.error.reason)
-          case "CliRuntimeUnavailable":
-            return fail(`${params.operation}BackendUnavailable`, params.error.reason)
-          case "CliSpawnFailed":
+        if (
+          typeof params.error !== "object"
+          || params.error === null
+          || !("_tag" in params.error)
+        ) {
+          return fail(`${params.operation}ExecutionFailed`, toErrorMessage(params.error))
+        }
+
+        const tagged = params.error as {
+          readonly _tag: string
+          readonly reason?: string
+          readonly timeoutMs?: number
+        }
+
+        switch (tagged._tag) {
+          case "CommandValidationError":
+            return fail(`${params.operation}InvalidRequest`, tagged.reason ?? "invalid request")
+          case "CommandBackendUnavailable":
+            return fail(`${params.operation}BackendUnavailable`, tagged.reason ?? "command backend unavailable")
+          case "CommandSpawnFailed":
             return fail(
               `${params.operation}BinaryUnavailable`,
-              `${params.binary} unavailable: ${params.error.reason}`
+              `${params.binary} unavailable: ${tagged.reason ?? "spawn failed"}`
             )
-          case "CliTimeout":
+          case "CommandTimeout":
             return fail(
               "ToolTimeout",
-              `${params.operation} timed out after ${params.error.timeoutMs}ms`
+              `${params.operation} timed out after ${tagged.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`
             )
-          case "CliIdleTimeout":
-            return fail(
-              "ToolTimeout",
-              `${params.operation} reached idle timeout after ${params.error.idleTimeoutMs}ms`
-            )
-          case "CliExecutionFailed":
-            return fail(`${params.operation}ExecutionFailed`, params.error.reason)
+          case "CommandWorkspaceViolation":
+            return fail("PathOutsideWorkspace", tagged.reason ?? "path is outside workspace")
+          case "CommandHookRejected":
+            return fail("CommandHookRejected", tagged.reason ?? "command rejected by hook")
+          case "SandboxViolation":
+            return fail("SandboxViolation", tagged.reason ?? "sandbox violation")
+          case "CommandExecutionFailed":
+            return fail(`${params.operation}ExecutionFailed`, tagged.reason ?? "command execution failed")
+          default:
+            return fail(`${params.operation}ExecutionFailed`, toErrorMessage(params.error))
         }
       }
 
@@ -435,15 +452,18 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         readonly binary: string
         readonly args: ReadonlyArray<string>
         readonly cwd: string
+        readonly context: CommandInvocationContext
       }) =>
-        cliRuntime.run({
-          mode: "Argv",
-          command: params.binary,
-          args: params.args,
-          cwd: params.cwd,
-          env: inheritedEnv,
-          timeoutMs: DEFAULT_TIMEOUT_MS,
-          outputLimitBytes: DEFAULT_OUTPUT_LIMIT_BYTES
+        commandRuntime.execute({
+          context: params.context,
+          request: {
+            mode: "Argv",
+            executable: params.binary,
+            args: params.args,
+            cwd: params.cwd,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            outputLimitBytes: DEFAULT_OUTPUT_LIMIT_BYTES
+          }
         })
 
       const runArgv = (params: {
@@ -451,10 +471,11 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         readonly binary: string
         readonly args: ReadonlyArray<string>
         readonly cwd: string
+        readonly context: CommandInvocationContext
       }) =>
         runArgvRaw(params).pipe(
           Effect.mapError((error) =>
-            mapCliRuntimeErrorForTool({
+            mapCommandRuntimeErrorForFileTool({
               operation: params.operation,
               binary: params.binary,
               error
@@ -472,6 +493,7 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         commandRuntime.execute({
           context: context ?? { source: "tool" },
           request: {
+            mode: "Shell",
             command,
             ...(cwd !== undefined ? { cwd } : {}),
             timeoutMs,
@@ -564,9 +586,10 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         includeHidden = false,
         ignore,
         limit,
-        context: _context
+        context: invocationContext
       }) =>
         Effect.gen(function*() {
+          const context = invocationContext ?? { source: "tool" as const }
           const maxEntries = yield* normalizeLimit(limit, DEFAULT_FILE_LIST_LIMIT)
           const resolved = yield* resolveFileToolRoot(targetPath)
 
@@ -575,7 +598,8 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
               operation: "FileList",
               binary: "find",
               args: [resolved.canonicalPath],
-              cwd: resolved.workspaceRoot
+              cwd: resolved.workspaceRoot,
+              context
             })
 
           const runShallow = () =>
@@ -583,7 +607,8 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
               operation: "FileList",
               binary: "ls",
               args: [includeHidden ? "-1A" : "-1", resolved.canonicalPath],
-              cwd: resolved.workspaceRoot
+              cwd: resolved.workspaceRoot,
+              context
             })
 
           const commandResult = yield* (recursive ? runRecursive() : runShallow())
@@ -628,9 +653,10 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         path: targetPath = ".",
         includeHidden = false,
         limit,
-        context: _context
+        context: invocationContext
       }) =>
         Effect.gen(function*() {
+          const context = invocationContext ?? { source: "tool" as const }
           if (pattern.trim().length === 0) {
             return yield* Effect.fail(
               fail("InvalidFileRequest", "pattern must be a non-empty string")
@@ -651,12 +677,13 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
               findPattern,
               resolved.canonicalPath
             ],
-            cwd: resolved.workspaceRoot
+            cwd: resolved.workspaceRoot,
+            context
           }).pipe(
             Effect.map((result) => Option.some(result)),
-            Effect.catchTag("CliSpawnFailed", () => Effect.succeed(Option.none())),
+            Effect.catchTag("CommandSpawnFailed", () => Effect.succeed(Option.none())),
             Effect.mapError((error) =>
-              mapCliRuntimeErrorForTool({
+              mapCommandRuntimeErrorForFileTool({
                 operation: "FileFind",
                 binary: "fd",
                 error
@@ -670,7 +697,8 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
                   operation: "FileFind",
                   binary: "find",
                   args: [resolved.canonicalPath, "-name", findPattern],
-                  cwd: resolved.workspaceRoot
+                  cwd: resolved.workspaceRoot,
+                  context
                 })
               : Effect.succeed(fdResultOption.value)
           )
@@ -710,9 +738,10 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
         literalText = false,
         caseSensitive = false,
         limit,
-        context: _context
+        context: invocationContext
       }) =>
         Effect.gen(function*() {
+          const context = invocationContext ?? { source: "tool" as const }
           if (pattern.trim().length === 0) {
             return yield* Effect.fail(
               fail("InvalidFileRequest", "pattern must be a non-empty string")
@@ -745,12 +774,13 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
               pattern,
               resolved.canonicalPath
             ],
-            cwd: resolved.workspaceRoot
+            cwd: resolved.workspaceRoot,
+            context
           }).pipe(
             Effect.map((result) => Option.some(result)),
-            Effect.catchTag("CliSpawnFailed", () => Effect.succeed(Option.none())),
+            Effect.catchTag("CommandSpawnFailed", () => Effect.succeed(Option.none())),
             Effect.mapError((error) =>
-              mapCliRuntimeErrorForTool({
+              mapCommandRuntimeErrorForFileTool({
                 operation: "FileGrep",
                 binary: "rg",
                 error
@@ -774,7 +804,8 @@ export class ToolExecution extends ServiceMap.Service<ToolExecution>()(
                     pattern,
                     resolved.canonicalPath
                   ],
-                  cwd: resolved.workspaceRoot
+                  cwd: resolved.workspaceRoot,
+                  context
                 })
               : Effect.succeed(rgResultOption.value)
           )

@@ -17,6 +17,7 @@ import {
   type CommandRequest,
   type CommandResult
 } from "./CommandTypes.js"
+import { SandboxRuntime } from "../../safety/SandboxRuntime.js"
 
 export interface CommandRuntimeService {
   readonly execute: (params: {
@@ -91,6 +92,7 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
       const path = yield* Path.Path
       const hooks = yield* CommandHooks
       const backend = yield* CommandBackend
+      const sandboxRuntime = yield* SandboxRuntime
 
       const workspaceRootLexical = path.resolve(process.cwd())
       const workspaceRootExit = yield* fs.realPath(workspaceRootLexical).pipe(Effect.exit)
@@ -238,10 +240,31 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
         request: CommandRequest
       ): Effect.Effect<CommandPlan, CommandExecutionError> =>
         Effect.gen(function*() {
-          if (request.command.trim().length === 0) {
-            return yield* new CommandValidationError({
-              reason: "command must be a non-empty string"
-            })
+          if (request.mode === "Shell") {
+            if (request.command.trim().length === 0) {
+              return yield* new CommandValidationError({
+                reason: "command must be a non-empty string"
+              })
+            }
+          } else {
+            if (request.executable.trim().length === 0) {
+              return yield* new CommandValidationError({
+                reason: "executable must be a non-empty string"
+              })
+            }
+            if (request.executable.includes("\u0000")) {
+              return yield* new CommandValidationError({
+                reason: "executable contains an invalid null byte"
+              })
+            }
+            if (
+              request.args !== undefined
+              && request.args.some((arg) => arg.includes("\u0000"))
+            ) {
+              return yield* new CommandValidationError({
+                reason: "args contain an invalid null byte"
+              })
+            }
           }
 
           const timeoutMs = request.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
@@ -270,13 +293,24 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
             ...envOverrides
           }
 
-          const draftPlan = {
-            command: request.command,
-            cwd,
-            timeoutMs,
-            outputLimitBytes,
-            env
-          } as const
+          const draftPlan = request.mode === "Shell"
+            ? {
+                mode: "Shell" as const,
+                command: request.command,
+                cwd,
+                timeoutMs,
+                outputLimitBytes,
+                env
+              }
+            : {
+                mode: "Argv" as const,
+                executable: request.executable,
+                args: request.args ?? [],
+                cwd,
+                timeoutMs,
+                outputLimitBytes,
+                env
+              }
 
           const fingerprint = yield* computePlanFingerprint(draftPlan)
 
@@ -374,8 +408,7 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
                   )
                 )
 
-            const draftPlan = {
-              command: nextPlan.command,
+            const commonPlan = {
               cwd: patch.cwd ?? nextPlan.cwd,
               timeoutMs: patch.timeoutMs ?? nextPlan.timeoutMs,
               outputLimitBytes: patch.outputLimitBytes ?? nextPlan.outputLimitBytes,
@@ -386,6 +419,19 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
                     ...envAdditions
                   }
             } as const
+
+            const draftPlan = nextPlan.mode === "Shell"
+              ? {
+                  ...commonPlan,
+                  mode: "Shell" as const,
+                  command: nextPlan.command
+                }
+              : {
+                  ...commonPlan,
+                  mode: "Argv" as const,
+                  executable: nextPlan.executable,
+                  args: nextPlan.args
+                }
 
             const patchedCwd = yield* resolveWorkspacePath(draftPlan.cwd).pipe(
               Effect.mapError((error) =>
@@ -468,7 +514,8 @@ export class CommandRuntime extends ServiceMap.Service<CommandRuntime>()(
         )
 
       const execute: CommandRuntimeService["execute"] = ({ context, request }) =>
-        buildBasePlan(request).pipe(
+        sandboxRuntime.require(context).pipe(
+          Effect.andThen(buildBasePlan(request)),
           Effect.tapError((error) =>
             runOnErrorHooks({
               context,

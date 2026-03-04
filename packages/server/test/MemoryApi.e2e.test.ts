@@ -21,6 +21,7 @@ import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, GovernancePortTag, MemoryPortTag } from "../src/PortTags.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 
 const AGENT_ID = "agent:memory-api" as AgentId
 
@@ -150,6 +151,7 @@ const makeAppLayer = (
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const clusterLayer = SingleRunner.layer().pipe(
     Layer.provide(sqlInfrastructureLayer),
@@ -167,6 +169,7 @@ const makeAppLayer = (
   ).pipe(Layer.provide(agentStateSqliteLayer))
 
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(sqlInfrastructureLayer)
   )
   const governanceTagLayer = Layer.effect(
@@ -210,6 +213,7 @@ const makeAppLayer = (
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
+    sandboxRuntimeLayer,
     agentStateSqliteLayer,
     agentStateTagLayer,
     governanceSqliteLayer,

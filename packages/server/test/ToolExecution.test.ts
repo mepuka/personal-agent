@@ -5,27 +5,30 @@ import { DateTime, Effect, Layer } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { CliSpawnFailed, type CliRuntimeError } from "../src/tools/cli/CliErrors.js"
-import { CliRuntime } from "../src/tools/cli/CliRuntime.js"
-import type { CliRunRequest, CliRunResult } from "../src/tools/cli/CliTypes.js"
+import type { CommandExecutionError } from "../src/tools/command/CommandErrors.js"
+import { CommandSpawnFailed } from "../src/tools/command/CommandErrors.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
+import type {
+  CommandRequest,
+  CommandResult
+} from "../src/tools/command/CommandTypes.js"
 import { FilePathPolicy, type FilePathPolicyService } from "../src/tools/file/FilePathPolicy.js"
 import { FileRuntime } from "../src/tools/file/FileRuntime.js"
 import { ToolExecution } from "../src/tools/ToolExecution.js"
 
-interface CliCall {
-  readonly command: string
+interface CommandCall {
+  readonly mode: CommandRequest["mode"]
+  readonly executableOrCommand: string
   readonly args: ReadonlyArray<string>
 }
 
 const instant = (input: string): Instant => DateTime.fromDateUnsafe(new Date(input))
 
-const makeCliResult = (params: {
+const makeCommandResult = (params: {
   readonly exitCode?: number
   readonly stdout?: string
   readonly stderr?: string
-} = {}): CliRunResult => ({
-  pid: 1234,
+} = {}): CommandResult => ({
   exitCode: params.exitCode ?? 0,
   stdout: params.stdout ?? "",
   stderr: params.stderr ?? "",
@@ -66,28 +69,24 @@ const makeFilePathPolicyLayer = (): Layer.Layer<FilePathPolicy> => {
 }
 
 const makeLayer = (
-  runCli: (request: CliRunRequest) => Effect.Effect<CliRunResult, CliRuntimeError>
+  executeCommand: (request: CommandRequest) => Effect.Effect<CommandResult, CommandExecutionError>
 ) => {
-  const cliLayer = CliRuntime.fromExecution(runCli)
-
   const commandRuntimeLayer = Layer.succeed(CommandRuntime, {
-    execute: () =>
-      Effect.die("CommandRuntime.execute should not be called in ToolExecution CLI fallback tests")
+    execute: ({ request }) => executeCommand(request)
   })
 
   const fileRuntimeLayer = Layer.succeed(FileRuntime, {
     read: () =>
-      Effect.die("FileRuntime.read should not be called in ToolExecution CLI fallback tests"),
+      Effect.die("FileRuntime.read should not be called in ToolExecution file query tests"),
     write: () =>
-      Effect.die("FileRuntime.write should not be called in ToolExecution CLI fallback tests"),
+      Effect.die("FileRuntime.write should not be called in ToolExecution file query tests"),
     edit: () =>
-      Effect.die("FileRuntime.edit should not be called in ToolExecution CLI fallback tests")
+      Effect.die("FileRuntime.edit should not be called in ToolExecution file query tests")
   })
 
   const sqlLayer = Layer.succeed(SqlClient.SqlClient, {} as SqlClient.SqlClient)
 
   return ToolExecution.layer.pipe(
-    Layer.provide(cliLayer),
     Layer.provide(commandRuntimeLayer),
     Layer.provide(fileRuntimeLayer),
     Layer.provide(makeFilePathPolicyLayer()),
@@ -103,36 +102,42 @@ describe("ToolExecution", () => {
     mkdirSync(join(absoluteDir, "nested"), { recursive: true })
     writeFileSync(join(absoluteDir, "nested", "find-me.txt"), "match", "utf8")
 
-    const calls: Array<CliCall> = []
+    const calls: Array<CommandCall> = []
     const layer = makeLayer((request) => {
+      if (request.mode !== "Argv") {
+        return Effect.die("expected argv command request")
+      }
+
       calls.push({
-        command: request.command,
+        mode: request.mode,
+        executableOrCommand: request.executable,
         args: request.args ?? []
       })
 
-      if (request.command === "fd") {
-        return Effect.fail(new CliSpawnFailed({ reason: "fd missing" }))
+      if (request.executable === "fd") {
+        return Effect.fail(new CommandSpawnFailed({ reason: "fd missing" }))
       }
-      if (request.command === "find") {
+      if (request.executable === "find") {
         return Effect.succeed(
-          makeCliResult({
+          makeCommandResult({
             stdout: `${join(absoluteDir, "nested", "find-me.txt")}\n`
           })
         )
       }
 
-      return Effect.fail(new CliSpawnFailed({ reason: `unexpected command ${request.command}` }))
+      return Effect.fail(new CommandSpawnFailed({ reason: `unexpected command ${request.executable}` }))
     })
 
     return Effect.gen(function*() {
       const toolExecution = yield* ToolExecution
       const result = yield* toolExecution.findFiles({
         path: relativeDir,
-        pattern: "find-me"
+        pattern: "find-me",
+        context: { source: "cli" }
       })
 
       expect(result.matches).toEqual(["nested/find-me.txt"])
-      expect(calls.map((call) => call.command)).toEqual(["fd", "find"])
+      expect(calls.map((call) => call.executableOrCommand)).toEqual(["fd", "find"])
       expect(calls[0]?.args).toContain("--glob")
       expect(calls[0]?.args).toContain("*find-me*")
       expect(calls[1]?.args).toContain("-name")
@@ -151,25 +156,30 @@ describe("ToolExecution", () => {
     mkdirSync(absoluteDir, { recursive: true })
     writeFileSync(join(absoluteDir, "match.txt"), "literal a+b(c)\n", "utf8")
 
-    const calls: Array<CliCall> = []
+    const calls: Array<CommandCall> = []
     const layer = makeLayer((request) => {
+      if (request.mode !== "Argv") {
+        return Effect.die("expected argv command request")
+      }
+
       calls.push({
-        command: request.command,
+        mode: request.mode,
+        executableOrCommand: request.executable,
         args: request.args ?? []
       })
 
-      if (request.command === "rg") {
-        return Effect.fail(new CliSpawnFailed({ reason: "rg missing" }))
+      if (request.executable === "rg") {
+        return Effect.fail(new CommandSpawnFailed({ reason: "rg missing" }))
       }
-      if (request.command === "grep") {
+      if (request.executable === "grep") {
         return Effect.succeed(
-          makeCliResult({
+          makeCommandResult({
             stdout: `${join(absoluteDir, "match.txt")}:1:literal a+b(c)\n`
           })
         )
       }
 
-      return Effect.fail(new CliSpawnFailed({ reason: `unexpected command ${request.command}` }))
+      return Effect.fail(new CommandSpawnFailed({ reason: `unexpected command ${request.executable}` }))
     })
 
     return Effect.gen(function*() {
@@ -178,13 +188,14 @@ describe("ToolExecution", () => {
         path: relativeDir,
         pattern: "a+b(c)",
         include: "*.txt",
-        literalText: true
+        literalText: true,
+        context: { source: "cli" }
       })
 
       expect(result.matches).toHaveLength(1)
       expect(result.matches[0]?.path).toBe("match.txt")
       expect(result.matches[0]?.line).toBe(1)
-      expect(calls.map((call) => call.command)).toEqual(["rg", "grep"])
+      expect(calls.map((call) => call.executableOrCommand)).toEqual(["rg", "grep"])
       expect(calls[0]?.args).toContain("-F")
       expect(calls[0]?.args).toContain("--glob")
       expect(calls[0]?.args).toContain("*.txt")
@@ -199,21 +210,28 @@ describe("ToolExecution", () => {
     )
   })
 
-  it.effect("grepFiles rejects empty include before invoking CLI", () => {
-    const calls: Array<CliCall> = []
+  it.effect("grepFiles rejects empty include before invoking command runtime", () => {
+    const calls: Array<CommandCall> = []
     const layer = makeLayer((request) => {
+      if (request.mode !== "Argv") {
+        return Effect.die("expected argv command request")
+      }
+
       calls.push({
-        command: request.command,
+        mode: request.mode,
+        executableOrCommand: request.executable,
         args: request.args ?? []
       })
-      return Effect.fail(new CliSpawnFailed({ reason: "should not be called" }))
+
+      return Effect.fail(new CommandSpawnFailed({ reason: "should not be called" }))
     })
 
     return Effect.gen(function*() {
       const toolExecution = yield* ToolExecution
       const failure = yield* toolExecution.grepFiles({
         pattern: "needle",
-        include: "  "
+        include: "  ",
+        context: { source: "cli" }
       }).pipe(
         Effect.flip
       )

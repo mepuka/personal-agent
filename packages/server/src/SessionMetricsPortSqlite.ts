@@ -8,7 +8,7 @@ import { DateTime, Effect, Layer, Option, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import * as SqlSchema from "effect/unstable/sql/SqlSchema"
 
-import { sqlInstant, sqlInstantNullable } from "./persistence/SqlCodecs.js"
+import { sqlInstant } from "./persistence/SqlCodecs.js"
 
 const MetricsRowSchema = Schema.Struct({
   session_id: Schema.String,

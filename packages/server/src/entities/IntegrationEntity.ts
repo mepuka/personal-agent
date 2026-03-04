@@ -1,15 +1,16 @@
 import { IntegrationNotFound } from "@template/domain/errors"
 import type { AgentId, ExternalServiceId, IntegrationId } from "@template/domain/ids"
 import { ServiceCapability } from "@template/domain/integration"
-import type { ExternalServiceRecord, IntegrationRecord } from "@template/domain/integration"
+import type { ExternalServiceRecord } from "@template/domain/integration"
 import { DateTime, Effect, Schema } from "effect"
 import { ClusterSchema, Entity } from "effect/unstable/cluster"
 import { Rpc } from "effect/unstable/rpc"
-import { AgentConfig } from "../ai/AgentConfig.js"
+import { ExternalServiceClientRegistry } from "../integrations/ExternalServiceClientRegistry.js"
 import { IntegrationPortTag } from "../PortTags.js"
 
 const ConnectRpc = Rpc.make("connect", {
   payload: {
+    agentId: Schema.String,
     serviceId: Schema.String,
     name: Schema.String,
     endpoint: Schema.String,
@@ -45,19 +46,15 @@ export const IntegrationEntity = Entity.make("Integration", [
 
 export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
   const integrationPort = yield* IntegrationPortTag
-  const agentConfig = yield* AgentConfig
+  const registry = yield* ExternalServiceClientRegistry
 
   return {
     connect: (request) =>
       Effect.gen(function*() {
         const integrationId = String(request.address.entityId) as IntegrationId
-        // Derive agentId from config — agent map keys are identifiers
-        const agentKeys = [...agentConfig.agents.keys()]
-        const firstKey = agentKeys[0]
-        const agentId = (firstKey ? `agent:${firstKey}` : "agent:bootstrap") as AgentId
+        const agentId = request.payload.agentId as AgentId
         const now = yield* DateTime.now
 
-        // Create or upsert the external service record
         const serviceId = request.payload.serviceId as ExternalServiceId
         const serviceRecord = {
           serviceId,
@@ -68,20 +65,11 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
           createdAt: now
         } as ExternalServiceRecord
 
-        yield* integrationPort.createService(serviceRecord)
-
-        // Create the integration record with status "Connected" (skeleton)
-        const integrationRecord = {
+        yield* registry.connect({
           integrationId,
           agentId,
-          serviceId,
-          status: "Connected" as const,
-          capabilities: [] as ReadonlyArray<ServiceCapability>,
-          createdAt: now,
-          updatedAt: now
-        } as IntegrationRecord
-
-        yield* integrationPort.createIntegration(integrationRecord)
+          service: serviceRecord
+        })
       }).pipe(
         Effect.withSpan("IntegrationEntity.connect"),
         Effect.annotateLogs({ module: "IntegrationEntity", entityId: request.address.entityId })
@@ -94,7 +82,7 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
         if (existing === null) {
           return yield* new IntegrationNotFound({ integrationId })
         }
-        yield* integrationPort.updateStatus(integrationId, "Disconnected")
+        yield* registry.disconnect(existing.serviceId)
       }).pipe(
         Effect.withSpan("IntegrationEntity.disconnect"),
         Effect.annotateLogs({ module: "IntegrationEntity", entityId: request.address.entityId })
@@ -103,15 +91,25 @@ export const layer = IntegrationEntity.toLayer(Effect.gen(function*() {
     getIntegrationStatus: (request) =>
       Effect.gen(function*() {
         const integrationId = String(request.address.entityId) as IntegrationId
-        const integration = yield* integrationPort.getIntegration(integrationId)
-        if (integration === null) {
+        const runtimeStatus = yield* registry.getStatus(integrationId)
+        if (runtimeStatus !== null) {
+          return {
+            integrationId: runtimeStatus.integrationId,
+            serviceId: runtimeStatus.serviceId,
+            status: runtimeStatus.status,
+            capabilities: [...runtimeStatus.capabilities]
+          }
+        }
+
+        const persisted = yield* integrationPort.getIntegration(integrationId)
+        if (persisted === null) {
           return yield* new IntegrationNotFound({ integrationId })
         }
         return {
-          integrationId: integration.integrationId,
-          serviceId: integration.serviceId,
-          status: integration.status,
-          capabilities: [...integration.capabilities]
+          integrationId: persisted.integrationId,
+          serviceId: persisted.serviceId,
+          status: persisted.status,
+          capabilities: [...persisted.capabilities]
         }
       }).pipe(
         Effect.withSpan("IntegrationEntity.getIntegrationStatus"),

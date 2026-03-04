@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { SandboxViolation } from "@template/domain/errors"
 import type { FileOperation, FileVersionStamp } from "./FileTypes.js"
 
 export class FileValidationError extends Schema.ErrorClass<FileValidationError>("FileValidationError")({
@@ -77,6 +78,7 @@ export type FileExecutionError =
   | FileTooLarge
   | FileWriteFailed
   | FileHookRejected
+  | SandboxViolation
 
 const asRecord = (input: unknown): Record<string, unknown> | null =>
   typeof input === "object" && input !== null
@@ -286,6 +288,7 @@ export const isFileExecutionError = (error: unknown): error is FileExecutionErro
     || (error as { readonly _tag: string })._tag === "FileTooLarge"
     || (error as { readonly _tag: string })._tag === "FileWriteFailed"
     || (error as { readonly _tag: string })._tag === "FileHookRejected"
+    || (error as { readonly _tag: string })._tag === "SandboxViolation"
   )
 
 export const mapFileErrorToToolFailureCode = (error: unknown): string => {
@@ -314,6 +317,8 @@ export const mapFileErrorToToolFailureCode = (error: unknown): string => {
       return "FileHookRejected"
     case "FileWriteFailed":
       return "FileWriteFailed"
+    case "SandboxViolation":
+      return "SandboxViolation"
   }
 }
 

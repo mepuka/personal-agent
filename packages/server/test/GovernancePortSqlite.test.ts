@@ -10,6 +10,7 @@ import { join } from "node:path"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 
 describe("GovernancePortSqlite", () => {
   it.effect("persists audit entries", () => {
@@ -232,9 +233,14 @@ describe("syncBuiltInToolCatalog", () => {
       }).pipe(Effect.provide(infraLayer))
 
       // Now try to construct GovernancePortSqlite — should die
+      const sandboxRuntimeLayer = SandboxRuntime.layer
       const governanceLayer = Layer.mergeAll(
         infraLayer,
-        GovernancePortSqlite.layer.pipe(Layer.provide(infraLayer))
+        sandboxRuntimeLayer,
+        GovernancePortSqlite.layer.pipe(
+          Layer.provide(sandboxRuntimeLayer),
+          Layer.provide(infraLayer)
+        )
       )
 
       const exit = yield* Effect.gen(function*() {
@@ -272,9 +278,14 @@ describe("syncBuiltInToolCatalog", () => {
         `.unprepared
       }).pipe(Effect.provide(infraLayer))
 
+      const sandboxRuntimeLayer = SandboxRuntime.layer
       const governanceLayer = Layer.mergeAll(
         infraLayer,
-        GovernancePortSqlite.layer.pipe(Layer.provide(infraLayer))
+        sandboxRuntimeLayer,
+        GovernancePortSqlite.layer.pipe(
+          Layer.provide(sandboxRuntimeLayer),
+          Layer.provide(infraLayer)
+        )
       )
 
       const exit = yield* Effect.gen(function*() {
@@ -298,10 +309,16 @@ const makeGovernanceLayer = (dbPath: string) => {
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
+  const governancePortLayer = GovernancePortSqlite.layer.pipe(
+    Layer.provide(sandboxRuntimeLayer),
+    Layer.provide(sqlInfrastructureLayer)
+  )
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
-    GovernancePortSqlite.layer.pipe(Layer.provide(sqlInfrastructureLayer))
+    sandboxRuntimeLayer,
+    governancePortLayer
   )
 }
 

@@ -11,6 +11,7 @@ import type {
   ToolInvocationRecord
 } from "@template/domain/ports"
 import { DateTime, Effect, HashMap, Layer, Option, Ref, ServiceMap } from "effect"
+import { SandboxRuntime } from "./safety/SandboxRuntime.js"
 
 interface ToolQuotaState {
   readonly maxPerDay: number
@@ -25,6 +26,7 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
     const policies = yield* Ref.make(Array<PermissionPolicyRecord>())
     const toolQuotaState = yield* Ref.make(HashMap.empty<string, ToolQuotaState>())
     const policyOverrides = yield* Ref.make(HashMap.empty<string, PolicyDecision>())
+    const sandboxRuntime = yield* SandboxRuntime
 
     const evaluatePolicy: GovernancePort["evaluatePolicy"] = (input) =>
       Ref.get(policyOverrides).pipe(
@@ -133,7 +135,8 @@ export class GovernancePortMemory extends ServiceMap.Service<GovernancePortMemor
 
     const listAuditEntries: GovernancePort["listAuditEntries"] = () => Ref.get(auditEntries)
 
-    const enforceSandbox: GovernancePort["enforceSandbox"] = (_agentId, effect) => effect
+    const enforceSandbox: GovernancePort["enforceSandbox"] = (agentId, effect) =>
+      sandboxRuntime.enter(agentId, effect)
 
     const setPolicyOverride = (action: GovernanceAction, decision: PolicyDecision, toolName?: ToolName) =>
       Ref.update(policyOverrides, (map) =>

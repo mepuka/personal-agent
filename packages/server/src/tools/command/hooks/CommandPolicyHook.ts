@@ -315,34 +315,97 @@ const extractExecutable = (segment: string): string | null => {
 }
 
 export const evaluateCommandPolicy = (
-  command: string,
+  input: string | {
+    readonly mode: "Shell"
+    readonly command: string
+  } | {
+    readonly mode: "Argv"
+    readonly executable: string
+    readonly args: ReadonlyArray<string>
+  },
   config: CommandPolicyConfig = {}
 ): CommandPolicyViolation | null => {
-  if (command.includes("\u0000")) {
-    return {
-      ruleId: "invalid-null-byte",
-      reason: "command contains an invalid null byte"
-    }
-  }
+  const modeInput = typeof input === "string"
+    ? {
+        mode: "Shell" as const,
+        command: input
+      }
+    : input
 
   const deniedExecutables = new Set(
     (config.deniedExecutables ?? defaultDeniedExecutables).map((value) => value.toLowerCase())
   )
   const deniedPatterns = config.deniedPatterns ?? defaultDeniedPatterns
-  const segments = splitCommandSegments(command)
 
-  for (const segment of segments) {
-    const executable = extractExecutable(segment)
-    if (executable !== null && deniedExecutables.has(executable)) {
+  if (modeInput.mode === "Shell") {
+    const command = modeInput.command
+    if (command.includes("\u0000")) {
       return {
-        ruleId: `blocked-executable:${executable}`,
-        reason: `command '${executable}' is blocked by command policy`
+        ruleId: "invalid-null-byte",
+        reason: "command contains an invalid null byte"
+      }
+    }
+
+    const segments = splitCommandSegments(command)
+
+    for (const segment of segments) {
+      const executable = extractExecutable(segment)
+      if (executable !== null && deniedExecutables.has(executable)) {
+        return {
+          ruleId: `blocked-executable:${executable}`,
+          reason: `command '${executable}' is blocked by command policy`
+        }
+      }
+    }
+
+    for (const rule of deniedPatterns) {
+      if (rule.pattern.test(command)) {
+        return {
+          ruleId: rule.id,
+          reason: rule.reason
+        }
+      }
+    }
+
+    return null
+  }
+
+  const executableToken = modeInput.executable.trim()
+  if (executableToken.length === 0) {
+    return {
+      ruleId: "invalid-executable",
+      reason: "executable must be a non-empty string"
+    }
+  }
+
+  if (executableToken.includes("\u0000")) {
+    return {
+      ruleId: "invalid-null-byte",
+      reason: "executable contains an invalid null byte"
+    }
+  }
+
+  for (let index = 0; index < modeInput.args.length; index += 1) {
+    const arg = modeInput.args[index]!
+    if (arg.includes("\u0000")) {
+      return {
+        ruleId: "invalid-null-byte",
+        reason: `argument at index ${index} contains an invalid null byte`
       }
     }
   }
 
+  const executable = basenameToken(stripWrappingQuotes(executableToken)).toLowerCase()
+  if (executable.length > 0 && deniedExecutables.has(executable)) {
+    return {
+      ruleId: `blocked-executable:${executable}`,
+      reason: `command '${executable}' is blocked by command policy`
+    }
+  }
+
+  const commandText = [modeInput.executable, ...modeInput.args].join(" ")
   for (const rule of deniedPatterns) {
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(commandText)) {
       return {
         ruleId: rule.id,
         reason: rule.reason
@@ -365,7 +428,22 @@ export const makeCommandPolicyHook = (
       !enforcedSources.has(context.source)
         ? Effect.void
         : Effect.gen(function*() {
-            const violation = evaluateCommandPolicy(plan.command, config)
+            const violation = plan.mode === "Shell"
+              ? evaluateCommandPolicy(
+                  {
+                    mode: "Shell",
+                    command: plan.command
+                  },
+                  config
+                )
+              : evaluateCommandPolicy(
+                  {
+                    mode: "Argv",
+                    executable: plan.executable,
+                    args: plan.args
+                  },
+                  config
+                )
             if (violation === null) {
               return
             }

@@ -12,7 +12,8 @@ import type { GovernanceAction, PermissionMode, PolicySelector } from "@template
 import { DateTime, Effect, Layer, Schema, ServiceMap } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { TOOL_CATALOG } from "./ai/ToolCatalog.js"
-import { sqlInstant, sqlInstantNullable, sqlJsonColumn } from "./persistence/SqlCodecs.js"
+import { sqlInstant, sqlJsonColumn } from "./persistence/SqlCodecs.js"
+import { SandboxRuntime } from "./safety/SandboxRuntime.js"
 
 const POLICY_SYSTEM_ERROR = "policy:invoke_tool:system_error:v1" as PolicyId
 const POLICY_INVALID_REQUEST = "policy:invoke_tool:invalid_request:v1" as PolicyId
@@ -73,6 +74,7 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
   {
     make: Effect.gen(function*() {
       const sql = yield* SqlClient.SqlClient
+      const sandboxRuntime = yield* SandboxRuntime
 
       // ── Hardened built-in tool catalog sync ──────────────────────────
       yield* syncBuiltInToolCatalog(sql)
@@ -607,7 +609,8 @@ export class GovernancePortSqlite extends ServiceMap.Service<GovernancePortSqlit
           Effect.orDie
         )
 
-      const enforceSandbox: GovernancePort["enforceSandbox"] = (_agentId, effect) => effect
+      const enforceSandbox: GovernancePort["enforceSandbox"] = (agentId, effect) =>
+        sandboxRuntime.enter(agentId, effect)
 
       return {
         evaluatePolicy,

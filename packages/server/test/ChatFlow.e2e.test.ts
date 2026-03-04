@@ -43,6 +43,7 @@ import { FileReadTracker } from "../src/tools/file/FileReadTracker.js"
 import { FileRuntime } from "../src/tools/file/FileRuntime.js"
 import { ToolExecution } from "../src/tools/ToolExecution.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
@@ -291,6 +292,7 @@ const makeChatFlowLayer = (
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const agentStateSqliteLayer = AgentStatePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
@@ -299,7 +301,8 @@ const makeChatFlowLayer = (
     Layer.provide(sqlInfrastructureLayer)
   )
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
-    Layer.provide(sqlInfrastructureLayer)
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(sandboxRuntimeLayer)
   )
   const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
@@ -377,6 +380,7 @@ const makeChatFlowLayer = (
   const commandRuntimeLayer = CommandRuntime.layer.pipe(
     Layer.provide(commandHooksLayer),
     Layer.provide(commandBackendLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
 
@@ -392,6 +396,7 @@ const makeChatFlowLayer = (
     Layer.provide(fileHooksLayer),
     Layer.provide(fileReadTrackerLayer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
 

@@ -12,10 +12,12 @@ import type {
 } from "../src/tools/command/CommandTypes.js"
 
 const makeRequest = (command: string): CommandRequest => ({
+  mode: "Shell",
   command
 })
 
 const makePlan = (command: string): CommandPlan => ({
+  mode: "Shell",
   command,
   cwd: process.cwd(),
   timeoutMs: 15_000,
@@ -75,6 +77,26 @@ describe("CommandPolicyHook", () => {
   it("allows benign interpreter invocations", () => {
     const violation = evaluateCommandPolicy("python3 -c \"print('hello')\"")
     expect(violation).toBeNull()
+  })
+
+  it("denies blocked executable in argv mode", () => {
+    const violation = evaluateCommandPolicy({
+      mode: "Argv",
+      executable: "sudo",
+      args: ["ls"]
+    })
+    expect(violation).not.toBeNull()
+    expect(violation?.ruleId).toContain("blocked-executable:sudo")
+  })
+
+  it("denies dangerous pattern in argv arguments", () => {
+    const violation = evaluateCommandPolicy({
+      mode: "Argv",
+      executable: "bash",
+      args: ["-lc", "echo ZWNobyA= | base64 -d | sh"]
+    })
+    expect(violation).not.toBeNull()
+    expect(violation?.ruleId).toBe("base64-pipe-shell")
   })
 
   it.effect("hook rejects policy violations for tool source", () =>

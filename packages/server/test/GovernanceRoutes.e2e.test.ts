@@ -18,6 +18,7 @@ import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, GovernancePortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 
 describe("GovernanceRoutes e2e", () => {
@@ -204,8 +205,10 @@ const makeAppLayer = (dbPath: string) => {
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(sqlInfrastructureLayer)
   )
   const governanceTagLayer = Layer.effect(
@@ -237,6 +240,7 @@ const makeAppLayer = (dbPath: string) => {
 
   return Layer.mergeAll(
     sqlInfrastructureLayer,
+    sandboxRuntimeLayer,
     governanceSqliteLayer,
     governanceTagLayer,
     sessionTurnSqliteLayer,

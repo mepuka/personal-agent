@@ -52,6 +52,7 @@ import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import {
   AgentStatePortTag,
   ArtifactStorePortTag,
@@ -1396,6 +1397,7 @@ const makeTurnProcessingLayer = (
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const agentStateSqliteLayer = AgentStatePortSqlite.layer.pipe(
     Layer.provide(sqlInfrastructureLayer)
@@ -1404,6 +1406,7 @@ const makeTurnProcessingLayer = (
     Layer.provide(sqlInfrastructureLayer)
   )
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(sqlInfrastructureLayer)
   )
   const memoryPortSqliteLayer = MemoryPortSqlite.layer.pipe(
@@ -1537,6 +1540,7 @@ const makeTurnProcessingLayer = (
   const commandRuntimeLayer = CommandRuntime.layer.pipe(
     Layer.provide(commandHooksLayer),
     Layer.provide(commandBackendLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
 
@@ -1552,6 +1556,7 @@ const makeTurnProcessingLayer = (
     Layer.provide(fileHooksLayer),
     Layer.provide(fileReadTrackerLayer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
 
@@ -1669,7 +1674,8 @@ const makeTurnProcessingLayer = (
       sessionTurnSqliteLayer,
       governanceSqliteLayer,
       memoryPortSqliteLayer,
-      checkpointPortSqliteLayer
+      checkpointPortSqliteLayer,
+      sandboxRuntimeLayer
     )),
     Layer.provideMerge(clusterLayer),
     Layer.provideMerge(sqlInfrastructureLayer)

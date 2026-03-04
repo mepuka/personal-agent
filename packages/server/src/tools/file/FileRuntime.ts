@@ -1,5 +1,6 @@
 import { DateTime, Effect, FileSystem, Layer, Path, ServiceMap } from "effect"
 import type { CommandInvocationContext } from "../command/CommandTypes.js"
+import { SandboxRuntime } from "../../safety/SandboxRuntime.js"
 import {
   FileEditAmbiguous,
   FileEditNotFound,
@@ -138,6 +139,7 @@ export class FileRuntime extends ServiceMap.Service<FileRuntime>()(
       const filePathPolicy = yield* FilePathPolicy
       const readTracker = yield* FileReadTracker
       const hooks = yield* FileHooks
+      const sandboxRuntime = yield* SandboxRuntime
 
       const toRuntimeError = (params: {
         readonly operation: FileOperation
@@ -468,6 +470,7 @@ export class FileRuntime extends ServiceMap.Service<FileRuntime>()(
       const read: FileRuntimeService["read"] = ({ context, path: filePath }) => {
         let activePlan: FilePlan | null = null
         return Effect.gen(function*() {
+          yield* sandboxRuntime.require(context)
           const resolvedPath = yield* filePathPolicy.resolveForRead(filePath)
           activePlan = yield* makePlan({
             operation: "read",
@@ -551,6 +554,7 @@ export class FileRuntime extends ServiceMap.Service<FileRuntime>()(
       const write: FileRuntimeService["write"] = ({ context, request }) => {
         let activePlan: FilePlan | null = null
         return Effect.gen(function*() {
+          yield* sandboxRuntime.require(context)
           const maxBytes = request.maxBytes ?? DEFAULT_FILE_MAX_BYTES
           if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
             return yield* new FileValidationError({
@@ -639,6 +643,7 @@ export class FileRuntime extends ServiceMap.Service<FileRuntime>()(
       const edit: FileRuntimeService["edit"] = ({ context, request }) => {
         let activePlan: FilePlan | null = null
         return Effect.gen(function*() {
+          yield* sandboxRuntime.require(context)
           if (request.oldString.length === 0) {
             return yield* new FileValidationError({
               reason: "oldString must be a non-empty string"

@@ -21,6 +21,7 @@ import { AgentStatePortSqlite } from "../src/AgentStatePortSqlite.js"
 import { ToolRegistry } from "../src/ai/ToolRegistry.js"
 import { GovernancePortSqlite } from "../src/GovernancePortSqlite.js"
 import { MemoryPortSqlite } from "../src/MemoryPortSqlite.js"
+import { SandboxRuntime } from "../src/safety/SandboxRuntime.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { CheckpointPortSqlite } from "../src/CheckpointPortSqlite.js"
@@ -143,9 +144,11 @@ const makeLayer = (dbPath: string) => {
     Layer.orDie
   )
   const sqlInfrastructureLayer = Layer.mergeAll(sqliteLayer, migrationLayer)
+  const sandboxRuntimeLayer = SandboxRuntime.layer
 
   const governanceSqliteLayer = GovernancePortSqlite.layer.pipe(
-    Layer.provide(sqlInfrastructureLayer)
+    Layer.provide(sqlInfrastructureLayer),
+    Layer.provide(sandboxRuntimeLayer)
   )
   const governanceTagLayer = Layer.effect(
     GovernancePortTag,
@@ -214,6 +217,7 @@ const makeLayer = (dbPath: string) => {
   const commandRuntimeLayer = CommandRuntime.layer.pipe(
     Layer.provide(CommandHooksDefaultLayer),
     Layer.provide(commandBackendLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
   const filePathPolicyLayer = FilePathPolicy.layer.pipe(
@@ -223,6 +227,7 @@ const makeLayer = (dbPath: string) => {
     Layer.provide(FileHooksDefaultLayer),
     Layer.provide(FileReadTracker.layer),
     Layer.provide(filePathPolicyLayer),
+    Layer.provide(sandboxRuntimeLayer),
     Layer.provide(NodeServices.layer)
   )
   const toolExecutionLayer = ToolExecution.layer.pipe(
