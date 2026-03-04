@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react"
 import { useKeyboard } from "@opentui/react"
 import * as React from "react"
 import { inputHistoryAtom, isStreamingAtom, pendingCheckpointAtom } from "../atoms/session.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
 import type { CheckpointDecision } from "../types.js"
 
 export function InputBar({
@@ -16,6 +16,7 @@ export function InputBar({
   readonly focused: boolean
   readonly inputRef?: React.RefObject<unknown>
 }) {
+  const theme = useTheme()
   const isStreaming = useAtomValue(isStreamingAtom)
   const inputHistory = useAtomValue(inputHistoryAtom)
   const checkpoint = useAtomValue(pendingCheckpointAtom)

@@ -7,23 +7,29 @@ import {
   availableChannelsAtom,
   channelIdAtom,
   connectionStatusAtom,
-  modalAtom
+  modalAtom,
+  themeIdAtom
 } from "./atoms/session.js"
 import { ChatPane } from "./components/ChatPane.js"
 import { InputBar } from "./components/InputBar.js"
 import { ModalLayer } from "./components/ModalLayer.js"
+import type { PaletteCommand } from "./components/ModalLayer.js"
 import { StatusBar } from "./components/StatusBar.js"
 import { SidePanel } from "./components/SidePanel.js"
 import { useDecideCheckpoint } from "./hooks/useDecideCheckpoint.js"
 import { useSendMessage } from "./hooks/useSendMessage.js"
+import { useTheme } from "./hooks/useTheme.js"
 import { applyRestoredHistory, restoreHistory } from "./state/restoreHistory.js"
-import { theme } from "./theme.js"
+import { themes, type ThemeId } from "./theme.js"
 
 type ChatClientShape = ServiceMap.Service.Shape<typeof ChatClient>
 
 const DEFAULT_AGENT_ID = "agent:bootstrap"
 
+const themeIds = Object.keys(themes) as ReadonlyArray<ThemeId>
+
 export function App({ client }: { readonly client: ChatClientShape }) {
+  const theme = useTheme()
   const registry = React.useContext(RegistryContext)
   const initializedRef = React.useRef(false)
   const sendMessage = useSendMessage(client)
@@ -34,7 +40,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
   const { width } = useTerminalDimensions()
   const inputRef = React.useRef(null)
 
-  const showSidePanel = width >= 100
+  const layout: "compact" | "medium" | "wide" = width < 80 ? "compact" : width < 120 ? "medium" : "wide"
 
   const refreshChannels = React.useCallback(() => {
     const load = Effect.gen(function*() {
@@ -118,6 +124,57 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     Effect.runFork(program)
   }, [registry, client, activeChannelId])
 
+  const cycleTheme = React.useCallback(() => {
+    const currentId = registry.get(themeIdAtom)
+    const idx = themeIds.indexOf(currentId)
+    const nextId = themeIds[(idx + 1) % themeIds.length]!
+    registry.set(themeIdAtom, nextId)
+  }, [registry])
+
+  const commands: ReadonlyArray<PaletteCommand> = React.useMemo(() => [
+    {
+      id: "new-session",
+      label: "New Session",
+      shortcut: "Ctrl+N",
+      action: () => {
+        registry.set(modalAtom, null)
+        const freshChannelId = `channel:${crypto.randomUUID()}`
+        restoreChannel(freshChannelId)
+      }
+    },
+    {
+      id: "switch-session",
+      label: "Switch Session",
+      shortcut: "Ctrl+S",
+      action: () => {
+        refreshChannels()
+        registry.set(modalAtom, "session-picker")
+      }
+    },
+    {
+      id: "memory-search",
+      label: "Memory Search",
+      shortcut: "Ctrl+M",
+      action: () => registry.set(modalAtom, "memory-search")
+    },
+    {
+      id: "settings",
+      label: "Settings",
+      shortcut: "Ctrl+,",
+      action: () => registry.set(modalAtom, "settings")
+    },
+    {
+      id: "tool-inspector",
+      label: "Tool Inspector",
+      action: () => registry.set(modalAtom, "tool-inspector")
+    },
+    {
+      id: "switch-theme",
+      label: "Switch Theme",
+      action: cycleTheme
+    }
+  ], [registry, refreshChannels, restoreChannel, cycleTheme])
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") {
       process.exit(0)
@@ -143,6 +200,11 @@ export function App({ client }: { readonly client: ChatClientShape }) {
     }
     if (key.ctrl && key.name === "m") {
       registry.set(modalAtom, "memory-search")
+      return
+    }
+    if (key.ctrl && key.name === "n") {
+      const freshChannelId = `channel:${crypto.randomUUID()}`
+      restoreChannel(freshChannelId)
       return
     }
 
@@ -196,11 +258,12 @@ export function App({ client }: { readonly client: ChatClientShape }) {
           onSelect: selectChannel,
           onDelete: deleteSelectedChannel
         }}
+        commands={commands}
       >
         <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
           <box flexDirection="row" flexGrow={1}>
             <ChatPane />
-            {showSidePanel && <SidePanel />}
+            {layout !== "compact" && <SidePanel compact={layout === "medium"} />}
           </box>
           <InputBar
             onSubmit={sendMessage}
@@ -208,7 +271,7 @@ export function App({ client }: { readonly client: ChatClientShape }) {
             focused={activeModal === null}
             inputRef={inputRef}
           />
-          <StatusBar />
+          <StatusBar compact={layout === "compact"} />
         </box>
     </ModalLayer>
   )

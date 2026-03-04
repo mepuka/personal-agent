@@ -1,5 +1,5 @@
 import type { ChannelSummary } from "../types.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
 import { ModalBox } from "./ModalBox.js"
 
 export function SessionPickerModal({
@@ -15,6 +15,7 @@ export function SessionPickerModal({
   readonly onSelect: (channelId: string) => void
   readonly onDelete: (channelId: string) => void
 }) {
+  const theme = useTheme()
   const options = channels.map((ch) => ({
     name: `${ch.channelId === activeChannelId ? "* " : "  "}${ch.channelId}`,
     description: `${ch.messageCount} msgs | ${ch.channelType} | last: ${ch.lastTurnAt ?? "no turns"}`,
@@ -30,7 +31,7 @@ export function SessionPickerModal({
         </box>
       ) : (
         <box flexDirection="column" flexGrow={1}>
-          <text content=" ↑/↓ navigate, Enter select, x delete, Esc close" fg={theme.textMuted} />
+          <text content=" \u2191/\u2193 navigate, Enter select, x delete, Esc close" fg={theme.textMuted} />
           <select
             options={options}
             selectedIndex={selectedIndex}

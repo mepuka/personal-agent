@@ -1,44 +1,38 @@
 import { useAtomValue } from "@effect/atom-react"
 import { estimatedContextAtom, type ContextUsage } from "../atoms/session.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
+import type { Theme } from "../theme.js"
 
-const SEGMENT_COLORS: Record<string, string> = {
-  system: "#7aa2f7",
-  persona: "#9ece6a",
-  memory: "#e0af68",
-  history: "#7dcfff",
-  tools: "#bb9af7"
-}
-
-const SEGMENTS: ReadonlyArray<{ key: keyof ContextUsage & string; label: string }> = [
-  { key: "system", label: "sys" },
-  { key: "persona", label: "per" },
-  { key: "memory", label: "mem" },
-  { key: "history", label: "his" },
-  { key: "tools", label: "tls" }
+const SEGMENTS: ReadonlyArray<{ key: keyof ContextUsage & string; label: string; themeKey: keyof Theme }> = [
+  { key: "system", label: "sys", themeKey: "segmentSystem" },
+  { key: "persona", label: "per", themeKey: "segmentPersona" },
+  { key: "memory", label: "mem", themeKey: "segmentMemory" },
+  { key: "history", label: "his", themeKey: "segmentHistory" },
+  { key: "tools", label: "tls", themeKey: "segmentTools" }
 ]
 
 const formatTokens = (n: number): string =>
   n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
 
-const summaryColor = (pct: number): string =>
-  pct < 60 ? theme.statusConnected : pct < 85 ? theme.statusPending : theme.statusError
-
 export function ContextBar() {
+  const theme = useTheme()
   const usage = useAtomValue(estimatedContextAtom)
   const totalPct = usage.system + usage.persona + usage.memory + usage.history + usage.tools
   const barWidth = 6
   const summaryFilled = Math.round((totalPct / 100) * barWidth)
 
+  const summaryColor = (pct: number): string =>
+    pct < 60 ? theme.statusConnected : pct < 85 ? theme.statusPending : theme.statusError
+
   return (
     <box flexDirection="column">
       <text content={` Context (${totalPct}%)`} fg={theme.accent} />
-      {SEGMENTS.filter(({ key }) => (usage[key] as number) > 0).map(({ key, label }, i, visible) => {
+      {SEGMENTS.filter(({ key }) => (usage[key] as number) > 0).map(({ key, label, themeKey }, i, visible) => {
         const pct = usage[key] as number
         const filled = Math.round((pct / 100) * barWidth)
         const empty = barWidth - filled
         const prefix = i < visible.length - 1 ? " \u251C" : " \u2514"
-        const color = SEGMENT_COLORS[key] ?? theme.textMuted
+        const color = theme[themeKey]
         return (
           <text key={key}>
             <span fg={theme.textMuted}>{`${prefix} ${label} `}</span>

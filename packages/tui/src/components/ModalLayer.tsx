@@ -1,14 +1,22 @@
 import * as React from "react"
 import type { ChannelSummary, ModalId } from "../types.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
+import type { Theme } from "../theme.js"
 import { ModalBox } from "./ModalBox.js"
 import { SessionPickerModal } from "./SessionPickerModal.js"
+
+const LazyCommandPalette = React.lazy(() =>
+  import("./CommandPaletteModal.js").then((m) => ({ default: m.CommandPaletteModal }))
+)
+
+export type { PaletteCommand } from "./CommandPaletteModal.js"
 
 export function ModalLayer({
   activeModal,
   onClose,
   children,
-  sessionPicker
+  sessionPicker,
+  commands
 }: {
   readonly activeModal: ModalId | null
   readonly onClose: () => void
@@ -20,7 +28,10 @@ export function ModalLayer({
     readonly onSelect: (channelId: string) => void
     readonly onDelete: (channelId: string) => void
   }
+  readonly commands?: ReadonlyArray<import("./CommandPaletteModal.js").PaletteCommand>
 }) {
+  const theme = useTheme()
+
   return (
     <box flexDirection="column" flexGrow={1}>
       {children}
@@ -33,19 +44,18 @@ export function ModalLayer({
           height="100%"
           backgroundColor={theme.bg}
         >
-          {renderModal(
-            activeModal,
-            sessionPicker !== undefined
-              ? { onClose, sessionPicker }
-              : { onClose }
-          )}
+          {renderModal(activeModal, theme, {
+            onClose,
+            ...(sessionPicker !== undefined ? { sessionPicker } : {}),
+            ...(commands !== undefined ? { commands } : {})
+          })}
         </box>
       )}
     </box>
   )
 }
 
-function renderModal(modalId: ModalId, handlers: {
+function renderModal(modalId: ModalId, theme: Theme, handlers: {
   readonly onClose: () => void
   readonly sessionPicker?: {
     readonly channels: ReadonlyArray<ChannelSummary>
@@ -54,14 +64,17 @@ function renderModal(modalId: ModalId, handlers: {
     readonly onSelect: (channelId: string) => void
     readonly onDelete: (channelId: string) => void
   }
+  readonly commands?: ReadonlyArray<import("./CommandPaletteModal.js").PaletteCommand>
 }): React.ReactNode {
-  // Placeholder modals — each will be replaced with a real component in later slices
   switch (modalId) {
     case "command-palette":
       return (
-        <ModalBox title="Command Palette" width="70%" height="40%">
-          <text content="Command palette coming soon..." fg={theme.textMuted} />
-        </ModalBox>
+        <React.Suspense fallback={<ModalBox title="Command Palette" width="70%" height="50%"><text content="Loading..." fg={theme.textMuted} /></ModalBox>}>
+          <LazyCommandPalette
+            commands={handlers.commands ?? []}
+            onClose={handlers.onClose}
+          />
+        </React.Suspense>
       )
     case "session-picker":
       return handlers.sessionPicker

@@ -1,5 +1,5 @@
 import * as React from "react"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
 
 export function ModalBox({
   title,
@@ -12,6 +12,7 @@ export function ModalBox({
   readonly width?: `${number}%` | number
   readonly height?: `${number}%` | number
 }) {
+  const theme = useTheme()
   return (
     <box
       position="absolute"

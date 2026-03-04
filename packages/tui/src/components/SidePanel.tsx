@@ -6,15 +6,16 @@ import {
   toolEventsAtom
 } from "../atoms/session.js"
 import { connectionDot } from "../formatters/connectionDot.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
 import { ContextBar } from "./ContextBar.js"
 
-export function SidePanel() {
+export function SidePanel({ compact = false }: { readonly compact?: boolean }) {
+  const theme = useTheme()
   const channelId = useAtomValue(channelIdAtom)
   const status = useAtomValue(connectionStatusAtom)
   const msgCount = useAtomValue(messageCountAtom)
   const toolEvents = useAtomValue(toolEventsAtom)
-  const { dot, color: dotColor } = connectionDot(status)
+  const { dot, color: dotColor } = connectionDot(status, theme)
   const shortId = channelId.startsWith("channel:") ? channelId.slice(8, 16) : channelId.slice(0, 8)
 
   return (
@@ -22,7 +23,7 @@ export function SidePanel() {
       flexDirection="column"
       flexGrow={1}
       flexBasis={0}
-      maxWidth="20%"
+      maxWidth={compact ? "25%" : "20%"}
       border={["top", "left", "bottom"]}
       borderStyle="single"
       borderColor={theme.border}
@@ -54,9 +55,11 @@ export function SidePanel() {
       </box>
 
       {/* Context */}
-      <box marginTop={1} flexDirection="column">
-        <ContextBar />
-      </box>
+      {!compact && (
+        <box marginTop={1} flexDirection="column">
+          <ContextBar />
+        </box>
+      )}
     </box>
   )
 }

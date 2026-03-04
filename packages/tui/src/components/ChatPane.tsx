@@ -1,7 +1,7 @@
 // packages/tui/src/components/ChatPane.tsx
 import { useAtomValue } from "@effect/atom-react"
 import { messagesAtom, toolEventsAtom } from "../atoms/session.js"
-import { theme } from "../theme.js"
+import { useTheme } from "../hooks/useTheme.js"
 import type { ToolEvent } from "../types.js"
 import { MessageBubble } from "./MessageBubble.js"
 import { ToolCallInline } from "./ToolCallInline.js"
@@ -20,6 +20,7 @@ const groupToolsByTurn = (tools: ReadonlyArray<ToolEvent>): Map<string, Readonly
 }
 
 export function ChatPane() {
+  const theme = useTheme()
   const messages = useAtomValue(messagesAtom)
   const toolEvents = useAtomValue(toolEventsAtom)
   const toolsByTurn = groupToolsByTurn(toolEvents)

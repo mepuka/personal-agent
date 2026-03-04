@@ -1,10 +1,10 @@
-import { theme } from "../theme.js"
+import type { Theme } from "../theme.js"
 
-export const connectionDot = (status: string): { dot: string; color: string } => {
+export const connectionDot = (status: string, theme: Theme): { dot: string; color: string } => {
   switch (status) {
-    case "connected": return { dot: "●", color: theme.statusConnected }
-    case "connecting": return { dot: "●", color: theme.statusPending }
-    case "error": return { dot: "●", color: theme.statusError }
-    default: return { dot: "○", color: theme.textMuted }
+    case "connected": return { dot: "\u25CF", color: theme.statusConnected }
+    case "connecting": return { dot: "\u25CF", color: theme.statusPending }
+    case "error": return { dot: "\u25CF", color: theme.statusError }
+    default: return { dot: "\u25CB", color: theme.textMuted }
   }
 }

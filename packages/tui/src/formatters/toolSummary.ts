@@ -106,7 +106,7 @@ export const formatToolOutput = (toolName: string, outputJson: string | null, is
     case "forget_memories":
       return `forgot ${String(obj.forgotten ?? obj.count ?? "?")}`
     case "send_notification":
-      return String(obj.delivered ?? obj.status === "delivered" ? "delivered" : "sent")
+      return String((obj.delivered ?? (obj.status === "delivered")) ? "delivered" : "sent")
     default:
       return defaultKvSummary(obj, 60)
   }
