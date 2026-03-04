@@ -156,9 +156,9 @@ const defaultRuntimeConfig = Schema.decodeUnknownSync(RuntimeConfigSchema)({})
 
 export const MemoryInjectionConfigSchema = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
-  maxTokens: Schema.optionalKey(Schema.Number),
+  maxTokens: Schema.optionalKey(Schema.Int),
   tiers: Schema.optionalKey(Schema.Array(MemoryTier)),
-  perTierFetchLimit: Schema.optionalKey(Schema.Number),
+  perTierFetchLimit: Schema.optionalKey(Schema.Int),
   allowedSensitivities: Schema.optionalKey(Schema.Array(SensitivityLevel))
 })
 export type MemoryInjectionConfig = typeof MemoryInjectionConfigSchema.Type

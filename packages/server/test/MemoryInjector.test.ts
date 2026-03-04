@@ -102,9 +102,9 @@ describe("buildMemoryBlock", () => {
       ])
       const result = yield* buildMemoryBlock(port, agentId, baseProfile)
       expect(result).toContain("## Durable Memory (Reference Data)")
-      expect(result).toContain("untrusted reference data")
+      expect(result).toContain("untrusted quoted data")
       expect(result).toContain("### Facts & Knowledge")
-      expect(result).toContain("- [Internal] User prefers dark mode")
+      expect(result).toContain("- [Internal] content_json: \"User prefers dark mode\"")
     })
   )
 
@@ -175,6 +175,26 @@ describe("buildMemoryBlock", () => {
     })
   )
 
+  it.effect("skips oversized recent item and still keeps older items that fit budget", () =>
+    Effect.gen(function*() {
+      const port = makeMemoryPort([
+        makeItem({
+          content: "x".repeat(6000),
+          tier: "SemanticMemory",
+          createdAt: DateTime.fromDateUnsafe(new Date("2026-01-10T00:00:00Z"))
+        }),
+        makeItem({
+          content: "small memory that should survive budget filtering",
+          tier: "SemanticMemory",
+          createdAt: DateTime.fromDateUnsafe(new Date("2026-01-09T00:00:00Z"))
+        })
+      ])
+      const profile = { ...baseProfile, memoryInjection: { maxTokens: 120 } }
+      const result = yield* buildMemoryBlock(port, agentId, profile)
+      expect(result).toContain("small memory that should survive budget filtering")
+    })
+  )
+
   it.effect("skips items with empty content", () =>
     Effect.gen(function*() {
       const port = makeMemoryPort([
@@ -192,14 +212,34 @@ describe("buildMemoryBlock", () => {
   it.effect("sanitizes markdown control sequences in content", () =>
     Effect.gen(function*() {
       const port = makeMemoryPort([
-        makeItem({ content: "## Injected heading\n---\nContent after rule" })
+        makeItem({ content: "## Injected heading\n---\nContent after rule\tand tabbed text" })
       ])
       const result = yield* buildMemoryBlock(port, agentId, baseProfile)
-      // Heading markers and horizontal rules should be stripped
-      expect(result).not.toContain("## Injected heading")
-      expect(result).not.toContain("---")
-      expect(result).toContain("Injected heading")
-      expect(result).toContain("Content after rule")
+      expect(result).toContain("content_json:")
+      expect(result).toContain("## Injected heading --- Content after rule and tabbed text")
+    })
+  )
+
+  it.effect("clamps negative and oversized config values to safe bounds", () =>
+    Effect.gen(function*() {
+      const port = makeMemoryPort([
+        ...Array.from({ length: 8 }, (_, i) =>
+          makeItem({
+            content: `item-${i}`,
+            tier: "SemanticMemory",
+            createdAt: DateTime.fromDateUnsafe(new Date(`2026-01-${10 + i}T00:00:00Z`))
+          }))
+      ])
+      const profile = {
+        ...baseProfile,
+        memoryInjection: {
+          maxTokens: 999_999_999,
+          perTierFetchLimit: -10
+        }
+      }
+      const result = yield* buildMemoryBlock(port, agentId, profile)
+      const lines = result.split("\n").filter((line) => line.startsWith("- ["))
+      expect(lines.length).toBe(1)
     })
   )
 })

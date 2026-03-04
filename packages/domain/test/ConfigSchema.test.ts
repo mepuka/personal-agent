@@ -6,6 +6,7 @@ import {
   ChannelConfigSchema,
   ChannelsConfigSchema,
   IntegrationConfigSchema,
+  MemoryInjectionConfigSchema,
   MemoryLimitsSchema,
   ProviderConfigSchema,
   RuntimeConfigSchema
@@ -469,5 +470,33 @@ describe("Config Schemas", () => {
         maxRetrieveLimit: 50
       }
     })
+  })
+
+  it("decodes memory injection config with optional fields", () => {
+    const result = Schema.decodeUnknownSync(MemoryInjectionConfigSchema)({
+      enabled: true,
+      maxTokens: 2048,
+      tiers: ["SemanticMemory", "ProceduralMemory"],
+      perTierFetchLimit: 80,
+      allowedSensitivities: ["Public", "Internal"]
+    })
+    expect(result.enabled).toBe(true)
+    expect(result.maxTokens).toBe(2048)
+    expect(result.tiers).toEqual(["SemanticMemory", "ProceduralMemory"])
+    expect(result.perTierFetchLimit).toBe(80)
+    expect(result.allowedSensitivities).toEqual(["Public", "Internal"])
+  })
+
+  it("rejects non-integer memory injection numeric fields", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(MemoryInjectionConfigSchema)({
+        maxTokens: 123.5
+      })
+    ).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(MemoryInjectionConfigSchema)({
+        perTierFetchLimit: 10.25
+      })
+    ).toThrow()
   })
 })

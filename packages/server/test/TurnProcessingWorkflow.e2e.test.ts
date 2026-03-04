@@ -137,6 +137,125 @@ describe("TurnProcessingWorkflow e2e", () => {
     )
   })
 
+  it.effect("injects durable memory into system prompt on normal turns", () => {
+    const dbPath = testDatabasePath("turn-memory-injection-normal")
+    const capturedPrompts: Array<string> = []
+    const layer = makeTurnProcessingLayer(dbPath, "Allow", capturedPrompts)
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const memoryPort = yield* MemoryPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-03T16:00:00.000Z")
+      const agentId = "agent:memory-injection-normal" as AgentId
+      const sessionId = "session:memory-injection-normal" as SessionId
+      const conversationId = "conversation:memory-injection-normal" as ConversationId
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId,
+        tokenBudget: 500,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId,
+        conversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+      yield* memoryPort.encode(
+        agentId,
+        [{
+          tier: "SemanticMemory",
+          scope: "GlobalScope",
+          source: "AgentSource",
+          content: "user prefers espresso",
+          sensitivity: "Internal"
+        }],
+        now
+      )
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:memory-injection-normal" as TurnId,
+        agentId,
+        sessionId,
+        conversationId,
+        createdAt: now,
+        inputTokens: 20,
+        content: "hello"
+      }))
+
+      expect(result.accepted).toBe(true)
+      const systemPrompt = extractSystemPromptText(capturedPrompts)
+      expect(systemPrompt).toContain("## Durable Memory (Reference Data)")
+      expect(systemPrompt).toContain("user prefers espresso")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("falls back to base system prompt when memory injection read fails", () => {
+    const dbPath = testDatabasePath("turn-memory-injection-fallback")
+    const capturedPrompts: Array<string> = []
+    const failingMemoryPort: MemoryPort = {
+      search: () => Effect.succeed({ items: [], cursor: null, totalCount: 0 }),
+      encode: () => Effect.succeed([]),
+      retrieve: () => Effect.succeed([]),
+      forget: () => Effect.succeed(0),
+      listAll: () => Effect.die(new Error("forced memory list failure"))
+    }
+    const layer = makeTurnProcessingLayer(
+      dbPath,
+      "Allow",
+      capturedPrompts,
+      undefined,
+      failingMemoryPort
+    )
+
+    return Effect.gen(function*() {
+      const agentPort = yield* AgentStatePortSqlite
+      const sessionPort = yield* SessionTurnPortSqlite
+      const runtime = yield* TurnProcessingRuntime
+
+      const now = instant("2026-03-03T17:00:00.000Z")
+      const agentId = "agent:memory-injection-fallback" as AgentId
+      const sessionId = "session:memory-injection-fallback" as SessionId
+      const conversationId = "conversation:memory-injection-fallback" as ConversationId
+
+      yield* agentPort.upsert(makeAgentState({
+        agentId,
+        tokenBudget: 500,
+        budgetResetAt: DateTime.add(now, { hours: 1 })
+      }))
+      yield* sessionPort.startSession(makeSessionState({
+        sessionId,
+        conversationId,
+        tokenCapacity: 500,
+        tokensUsed: 0
+      }))
+
+      const result = yield* runtime.processTurn(makeTurnPayload({
+        turnId: "turn:memory-injection-fallback" as TurnId,
+        agentId,
+        sessionId,
+        conversationId,
+        createdAt: now,
+        inputTokens: 20,
+        content: "hello"
+      }))
+
+      expect(result.accepted).toBe(true)
+      const systemPrompt = extractSystemPromptText(capturedPrompts)
+      expect(systemPrompt).toContain("prompt:core.turn.system.default")
+      expect(systemPrompt).not.toContain("## Durable Memory (Reference Data)")
+    }).pipe(
+      Effect.provide(layer),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
   it.effect("runs without post-commit outbox table after migration drop", () => {
     const dbPath = testDatabasePath("turn-no-outbox-table")
     const layer = makeTurnProcessingLayer(dbPath)
@@ -784,6 +903,7 @@ describe("TurnProcessingWorkflow e2e", () => {
     return Effect.gen(function*() {
       const agentPort = yield* AgentStatePortSqlite
       const sessionPort = yield* SessionTurnPortSqlite
+      const memoryPort = yield* MemoryPortSqlite
       const checkpointPort = yield* CheckpointPortTag
       const runtime = yield* TurnProcessingRuntime
       const now = instant("2026-03-02T15:00:00.000Z")
@@ -800,6 +920,17 @@ describe("TurnProcessingWorkflow e2e", () => {
         tokenCapacity: 500,
         tokensUsed: 0
       }))
+      yield* memoryPort.encode(
+        "agent:invoke-replay" as AgentId,
+        [{
+          tier: "SemanticMemory",
+          scope: "GlobalScope",
+          source: "AgentSource",
+          content: "should not be injected during replay",
+          sensitivity: "Internal"
+        }],
+        now
+      )
 
       const inputJson = encodeJson({ command: "pwd" })
       const checkpointPayload = {
@@ -915,6 +1046,9 @@ describe("TurnProcessingWorkflow e2e", () => {
       )
       expect(hasNonEmptyText).toBe(true)
       expect(hasEmptyText).toBe(false)
+      const systemPrompt = extractSystemPromptText(capturedPrompts)
+      expect(systemPrompt).not.toContain("## Durable Memory (Reference Data)")
+      expect(systemPrompt).not.toContain("should not be injected during replay")
     }).pipe(
       Effect.provide(layer),
       Effect.ensuring(cleanupDatabase(dbPath))
@@ -1186,6 +1320,40 @@ describe("TurnProcessingWorkflow e2e", () => {
 const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString)
 const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 
+const extractSystemPromptText = (capturedPrompts: ReadonlyArray<string>): string => {
+  expect(capturedPrompts.length).toBeGreaterThan(0)
+  const decoded = decodeJson(capturedPrompts[0] ?? "")
+  expect(decoded._tag).toBe("Some")
+  const captured = (decoded._tag === "Some" ? decoded.value : {}) as {
+    prompt?: { content?: ReadonlyArray<{ role: string; content: unknown }> }
+  }
+  const promptMessages = captured.prompt?.content ?? []
+  const systemMessage = promptMessages.find((message) => message.role === "system")
+  if (systemMessage === undefined) {
+    return ""
+  }
+
+  if (typeof systemMessage.content === "string") {
+    return systemMessage.content
+  }
+
+  if (Array.isArray(systemMessage.content)) {
+    return systemMessage.content
+      .map((part) =>
+        typeof part === "object"
+        && part !== null
+        && "type" in part
+        && part.type === "text"
+        && "text" in part
+        && typeof part.text === "string"
+          ? part.text
+          : "")
+      .join("\n")
+  }
+
+  return ""
+}
+
 const TEST_PROMPT_BINDINGS = {
   turn: {
     systemPromptRef: "core.turn.system.default",
@@ -1219,7 +1387,8 @@ const makeTurnProcessingLayer = (
     readonly toolName?: string
     readonly toolParams?: Record<string, unknown>
     readonly useProviderInterface?: boolean
-  }
+  },
+  memoryPortOverride?: MemoryPort
 ) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(
@@ -1254,6 +1423,9 @@ const makeTurnProcessingLayer = (
   const memoryPortTagLayer = Layer.effect(
     MemoryPortTag,
     Effect.gen(function*() {
+      if (memoryPortOverride !== undefined) {
+        return memoryPortOverride
+      }
       return (yield* MemoryPortSqlite) as MemoryPort
     })
   ).pipe(Layer.provide(memoryPortSqliteLayer))
