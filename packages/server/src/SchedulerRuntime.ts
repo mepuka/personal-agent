@@ -1,13 +1,17 @@
 import type { AgentId, ScheduledExecutionId, ScheduleId } from "@template/domain/ids"
+import {
+  DEFAULT_SCHEDULER_LEASE_DURATION_SECONDS,
+  DEFAULT_SCHEDULER_MAX_CLAIMS_PER_TICK
+} from "@template/domain/system-defaults"
 import type {
   BackgroundAction,
   Instant,
+  ScheduleClaim,
   ScheduleRecord,
-  ScheduleSkipReason,
   TriggerSource
 } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
-import { DateTime, Effect, HashMap, HashSet, Layer, Option, Ref, Semaphore, ServiceMap } from "effect"
+import { Effect, Layer, ServiceMap } from "effect"
 import { SchedulePortTag } from "./PortTags.js"
 
 export interface ExecutionTicket {
@@ -25,89 +29,76 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
   {
     make: Effect.gen(function*() {
       const schedulePort = yield* SchedulePortTag
-      const inFlightBySchedule = yield* Ref.make(
-        HashMap.empty<ScheduleId, ReadonlyArray<ExecutionTicket>>()
-      )
-      const replacedExecutionIds = yield* Ref.make(
-        HashSet.empty<ScheduledExecutionId>()
-      )
-      const stateLock = yield* Semaphore.make(1)
+      const leaseOwner = "scheduler.dispatch.loop"
+      const leaseDurationSeconds = DEFAULT_SCHEDULER_LEASE_DURATION_SECONDS
+      const maxClaimsPerTick = DEFAULT_SCHEDULER_MAX_CLAIMS_PER_TICK
 
       const claimDue = (now: Instant) =>
-        stateLock.withPermits(1)(
-          Effect.gen(function*() {
-            const due = yield* schedulePort.listDue(now)
-            const sorted = [...due].sort(compareDueCandidates)
-            const claimed: Array<ExecutionTicket> = []
-
-            for (const candidate of sorted) {
-              const ticket = yield* claimCandidate(
-                candidate.schedule,
-                candidate.dueAt,
-                candidate.triggerSource,
-                now
-              )
-              if (ticket !== null) {
-                claimed.push(ticket)
-              }
-            }
-
-            return claimed as ReadonlyArray<ExecutionTicket>
-          })
+        schedulePort.claimDue({
+          now,
+          leaseOwner,
+          leaseDurationSeconds,
+          maxClaims: maxClaimsPerTick
+        }).pipe(
+          Effect.map((claims) => claims.map(toExecutionTicket))
         )
+
+      const renewExecutionLease = (ticket: ExecutionTicket, now: Instant) =>
+        schedulePort.renewClaim({
+          executionId: ticket.executionId,
+          leaseOwner,
+          now,
+          leaseDurationSeconds
+        })
 
       const triggerNow = (schedule: ScheduleRecord, now: Instant) =>
-        stateLock.withPermits(1)(
-          Effect.gen(function*() {
-            if (schedule.scheduleStatus !== "ScheduleActive") {
-              yield* recordSkippedExecution({
-                scheduleId: schedule.scheduleId,
-                dueAt: now,
-                triggerSource: "Manual",
-                startedAt: now,
-                endedAt: now,
-                reason: "ManualTriggerInactive"
-              })
-              return null
-            }
+        Effect.gen(function*() {
+          if (schedule.scheduleStatus !== "ScheduleActive") {
+            yield* schedulePort.recordExecution({
+              executionId: makeExecutionId(),
+              scheduleId: schedule.scheduleId,
+              dueAt: now,
+              triggerSource: "Manual",
+              outcome: "ExecutionSkipped",
+              startedAt: now,
+              endedAt: now,
+              skipReason: "ManualTriggerInactive"
+            })
+            return null
+          }
 
-            return yield* claimCandidate(schedule, now, "Manual", now)
-          })
-        )
+          return {
+            executionId: makeExecutionId(),
+            scheduleId: schedule.scheduleId,
+            ownerAgentId: schedule.ownerAgentId,
+            dueAt: now,
+            triggerSource: "Manual",
+            startedAt: now,
+            action: schedule.action
+          } satisfies ExecutionTicket
+        })
 
       const completeExecution = (
         ticket: ExecutionTicket,
         outcome: ExecutionOutcome,
         endedAt: Instant
       ) =>
-        stateLock.withPermits(1)(
-          Effect.gen(function*() {
-            const isReplaced = yield* Ref.get(replacedExecutionIds).pipe(
-              Effect.map((set) => HashSet.has(set, ticket.executionId))
-            )
-            if (isReplaced) {
+        Effect.gen(function*() {
+          const completed = yield* schedulePort.completeClaim({
+            executionId: ticket.executionId,
+            leaseOwner,
+            outcome,
+            endedAt
+          })
+          if (completed) {
+            return true
+          }
+
+          if (ticket.triggerSource === "Manual") {
+            const alreadyRecorded = yield* schedulePort.hasExecution(ticket.executionId)
+            if (alreadyRecorded) {
               return false
             }
-
-            const map = yield* Ref.get(inFlightBySchedule)
-            const inFlight = Option.getOrElse(
-              HashMap.get(map, ticket.scheduleId),
-              () => [] as ReadonlyArray<ExecutionTicket>
-            )
-            const isInFlight = inFlight.some(
-              (current) => current.executionId === ticket.executionId
-            )
-            if (!isInFlight) {
-              return false
-            }
-
-            const remaining = inFlight.filter(
-              (current) => current.executionId !== ticket.executionId
-            )
-            yield* Ref.set(
-              inFlightBySchedule,
-              HashMap.set(map, ticket.scheduleId, remaining)
-            )
             yield* schedulePort.recordExecution({
               executionId: ticket.executionId,
               scheduleId: ticket.scheduleId,
@@ -118,130 +109,15 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
               endedAt,
               skipReason: null
             })
-
             return true
-          })
-        )
-
-      const claimCandidate = (
-        schedule: ScheduleRecord,
-        dueAt: Instant,
-        triggerSource: TriggerSource,
-        now: Instant
-      ) =>
-        Effect.gen(function*() {
-          const map = yield* Ref.get(inFlightBySchedule)
-          const inFlight = Option.getOrElse(
-            HashMap.get(map, schedule.scheduleId),
-            () => [] as ReadonlyArray<ExecutionTicket>
-          )
-
-          switch (schedule.concurrencyPolicy) {
-            case "ConcurrencyAllow": {
-              const ticket = createExecutionTicket(
-                schedule.scheduleId,
-                schedule.ownerAgentId,
-                dueAt,
-                triggerSource,
-                now,
-                schedule.action
-              )
-              yield* Ref.set(
-                inFlightBySchedule,
-                HashMap.set(map, schedule.scheduleId, [...inFlight, ticket])
-              )
-              return ticket
-            }
-            case "ConcurrencyForbid": {
-              if (inFlight.length > 0) {
-                yield* recordSkippedExecution({
-                  scheduleId: schedule.scheduleId,
-                  dueAt,
-                  triggerSource,
-                  startedAt: now,
-                  endedAt: now,
-                  reason: "ConcurrencyForbid"
-                })
-                return null
-              }
-
-              const ticket = createExecutionTicket(
-                schedule.scheduleId,
-                schedule.ownerAgentId,
-                dueAt,
-                triggerSource,
-                now,
-                schedule.action
-              )
-              yield* Ref.set(
-                inFlightBySchedule,
-                HashMap.set(map, schedule.scheduleId, [...inFlight, ticket])
-              )
-              return ticket
-            }
-            case "ConcurrencyReplace": {
-              if (inFlight.length > 0) {
-                for (const existing of inFlight) {
-                  yield* Ref.update(replacedExecutionIds, (set) => HashSet.add(set, existing.executionId))
-                  yield* recordSkippedExecution({
-                    scheduleId: schedule.scheduleId,
-                    dueAt: existing.dueAt,
-                    triggerSource: existing.triggerSource,
-                    startedAt: existing.startedAt,
-                    endedAt: now,
-                    reason: "ConcurrencyReplace",
-                    executionId: existing.executionId
-                  })
-                }
-              }
-
-              const ticket = createExecutionTicket(
-                schedule.scheduleId,
-                schedule.ownerAgentId,
-                dueAt,
-                triggerSource,
-                now,
-                schedule.action
-              )
-              yield* Ref.set(
-                inFlightBySchedule,
-                HashMap.set(map, schedule.scheduleId, [ticket])
-              )
-              return ticket
-            }
           }
-        })
 
-      const recordSkippedExecution = ({
-        dueAt,
-        endedAt,
-        executionId,
-        reason,
-        scheduleId,
-        startedAt,
-        triggerSource
-      }: {
-        readonly scheduleId: ScheduleId
-        readonly dueAt: Instant
-        readonly triggerSource: TriggerSource
-        readonly startedAt: Instant
-        readonly endedAt: Instant
-        readonly reason: ScheduleSkipReason
-        readonly executionId?: ScheduledExecutionId
-      }) =>
-        schedulePort.recordExecution({
-          executionId: executionId ?? makeExecutionId(),
-          scheduleId,
-          dueAt,
-          triggerSource,
-          outcome: "ExecutionSkipped",
-          startedAt,
-          endedAt,
-          skipReason: reason
+          return false
         })
 
       return {
         claimDue,
+        renewExecutionLease,
         triggerNow,
         completeExecution
       } as const
@@ -251,40 +127,14 @@ export class SchedulerRuntime extends ServiceMap.Service<SchedulerRuntime>()(
   static layer = Layer.effect(this, this.make)
 }
 
-const compareDueCandidates = (
-  left: {
-    readonly schedule: ScheduleRecord
-    readonly dueAt: Instant
-  },
-  right: {
-    readonly schedule: ScheduleRecord
-    readonly dueAt: Instant
-  }
-): number => {
-  const dueDiff = DateTime.toEpochMillis(left.dueAt) - DateTime.toEpochMillis(right.dueAt)
-  if (dueDiff !== 0) {
-    return dueDiff
-  }
-  return String(left.schedule.scheduleId).localeCompare(
-    String(right.schedule.scheduleId)
-  )
-}
-
-const createExecutionTicket = (
-  scheduleId: ScheduleId,
-  ownerAgentId: AgentId,
-  dueAt: Instant,
-  triggerSource: TriggerSource,
-  startedAt: Instant,
-  action: BackgroundAction
-): ExecutionTicket => ({
-  executionId: makeExecutionId(),
-  scheduleId,
-  ownerAgentId,
-  dueAt,
-  triggerSource,
-  startedAt,
-  action
+const toExecutionTicket = (claim: ScheduleClaim): ExecutionTicket => ({
+  executionId: claim.executionId,
+  scheduleId: claim.scheduleId,
+  ownerAgentId: claim.ownerAgentId,
+  dueAt: claim.dueAt,
+  triggerSource: claim.triggerSource,
+  startedAt: claim.startedAt,
+  action: claim.action
 })
 
 const makeExecutionId = (): ScheduledExecutionId => crypto.randomUUID() as ScheduledExecutionId

@@ -1,5 +1,6 @@
 import type { Instant } from "@template/domain/ports"
-import { DateTime, Effect, Layer, ServiceMap } from "effect"
+import { DEFAULT_SCHEDULER_LEASE_RENEW_INTERVAL_SECONDS } from "@template/domain/system-defaults"
+import { DateTime, Duration, Effect, Fiber, Layer, Schedule, ServiceMap } from "effect"
 import { SCHEDULER_COMMAND_LANE_ID } from "../CommandLanes.js"
 import { SchedulerRuntime } from "../SchedulerRuntime.js"
 import { SchedulerActionExecutor } from "./SchedulerActionExecutor.js"
@@ -26,7 +27,23 @@ export class SchedulerDispatchLoop extends ServiceMap.Service<SchedulerDispatchL
           let accepted = 0
 
           for (const ticket of tickets) {
-            const outcome = yield* executor.execute(ticket)
+            const renewLeaseLoop = Effect.repeat(
+              Effect.gen(function*() {
+                const leaseNow = yield* DateTime.now
+                const renewed = yield* runtime.renewExecutionLease(ticket, leaseNow)
+                if (!renewed) {
+                  return yield* Effect.fail("lease-renewal-stopped")
+                }
+              }),
+              Schedule.spaced(Duration.seconds(DEFAULT_SCHEDULER_LEASE_RENEW_INTERVAL_SECONDS))
+            ).pipe(
+              Effect.catchCause(() => Effect.void)
+            )
+            const renewLeaseFiber = yield* renewLeaseLoop.pipe(Effect.forkDetach)
+
+            const outcome = yield* executor.execute(ticket).pipe(
+              Effect.ensuring(Fiber.interrupt(renewLeaseFiber))
+            )
             const endedAt = yield* DateTime.now
 
             const payload: SchedulerExecutePayload = {

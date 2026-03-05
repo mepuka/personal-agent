@@ -15,6 +15,10 @@ export const MAX_PAGINATION_LIMIT = 500
 
 /** Scheduler tick interval (seconds). */
 export const SCHEDULER_TICK_SECONDS = 10
+export const DEFAULT_SCHEDULER_LEASE_DURATION_SECONDS = 120
+export const DEFAULT_SCHEDULER_LEASE_RENEW_INTERVAL_SECONDS = 30
+export const DEFAULT_SCHEDULER_MAX_DUE_WINDOWS = 128
+export const DEFAULT_SCHEDULER_MAX_CLAIMS_PER_TICK = 200
 
 /** Server storage defaults. */
 export const DEFAULT_STORAGE_ROOT_DIR = "state"

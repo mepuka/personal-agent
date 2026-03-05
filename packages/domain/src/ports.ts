@@ -542,6 +542,18 @@ export interface ScheduledExecutionRecord {
   readonly skipReason: ScheduleSkipReason | null
 }
 
+export interface ScheduleClaim {
+  readonly executionId: ScheduledExecutionId
+  readonly scheduleId: ScheduleId
+  readonly ownerAgentId: AgentId
+  readonly dueAt: Instant
+  readonly triggerSource: TriggerSource
+  readonly startedAt: Instant
+  readonly action: BackgroundAction
+  readonly leaseOwner: string
+  readonly leaseExpiresAt: Instant
+}
+
 export interface DueScheduleRecord {
   readonly schedule: ScheduleRecord
   readonly dueAt: Instant
@@ -639,9 +651,28 @@ export interface GovernancePort {
 }
 
 export interface SchedulePort {
-  readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void>
+  readonly upsertSchedule: (schedule: ScheduleRecord) => Effect.Effect<void, import("./errors.js").ScheduleValidationError>
   readonly listDue: (now: Instant) => Effect.Effect<ReadonlyArray<DueScheduleRecord>>
   readonly recordExecution: (record: ScheduledExecutionRecord) => Effect.Effect<void>
+  readonly claimDue: (params: {
+    readonly now: Instant
+    readonly leaseOwner: string
+    readonly leaseDurationSeconds: number
+    readonly maxClaims?: number
+  }) => Effect.Effect<ReadonlyArray<ScheduleClaim>>
+  readonly completeClaim: (params: {
+    readonly executionId: ScheduledExecutionId
+    readonly leaseOwner: string
+    readonly outcome: ExecutionOutcome
+    readonly endedAt: Instant
+  }) => Effect.Effect<boolean>
+  readonly renewClaim: (params: {
+    readonly executionId: ScheduledExecutionId
+    readonly leaseOwner: string
+    readonly now: Instant
+    readonly leaseDurationSeconds: number
+  }) => Effect.Effect<boolean>
+  readonly hasExecution: (executionId: ScheduledExecutionId) => Effect.Effect<boolean>
   readonly getSchedule: (scheduleId: ScheduleId) => Effect.Effect<ScheduleRecord | null>
   readonly listExecutions: () => Effect.Effect<Array<ScheduledExecutionRecord>>
 }
@@ -818,6 +849,11 @@ export interface ChannelPort {
   readonly create: (channel: ChannelRecord) => Effect.Effect<void>
   readonly get: (channelId: ChannelId) => Effect.Effect<ChannelRecord | null>
   readonly delete: (channelId: ChannelId) => Effect.Effect<void>
+  readonly release: (channelId: ChannelId) => Effect.Effect<{
+    readonly channelId: ChannelId
+    readonly sessionId: SessionId
+    readonly remainingOwners: number
+  } | null>
   readonly list: (query?: {
     readonly agentId?: AgentId
   }) => Effect.Effect<ReadonlyArray<ChannelSummaryRecord>>
