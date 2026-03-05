@@ -21,9 +21,7 @@ import {
   channelCapabilitiesForType,
   isSupportedChannelAdapterType
 } from "../entities/ChannelAdapterProfiles.js"
-import { ExternalServiceClientRegistry } from "../integrations/ExternalServiceClientRegistry.js"
-import { RuntimeSupervisor } from "../runtime/RuntimeSupervisor.js"
-import { SchedulerTickService } from "../scheduler/SchedulerTickService.js"
+import { RuntimeKernelReadiness } from "../runtime/RuntimeKernelReadiness.js"
 import {
   badRequest,
   extractPathParam,
@@ -324,28 +322,32 @@ const setModelPreference = HttpRouter.add(
     )
 )
 
-const health = HttpRouter.add(
-  "GET",
-  "/health",
-  () =>
-    Effect.gen(function*() {
-      const runtimeSupervisorOption = yield* Effect.serviceOption(RuntimeSupervisor)
-      const schedulerTickServiceOption = yield* Effect.serviceOption(SchedulerTickService)
-      const integrationRegistryOption = yield* Effect.serviceOption(ExternalServiceClientRegistry)
-
-      const supervisorSnapshot = yield* Option.match(runtimeSupervisorOption, {
-        onNone: () => Effect.succeed(null),
-        onSome: (runtimeSupervisor) => runtimeSupervisor.snapshot().pipe(Effect.map((snapshot) => snapshot))
-      })
-
-      const lastSchedulerTick = yield* Option.match(schedulerTickServiceOption, {
-        onNone: () => Effect.succeed(null),
-        onSome: (tickService) => tickService.getLastTickResult()
-      })
-
-      const integrationSnapshot = yield* Option.match(integrationRegistryOption, {
-        onNone: () =>
-          Effect.succeed({
+const buildHealthPayload = Effect.gen(function*() {
+  const readinessServiceOption = yield* Effect.serviceOption(RuntimeKernelReadiness)
+  return yield* Option.match(readinessServiceOption, {
+    onSome: (readiness) => readiness.snapshot(),
+    onNone: () =>
+      Effect.succeed({
+        readinessState: "ready" as const,
+        payload: {
+          status: "ok" as const,
+          service: "personal-agent" as const,
+          readiness: {
+            state: "ready" as const,
+            degradedReasons: [] as const
+          },
+          runtime: {
+            supervisor: null,
+            loops: [] as const,
+            scheduler: { lastTick: null },
+            subroutines: {
+              queueDepth: 0,
+              inFlightCount: 0,
+              dedupeEntries: 0,
+              lastWorkerError: null
+            }
+          },
+          integrations: {
             summary: {
               total: 0,
               connected: 0,
@@ -354,71 +356,35 @@ const health = HttpRouter.add(
               disconnected: 0,
               degraded: 0
             },
-            integrations: [] as ReadonlyArray<{
-              readonly integrationId: string
-              readonly serviceId: string
-              readonly status: string
-              readonly health: string
-              readonly pid: number | null
-              readonly lastError: string | null
-              readonly updatedAt: string
-            }>
-          }),
-        onSome: (registry) =>
-          registry.snapshot().pipe(
-            Effect.map((snapshot) => ({
-              summary: snapshot.summary,
-              integrations: snapshot.integrations.map((integration) => ({
-                integrationId: integration.integrationId,
-                serviceId: integration.serviceId,
-                status: integration.status,
-                health: integration.health,
-                pid: integration.pid,
-                lastError: integration.lastError,
-                updatedAt: DateTime.formatIso(integration.updatedAt)
-              }))
-            }))
-          )
-      })
-
-      return yield* HttpServerResponse.json({
-        status: "ok",
-        service: "personal-agent",
-        runtime: {
-          supervisor: supervisorSnapshot === null
-            ? null
-            : {
-                activeWorkerCount: supervisorSnapshot.activeWorkerCount,
-                supervisedFiberCount: supervisorSnapshot.supervisedFiberCount,
-                workers: supervisorSnapshot.workers.map((worker) => ({
-                  key: worker.key,
-                  status: worker.status,
-                  startedAt: DateTime.formatIso(worker.startedAt)
-                }))
-              },
-          loops: supervisorSnapshot === null
-            ? []
-            : supervisorSnapshot.workers.map((worker) => ({
-                key: worker.key,
-                status: worker.status
-              })),
-          scheduler: {
-            lastTick: lastSchedulerTick === null
-              ? null
-              : {
-                  tickedAt: DateTime.formatIso(lastSchedulerTick.tickedAt),
-                  claimed: lastSchedulerTick.claimed,
-                  dispatched: lastSchedulerTick.dispatched,
-                  accepted: lastSchedulerTick.accepted,
-                  outcome: lastSchedulerTick.outcome,
-                  errorMessage: lastSchedulerTick.errorMessage
-                }
+            integrations: [] as const
           }
-        },
-        integrations: integrationSnapshot
-      })
-    }).pipe(
+        }
+      } as const)
+  })
+})
+
+const health = HttpRouter.add(
+  "GET",
+  "/health",
+  () =>
+    buildHealthPayload.pipe(
+      Effect.flatMap(({ payload }) => HttpServerResponse.json(payload)),
       Effect.withSpan("ChannelRoutes.health"),
+      Effect.catchCause(() => internalServerError())
+    )
+)
+
+const readiness = HttpRouter.add(
+  "GET",
+  "/ready",
+  () =>
+    buildHealthPayload.pipe(
+      Effect.flatMap(({ payload, readinessState }) =>
+        HttpServerResponse.json(payload, {
+          status: readinessState === "ready" ? 200 : 503
+        })
+      ),
+      Effect.withSpan("ChannelRoutes.ready"),
       Effect.catchCause(() => internalServerError())
     )
 )
@@ -427,7 +393,7 @@ const health = HttpRouter.add(
 // Combined layers
 // ---------------------------------------------------------------------------
 
-export const healthLayer = health // always-on, never gated
+export const healthLayer = Layer.mergeAll(health, readiness) // always-on, never gated
 export const layer = Layer.mergeAll(
   listChannels,
   initializeChannel,

@@ -27,6 +27,7 @@ import { makeCheckpointPayloadHash } from "../src/checkpoints/ReplayHash.js"
 import * as DomainMigrator from "../src/persistence/DomainMigrator.js"
 import * as SqliteRuntime from "../src/persistence/SqliteRuntime.js"
 import { AgentStatePortTag, ChannelPortTag, CheckpointPortTag, SessionTurnPortTag } from "../src/PortTags.js"
+import { RuntimeKernelReadiness } from "../src/runtime/RuntimeKernelReadiness.js"
 import { SessionTurnPortSqlite } from "../src/SessionTurnPortSqlite.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { TurnModelFailure, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
@@ -275,6 +276,50 @@ const cleanupDatabase = (path: string) =>
 
 const AllRoutesLayer = Layer.mergeAll(ChannelRoutesLayer, CheckpointRoutesLayer, HealthRoutesLayer)
 
+const makeDegradedReadinessLayer = () =>
+  Layer.succeed(RuntimeKernelReadiness, {
+    snapshot: () =>
+      Effect.succeed({
+        readinessState: "degraded" as const,
+        payload: {
+          status: "degraded" as const,
+          service: "personal-agent" as const,
+          readiness: {
+            state: "degraded" as const,
+            degradedReasons: ["required_workers_missing"] as const
+          },
+          runtime: {
+            supervisor: {
+              activeWorkerCount: 0,
+              supervisedFiberCount: 0,
+              requiredKeys: ["runtime.scheduler.tick"] as const,
+              missingRequiredKeys: ["runtime.scheduler.tick"] as const,
+              workers: [] as const
+            },
+            loops: [] as const,
+            scheduler: { lastTick: null },
+            subroutines: {
+              queueDepth: 0,
+              inFlightCount: 0,
+              dedupeEntries: 0,
+              lastWorkerError: null
+            }
+          },
+          integrations: {
+            summary: {
+              total: 0,
+              connected: 0,
+              initializing: 0,
+              error: 0,
+              disconnected: 0,
+              degraded: 0
+            },
+            integrations: [] as const
+          }
+        }
+      } as const)
+  })
+
 const makeCheckpointSeedLayer = (dbPath: string) => {
   const sqliteLayer = SqliteRuntime.layer({ filename: dbPath })
   const migrationLayer = DomainMigrator.layer.pipe(Layer.provide(sqliteLayer), Layer.orDie)
@@ -307,6 +352,46 @@ describe("ChannelRoutes e2e", () => {
       expect(body.service).toBe("personal-agent")
       expect(body.runtime).toBeDefined()
       expect(body.integrations).toBeDefined()
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("GET /ready returns readiness payload", () => {
+    const dbPath = testDatabasePath("e2e-ready")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const response = yield* client.get("/ready")
+      const body = (yield* response.json) as any
+      expect(response.status).toBe(200)
+      expect(body.service).toBe("personal-agent")
+      expect(body.readiness).toBeDefined()
+      expect(body.readiness.state).toBe("ready")
+    }).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.ensuring(cleanupDatabase(dbPath))
+    )
+  })
+
+  it.effect("GET /ready returns 503 when runtime readiness is degraded", () => {
+    const dbPath = testDatabasePath("e2e-ready-degraded")
+    return Effect.gen(function*() {
+      yield* HttpRouter.serve(AllRoutesLayer, { disableLogger: true }).pipe(
+        Layer.provide(makeAppLayer(dbPath)),
+        Layer.provide(makeDegradedReadinessLayer()),
+        Layer.build
+      )
+      const client = yield* HttpClient.HttpClient
+      const response = yield* client.get("/ready")
+      const body = (yield* response.json) as any
+      expect(response.status).toBe(503)
+      expect(body.readiness.state).toBe("degraded")
+      expect(body.readiness.degradedReasons).toContain("required_workers_missing")
     }).pipe(
       Effect.provide(NodeHttpServer.layerTest),
       Effect.ensuring(cleanupDatabase(dbPath))

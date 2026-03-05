@@ -82,7 +82,12 @@ export class SessionIdleMonitor extends ServiceMap.Service<SessionIdleMonitor>()
       )
 
       const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(DEFAULT_IDLE_CHECK_INTERVAL_SECONDS)))
-      yield* runtimeSupervisor.start("runtime.session.idle-monitor", loop)
+      const started = yield* runtimeSupervisor.start("runtime.session.idle-monitor", loop, { required: true })
+      if (!started) {
+        return yield* Effect.die(
+          new Error("required runtime loop already registered: runtime.session.idle-monitor")
+        )
+      }
 
       return {} as const
     })

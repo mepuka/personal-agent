@@ -61,7 +61,12 @@ export class SchedulerTickService extends ServiceMap.Service<SchedulerTickServic
       )
 
       const loop = Effect.repeat(tick, Schedule.spaced(Duration.seconds(SCHEDULER_TICK_SECONDS)))
-      yield* runtimeSupervisor.start("runtime.scheduler.tick", loop)
+      const started = yield* runtimeSupervisor.start("runtime.scheduler.tick", loop, { required: true })
+      if (!started) {
+        return yield* Effect.die(
+          new Error("required runtime loop already registered: runtime.scheduler.tick")
+        )
+      }
 
       return {
         getLastTickResult: () => Ref.get(lastTickRef)

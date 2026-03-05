@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Deferred, Effect } from "effect"
 import { RuntimeSupervisor } from "../src/runtime/RuntimeSupervisor.js"
 
 describe("RuntimeSupervisor", () => {
@@ -32,6 +32,32 @@ describe("RuntimeSupervisor", () => {
       expect(missing).toBe(false)
       expect(snapshot.activeWorkerCount).toBe(0)
       expect(snapshot.workers).toHaveLength(0)
+    }).pipe(
+      Effect.provide(RuntimeSupervisor.layer)
+    ))
+
+  it.effect("required worker is reported as missing after unexpected completion", () =>
+    Effect.gen(function*() {
+      const supervisor = yield* RuntimeSupervisor
+      const release = yield* Deferred.make<void, never>()
+
+      const started = yield* supervisor.start(
+        "runtime.test.required",
+        Deferred.await(release),
+        { required: true }
+      )
+      expect(started).toBe(true)
+
+      const runningSnapshot = yield* supervisor.snapshot()
+      expect(runningSnapshot.requiredKeys).toContain("runtime.test.required")
+      expect(runningSnapshot.missingRequiredKeys).toHaveLength(0)
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Effect.yieldNow
+
+      const degradedSnapshot = yield* supervisor.snapshot()
+      expect(degradedSnapshot.requiredKeys).toContain("runtime.test.required")
+      expect(degradedSnapshot.missingRequiredKeys).toContain("runtime.test.required")
     }).pipe(
       Effect.provide(RuntimeSupervisor.layer)
     ))
