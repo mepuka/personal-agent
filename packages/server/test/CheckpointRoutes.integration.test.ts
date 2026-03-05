@@ -363,7 +363,23 @@ const makeIntegrationLayer = (
     SubroutineControlPlane,
     {
       enqueue: () => Effect.succeed({ accepted: true, reason: "dispatched", runId: "noop-run" }),
-      dispatchByTrigger: () => Effect.succeed([])
+      execute: (request) =>
+        Effect.succeed({
+          accepted: true,
+          subroutineId: request.subroutineId,
+          runId: "noop-run",
+          success: true,
+          errorTag: null,
+          reason: "completed"
+        }),
+      dispatchByTrigger: () => Effect.succeed([]),
+      snapshot: () =>
+        Effect.succeed({
+          queueDepth: 0,
+          inFlightCount: 0,
+          dedupeEntries: 0,
+          lastWorkerError: null
+        })
     } satisfies SubroutineControlPlaneService as any
   )
 

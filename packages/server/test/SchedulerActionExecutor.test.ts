@@ -16,17 +16,11 @@ import {
   SessionTurnPortTag
 } from "../src/PortTags.js"
 import {
-  SubroutineCatalog,
-  SubroutineNotFound,
-  type LoadedSubroutine,
-  type SubroutineCatalogService
-} from "../src/memory/SubroutineCatalog.js"
-import {
-  SubroutineRunner,
-  type SubroutineContext,
-  type SubroutineResult,
-  type SubroutineRunnerService
-} from "../src/memory/SubroutineRunner.js"
+  SubroutineControlPlane,
+  type DispatchRequest,
+  type SubroutineControlPlaneService,
+  type SubroutineExecutionOutcome
+} from "../src/memory/SubroutineControlPlane.js"
 import { SchedulerActionExecutor } from "../src/scheduler/SchedulerActionExecutor.js"
 import type { ExecutionTicket } from "../src/SchedulerRuntime.js"
 import { CommandRuntime } from "../src/tools/command/CommandRuntime.js"
@@ -34,6 +28,7 @@ import type {
   CommandExecutionError
 } from "../src/tools/command/CommandErrors.js"
 import type {
+  CommandPlan,
   CommandInvocationContext,
   CommandRequest,
   CommandResult
@@ -197,10 +192,7 @@ describe("SchedulerActionExecutor", () => {
       const outcome = yield* executor.execute(ticket)
 
       expect(outcome).toBe("ExecutionSucceeded")
-    }).pipe(Effect.provide(makeTestLayer(
-      { decision: "Allow" },
-      { subroutines: [makeLoadedSubroutine()] }
-    ))))
+    }).pipe(Effect.provide(makeTestLayer({ decision: "Allow" }))))
 
   it.effect("action:memory_subroutine:unknown_id returns ExecutionFailed", () =>
     Effect.gen(function*() {
@@ -214,7 +206,14 @@ describe("SchedulerActionExecutor", () => {
       expect(outcome).toBe("ExecutionFailed")
     }).pipe(Effect.provide(makeTestLayer(
       { decision: "Allow" },
-      { subroutines: [] }
+      {
+        executeSubroutine: (request) =>
+          Effect.succeed(makeSubroutineExecutionOutcome(request, {
+            accepted: false,
+            success: false,
+            reason: "unknown_subroutine"
+          }))
+      }
     ))))
 
   it.effect("memory subroutine with empty id is skipped", () =>
@@ -227,7 +226,17 @@ describe("SchedulerActionExecutor", () => {
       const outcome = yield* executor.execute(ticket)
 
       expect(outcome).toBe("ExecutionFailed")
-    }).pipe(Effect.provide(makeTestLayer({ decision: "Allow" }))))
+    }).pipe(Effect.provide(makeTestLayer(
+      { decision: "Allow" },
+      {
+        executeSubroutine: (request) =>
+          Effect.succeed(makeSubroutineExecutionOutcome(request, {
+            accepted: false,
+            success: false,
+            reason: "unknown_subroutine"
+          }))
+      }
+    ))))
 
   it.effect("governance deny still skips memory subroutine actions", () =>
     Effect.gen(function*() {
@@ -239,29 +248,10 @@ describe("SchedulerActionExecutor", () => {
       const outcome = yield* executor.execute(ticket)
 
       expect(outcome).toBe("ExecutionSkipped")
-    }).pipe(Effect.provide(makeTestLayer(
-      { decision: "Deny" },
-      { subroutines: [makeLoadedSubroutine()] }
-    ))))
+    }).pipe(Effect.provide(makeTestLayer({ decision: "Deny" }))))
 
-  it.effect("runner receives correct synthetic IDs and trigger metadata", () => {
-    const captured: Array<SubroutineContext> = []
-    const runner = makeMockRunner({
-      onExecute: (loaded, context) => {
-        captured.push(context)
-        return Effect.succeed({
-          subroutineId: loaded.config.id,
-          runId: context.runId,
-          success: true,
-          iterationsUsed: 1,
-          toolCallsTotal: 0,
-          assistantContent: "done",
-          modelUsageJson: null,
-          checkpointWritten: "skipped" as const,
-          error: null
-        })
-      }
-    })
+  it.effect("subroutine dispatch receives correct synthetic IDs and trigger metadata", () => {
+    const captured: Array<DispatchRequest> = []
 
     return Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
@@ -275,37 +265,28 @@ describe("SchedulerActionExecutor", () => {
       yield* executor.execute(ticket)
 
       expect(captured).toHaveLength(1)
-      const ctx = captured[0]
-      expect(ctx.agentId).toBe("agent:context-test")
-      expect(ctx.sessionId).toBe("session:scheduled:schedule:daily-consolidation")
-      expect(ctx.conversationId).toContain("conversation:scheduled:")
-      expect(ctx.turnId).toBeNull()
-      expect(ctx.triggerType).toBe("Scheduled")
-      expect(ctx.triggerReason).toContain("schedule:daily-consolidation")
-      expect(ctx.triggerReason).toContain("CronTick")
+      const dispatch = captured[0]
+      expect(dispatch.agentId).toBe("agent:context-test")
+      expect(dispatch.sessionId).toBe("session:scheduled:schedule:daily-consolidation")
+      expect(dispatch.conversationId).toContain("conversation:scheduled:")
+      expect(dispatch.turnId).toBeNull()
+      expect(dispatch.triggerType).toBe("Scheduled")
+      expect(dispatch.triggerReason).toContain("schedule:daily-consolidation")
+      expect(dispatch.triggerReason).toContain("CronTick")
     }).pipe(Effect.provide(makeTestLayer(
       { decision: "Allow" },
-      { subroutines: [makeLoadedSubroutine()], runner }
+      {
+        executeSubroutine: (request) =>
+          Effect.sync(() => {
+            captured.push(request)
+            return makeSubroutineExecutionOutcome(request, { accepted: true, success: true })
+          })
+      }
     )))
   })
 
-  it.effect("runner failure maps to ExecutionFailed", () => {
-    const runner = makeMockRunner({
-      onExecute: (loaded, context) =>
-        Effect.succeed({
-          subroutineId: loaded.config.id,
-          runId: context.runId,
-          success: false,
-          iterationsUsed: 0,
-          toolCallsTotal: 0,
-          assistantContent: "",
-          modelUsageJson: null,
-          checkpointWritten: "skipped" as const,
-          error: { tag: "model_error" as const, message: "model error" }
-        })
-    })
-
-    return Effect.gen(function*() {
+  it.effect("subroutine execution failure maps to ExecutionFailed", () =>
+    Effect.gen(function*() {
       const executor = yield* SchedulerActionExecutor
       const ticket = makeTicket({
         action: toMemorySubroutineAction("memory_consolidation")
@@ -316,9 +297,15 @@ describe("SchedulerActionExecutor", () => {
       expect(outcome).toBe("ExecutionFailed")
     }).pipe(Effect.provide(makeTestLayer(
       { decision: "Allow" },
-      { subroutines: [makeLoadedSubroutine()], runner }
-    )))
-  })
+      {
+        executeSubroutine: (request) =>
+          Effect.succeed(makeSubroutineExecutionOutcome(request, {
+            accepted: true,
+            success: false,
+            errorTag: "model_error"
+          }))
+      }
+    ))))
 
   it.effect("passes ownerAgentId and ExecuteSchedule action to governance", () => {
     const captured: Array<PolicyInput> = []
@@ -344,15 +331,36 @@ describe("SchedulerActionExecutor", () => {
     } as GovernancePort)
 
     const commandRuntimeLayer = Layer.succeed(CommandRuntime, {
+      prepare: ({ request }) => Effect.succeed(makePreparedPlan(request)),
       execute: () => Effect.succeed(makeCommandResult())
     })
 
-    const catalogLayer = Layer.succeed(SubroutineCatalog, makeMockCatalog() as any)
-    const runnerLayer = Layer.succeed(SubroutineRunner, makeMockRunner() as any)
+    const subroutineControlPlaneLayer = Layer.succeed(
+      SubroutineControlPlane,
+      {
+        enqueue: (request) =>
+          Effect.succeed({
+            accepted: true,
+            reason: "dispatched",
+            runId: `queued:${request.subroutineId}`
+          }),
+        execute: (request) =>
+          Effect.succeed(makeSubroutineExecutionOutcome(request, { accepted: true, success: true })),
+        dispatchByTrigger: () => Effect.succeed([]),
+        snapshot: () =>
+          Effect.succeed({
+            queueDepth: 0,
+            inFlightCount: 0,
+            dedupeEntries: 0,
+            lastWorkerError: null
+          })
+      } satisfies SubroutineControlPlaneService
+    )
     const channelLayer = Layer.succeed(ChannelPortTag, {
       create: () => Effect.void,
       get: () => Effect.succeed(null),
       delete: () => Effect.void,
+      release: () => Effect.succeed(null),
       list: () => Effect.succeed([]),
       updateModelPreference: () => Effect.void
     } as ChannelPort)
@@ -371,8 +379,7 @@ describe("SchedulerActionExecutor", () => {
         commandRuntimeLayer,
         channelLayer,
         sessionTurnLayer,
-        catalogLayer,
-        runnerLayer
+        subroutineControlPlaneLayer
       ))
     )
 
@@ -393,68 +400,6 @@ describe("SchedulerActionExecutor", () => {
   })
 })
 
-const makeLoadedSubroutine = (overrides?: {
-  readonly id?: string
-}): LoadedSubroutine => ({
-  config: {
-    id: overrides?.id ?? "memory_consolidation",
-    name: "Memory Consolidation",
-    tier: "SemanticMemory",
-    trigger: { type: "Scheduled", cronExpression: "0 * * * *" },
-    promptRef: "prompts/consolidation.md",
-    maxIterations: 5,
-    toolConcurrency: 1,
-    dedupeWindowSeconds: 30
-  },
-  prompt: "You are a memory consolidation routine.",
-  resolvedToolScope: {
-    fileRead: true,
-    fileWrite: false,
-    shell: false,
-    memoryRead: true,
-    memoryWrite: true,
-    notification: false
-  }
-})
-
-const makeMockCatalog = (
-  subroutines: ReadonlyArray<LoadedSubroutine> = []
-): SubroutineCatalogService => {
-  const byId = new Map<string, LoadedSubroutine>()
-  for (const s of subroutines) byId.set(s.config.id, s)
-
-  return {
-    getByTrigger: (_agentId, _triggerType) =>
-      Effect.succeed(subroutines.filter((s) => s.config.trigger.type === _triggerType)),
-    getById: (subroutineId) => {
-      const loaded = byId.get(subroutineId)
-      if (!loaded) return Effect.fail(new SubroutineNotFound({ subroutineId }))
-      return Effect.succeed(loaded)
-    }
-  }
-}
-
-const makeMockRunner = (
-  options?: {
-    readonly onExecute?: (loaded: LoadedSubroutine, context: SubroutineContext) => Effect.Effect<SubroutineResult>
-  }
-): SubroutineRunnerService => ({
-  execute: (loaded, context) =>
-    options?.onExecute
-      ? options.onExecute(loaded, context)
-      : Effect.succeed({
-        subroutineId: loaded.config.id,
-        runId: context.runId,
-        success: true,
-        iterationsUsed: 1,
-        toolCallsTotal: 0,
-        assistantContent: "Memory stored.",
-        modelUsageJson: null,
-        checkpointWritten: "skipped" as const,
-        error: null
-      })
-})
-
 const makeTestLayer = (
   policyOverrides: Partial<PolicyDecision>,
   options: {
@@ -462,8 +407,9 @@ const makeTestLayer = (
       readonly context: CommandInvocationContext
       readonly request: CommandRequest
     }) => Effect.Effect<CommandResult, CommandExecutionError>
-    readonly subroutines?: ReadonlyArray<LoadedSubroutine>
-    readonly runner?: SubroutineRunnerService
+    readonly executeSubroutine?: (
+      request: DispatchRequest
+    ) => Effect.Effect<SubroutineExecutionOutcome>
     readonly enforceSandbox?: GovernancePort["enforceSandbox"]
   } = {}
 ) => {
@@ -488,17 +434,41 @@ const makeTestLayer = (
   } as GovernancePort)
 
   const commandRuntimeLayer = Layer.succeed(CommandRuntime, {
+    prepare: ({ request }) => Effect.succeed(makePreparedPlan(request)),
     execute: options.executeCommand ?? (() => Effect.succeed(makeCommandResult()))
   })
 
-  const catalog = makeMockCatalog(options.subroutines)
-  const runner = options.runner ?? makeMockRunner()
-  const catalogLayer = Layer.succeed(SubroutineCatalog, catalog as any)
-  const runnerLayer = Layer.succeed(SubroutineRunner, runner as any)
+  const controlPlaneLayer = Layer.succeed(
+    SubroutineControlPlane,
+    {
+      enqueue: (request) =>
+        Effect.succeed({
+          accepted: true,
+          reason: "dispatched",
+          runId: `queued:${request.subroutineId}`
+        }),
+      execute: (request) =>
+        options.executeSubroutine
+          ? options.executeSubroutine(request)
+          : Effect.succeed(makeSubroutineExecutionOutcome(request, {
+            accepted: true,
+            success: true
+          })),
+      dispatchByTrigger: () => Effect.succeed([]),
+      snapshot: () =>
+        Effect.succeed({
+          queueDepth: 0,
+          inFlightCount: 0,
+          dedupeEntries: 0,
+          lastWorkerError: null
+        })
+    } satisfies SubroutineControlPlaneService
+  )
   const channelLayer = Layer.succeed(ChannelPortTag, {
     create: () => Effect.void,
     get: () => Effect.succeed(null),
     delete: () => Effect.void,
+    release: () => Effect.succeed(null),
     list: () => Effect.succeed([]),
     updateModelPreference: () => Effect.void
   } as ChannelPort)
@@ -516,10 +486,21 @@ const makeTestLayer = (
     Layer.provide(commandRuntimeLayer),
     Layer.provide(channelLayer),
     Layer.provide(sessionTurnLayer),
-    Layer.provide(catalogLayer),
-    Layer.provide(runnerLayer)
+    Layer.provide(controlPlaneLayer)
   )
 }
+
+const makeSubroutineExecutionOutcome = (
+  request: DispatchRequest,
+  overrides?: Partial<SubroutineExecutionOutcome>
+): SubroutineExecutionOutcome => ({
+  accepted: overrides?.accepted ?? true,
+  subroutineId: request.subroutineId,
+  runId: overrides?.runId ?? `run:${request.subroutineId}`,
+  success: overrides?.success ?? true,
+  errorTag: overrides?.errorTag ?? null,
+  reason: overrides?.reason ?? "completed"
+})
 
 const instant = (input: string): Instant => DateTime.fromDateUnsafe(new Date(input))
 
@@ -532,6 +513,28 @@ const makeCommandResult = (exitCode = 0): CommandResult => ({
   startedAt: instant("2026-02-24T12:00:00.000Z"),
   completedAt: instant("2026-02-24T12:00:00.000Z")
 })
+
+const makePreparedPlan = (request: CommandRequest): CommandPlan =>
+  request.mode === "Shell"
+    ? {
+        mode: "Shell",
+        command: request.command,
+        cwd: process.cwd(),
+        timeoutMs: 15_000,
+        outputLimitBytes: 16 * 1024,
+        env: {},
+        fingerprint: "test-fingerprint"
+      }
+    : {
+        mode: "Argv",
+        executable: request.executable,
+        args: request.args ?? [],
+        cwd: process.cwd(),
+        timeoutMs: 15_000,
+        outputLimitBytes: 16 * 1024,
+        env: {},
+        fingerprint: "test-fingerprint"
+      }
 
 const toCommandAction = (command: string): BackgroundAction => ({
   kind: "Command",

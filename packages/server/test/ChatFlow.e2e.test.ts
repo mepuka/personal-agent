@@ -63,7 +63,10 @@ import { PostCommitExecutor } from "../src/turn/PostCommitExecutor.js"
 import { layer as PostCommitWorkflowLayer } from "../src/turn/PostCommitWorkflow.js"
 import { TurnProcessingRuntime } from "../src/turn/TurnProcessingRuntime.js"
 import { SubroutineCatalog } from "../src/memory/SubroutineCatalog.js"
-import { SubroutineControlPlane } from "../src/memory/SubroutineControlPlane.js"
+import {
+  SubroutineControlPlane,
+  type DispatchRequest
+} from "../src/memory/SubroutineControlPlane.js"
 import { TranscriptProjector } from "../src/memory/TranscriptProjector.js"
 import { layer as TurnProcessingWorkflowLayer, type ProcessTurnPayload } from "../src/turn/TurnProcessingWorkflow.js"
 
@@ -463,7 +466,23 @@ const makeChatFlowLayer = (
     SubroutineControlPlane,
     {
       enqueue: () => Effect.succeed({ accepted: false, reason: "deduped", runId: null }),
-      dispatchByTrigger: () => Effect.succeed([])
+      execute: (request: DispatchRequest) =>
+        Effect.succeed({
+          accepted: false,
+          subroutineId: request.subroutineId,
+          runId: null,
+          success: false,
+          errorTag: null,
+          reason: "deduped"
+        }),
+      dispatchByTrigger: () => Effect.succeed([]),
+      snapshot: () =>
+        Effect.succeed({
+          queueDepth: 0,
+          inFlightCount: 0,
+          dedupeEntries: 0,
+          lastWorkerError: null
+        })
     } as any
   )
 

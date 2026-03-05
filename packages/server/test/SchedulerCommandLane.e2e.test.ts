@@ -37,8 +37,10 @@ import {
   type SchedulerExecutePayload
 } from "../src/scheduler/SchedulerCommandEntity.js"
 import { SchedulerDispatchLoop } from "../src/scheduler/SchedulerDispatchLoop.js"
-import { SubroutineCatalog } from "../src/memory/SubroutineCatalog.js"
-import { SubroutineRunner } from "../src/memory/SubroutineRunner.js"
+import {
+  SubroutineControlPlane,
+  type DispatchRequest
+} from "../src/memory/SubroutineControlPlane.js"
 import { SchedulerRuntime } from "../src/SchedulerRuntime.js"
 
 describe("Scheduler command lane E2E", () => {
@@ -234,21 +236,25 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
     Layer.provide(governancePortTagLayer)
   )
 
-  const catalogLayer = Layer.succeed(SubroutineCatalog, {
-    getByTrigger: () => Effect.succeed([]),
-    getById: () => Effect.fail({ _tag: "SubroutineNotFound", subroutineId: "unknown" })
-  } as any)
-
-  const runnerLayer = Layer.succeed(SubroutineRunner, {
-    execute: () => Effect.succeed({
-      subroutineId: "unknown",
-      runId: "unknown",
-      success: false,
-      iterationsUsed: 0,
-      toolCallsTotal: 0,
-      assistantContent: "",
-      modelUsageJson: null
-    })
+  const controlPlaneLayer = Layer.succeed(SubroutineControlPlane, {
+    enqueue: () => Effect.succeed({ accepted: true, reason: "dispatched", runId: "noop-run" }),
+    execute: (request: DispatchRequest) =>
+      Effect.succeed({
+        accepted: false,
+        subroutineId: request.subroutineId,
+        runId: null,
+        success: false,
+        errorTag: null,
+        reason: "unknown_subroutine"
+      }),
+    dispatchByTrigger: () => Effect.succeed([]),
+    snapshot: () =>
+      Effect.succeed({
+        queueDepth: 0,
+        inFlightCount: 0,
+        dedupeEntries: 0,
+        lastWorkerError: null
+      })
   } as any)
 
   const schedulerActionExecutorLayer = SchedulerActionExecutor.layer.pipe(
@@ -258,6 +264,7 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
         create: () => Effect.void,
         get: () => Effect.succeed(null),
         delete: () => Effect.void,
+        release: () => Effect.succeed(null),
         list: () => Effect.succeed([]),
         updateModelPreference: () => Effect.void
       } as ChannelPort),
@@ -270,8 +277,7 @@ const makeSchedulerLaneLayer = (dbPath: string) => {
         listTurns: () => Effect.succeed([])
       } as SessionTurnPort),
       governancePortTagLayer,
-      catalogLayer,
-      runnerLayer
+      controlPlaneLayer
     ))
   )
 

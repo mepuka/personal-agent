@@ -115,6 +115,7 @@ const makeTestLayer = (opts: {
       create: () => Effect.void,
       get: () => Effect.succeed(null),
       delete: () => Effect.void,
+      release: () => Effect.succeed(null),
       list: () => Effect.succeed(opts.channels ?? []),
       updateModelPreference: () => Effect.void
     } as ChannelPort as any
@@ -142,7 +143,25 @@ const makeTestLayer = (opts: {
           runId: opts.enqueueAccepted === false ? null : "mock-run-id"
         })
       },
-      dispatchByTrigger: () => Effect.succeed([])
+      execute: (request: DispatchRequest) => {
+        opts.capturedEnqueues?.push(request)
+        return Effect.succeed({
+          accepted: opts.enqueueAccepted ?? true,
+          subroutineId: request.subroutineId,
+          runId: opts.enqueueAccepted === false ? null : "mock-run-id",
+          success: opts.enqueueAccepted ?? true,
+          errorTag: null,
+          reason: opts.enqueueAccepted === false ? "deduped" : "completed"
+        })
+      },
+      dispatchByTrigger: () => Effect.succeed([]),
+      snapshot: () =>
+        Effect.succeed({
+          queueDepth: 0,
+          inFlightCount: 0,
+          dedupeEntries: 0,
+          lastWorkerError: null
+        })
     } as SubroutineControlPlaneService as any
   )
 
@@ -316,7 +335,23 @@ describe("SessionIdleMonitor", () => {
         SubroutineControlPlane,
         {
           enqueue: () => Effect.succeed({ accepted: false, reason: "deduped", runId: null }),
-          dispatchByTrigger: () => Effect.succeed([])
+          execute: (request: DispatchRequest) =>
+            Effect.succeed({
+              accepted: false,
+              subroutineId: request.subroutineId,
+              runId: null,
+              success: false,
+              errorTag: null,
+              reason: "deduped"
+            }),
+          dispatchByTrigger: () => Effect.succeed([]),
+          snapshot: () =>
+            Effect.succeed({
+              queueDepth: 0,
+              inFlightCount: 0,
+              dedupeEntries: 0,
+              lastWorkerError: null
+            })
         } as any
       )
 

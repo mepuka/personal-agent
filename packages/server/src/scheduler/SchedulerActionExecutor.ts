@@ -2,7 +2,6 @@ import type { AgentId, ConversationId, SessionId } from "@template/domain/ids"
 import type {
   BackgroundActionMemorySubroutine,
   ChannelSummaryRecord,
-  GovernancePort,
   SessionState
 } from "@template/domain/ports"
 import type { ExecutionOutcome } from "@template/domain/status"
@@ -13,14 +12,9 @@ import {
   SessionTurnPortTag
 } from "../PortTags.js"
 import {
-  SubroutineCatalog,
-  type SubroutineCatalogService
-} from "../memory/SubroutineCatalog.js"
-import {
-  SubroutineRunner,
-  type SubroutineContext,
-  type SubroutineRunnerService
-} from "../memory/SubroutineRunner.js"
+  SubroutineControlPlane,
+  type SubroutineControlPlaneService
+} from "../memory/SubroutineControlPlane.js"
 import type { ExecutionTicket } from "../SchedulerRuntime.js"
 import {
   CommandRuntime,
@@ -35,8 +29,7 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
       const channelPort = yield* ChannelPortTag
       const sessionTurnPort = yield* SessionTurnPortTag
       const commandRuntime = yield* CommandRuntime
-      const subroutineRunner = yield* SubroutineRunner
-      const subroutineCatalog = yield* SubroutineCatalog
+      const subroutineControlPlane = yield* SubroutineControlPlane
 
       const execute = (ticket: ExecutionTicket): Effect.Effect<ExecutionOutcome> =>
         Effect.gen(function*() {
@@ -68,13 +61,12 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 
           return yield* dispatchAction({
             ticket,
-            governancePort: governance,
             channelPort,
             sessionTurnPort,
             commandRuntime,
-            subroutineRunner,
-            subroutineCatalog
+            subroutineControlPlane
           }).pipe(
+            (effect) => governance.enforceSandbox(ticket.ownerAgentId, effect),
             Effect.catchCause((cause) =>
               Effect.gen(function*() {
                 yield* Effect.log("Scheduled action failed", {
@@ -97,7 +89,6 @@ export class SchedulerActionExecutor extends ServiceMap.Service<SchedulerActionE
 
 const dispatchAction = (params: {
   readonly ticket: ExecutionTicket
-  readonly governancePort: Pick<GovernancePort, "enforceSandbox">
   readonly channelPort: {
     readonly list: (query?: {
       readonly agentId?: AgentId
@@ -107,27 +98,12 @@ const dispatchAction = (params: {
     readonly getSession: (sessionId: SessionId) => Effect.Effect<SessionState | null>
   }
   readonly commandRuntime: CommandRuntimeService
-  readonly subroutineRunner: SubroutineRunnerService
-  readonly subroutineCatalog: SubroutineCatalogService
+  readonly subroutineControlPlane: SubroutineControlPlaneService
 }): Effect.Effect<ExecutionOutcome> =>
   Effect.gen(function*() {
     switch (params.ticket.action.kind) {
       case "MemorySubroutine": {
-        const subroutineId = params.ticket.action.subroutineId
-        const loaded = yield* params.subroutineCatalog.getById(subroutineId).pipe(
-          Effect.catchTag("SubroutineNotFound", () =>
-            Effect.gen(function*() {
-              yield* Effect.log("Unknown memory subroutine in schedule", {
-                scheduleId: params.ticket.scheduleId,
-                subroutineId
-              })
-              return null
-            })
-          )
-        )
-        if (!loaded) return "ExecutionFailed" as const
-
-        const runId = crypto.randomUUID()
+        const runId = `schedrun:${params.ticket.executionId}`
         const resolvedSession = yield* resolveScheduledSession({
           scheduleId: params.ticket.scheduleId,
           ownerAgentId: params.ticket.ownerAgentId,
@@ -140,26 +116,29 @@ const dispatchAction = (params: {
           return "ExecutionFailed" as const
         }
 
-        const context: SubroutineContext = {
+        const controlPlaneResult = yield* params.subroutineControlPlane.execute({
           agentId: params.ticket.ownerAgentId,
           sessionId: resolvedSession.sessionId,
           conversationId: resolvedSession.conversationId,
+          subroutineId: params.ticket.action.subroutineId,
           turnId: null,
           triggerType: "Scheduled",
           triggerReason: `Schedule: ${params.ticket.scheduleId} (${params.ticket.triggerSource}, sessionMode=${params.ticket.action.sessionMode})`,
-          now: params.ticket.startedAt,
-          runId
+          enqueuedAt: params.ticket.startedAt,
+          idempotencyKey: `schedule:${params.ticket.scheduleId}:execution:${params.ticket.executionId}`
+        })
+        yield* Effect.log("SchedulerActionExecutor subroutine result", controlPlaneResult)
+
+        if (!controlPlaneResult.accepted) {
+          return (
+            controlPlaneResult.reason === "deduped"
+            || controlPlaneResult.reason === "already_in_flight"
+          )
+            ? "ExecutionSkipped" as const
+            : "ExecutionFailed" as const
         }
 
-        const result = yield* params.subroutineRunner.execute(loaded, context)
-        yield* Effect.log("SchedulerActionExecutor subroutine result", {
-          subroutineId: result.subroutineId,
-          runId: result.runId,
-          success: result.success,
-          checkpointWritten: result.checkpointWritten,
-          errorTag: result.error?.tag ?? null
-        })
-        return result.success
+        return controlPlaneResult.success
           ? "ExecutionSucceeded" as const
           : "ExecutionFailed" as const
       }
@@ -182,10 +161,6 @@ const dispatchAction = (params: {
             command
           }
         }).pipe(
-          (effect) => params.governancePort.enforceSandbox(
-            params.ticket.ownerAgentId,
-            effect
-          ),
           Effect.matchEffect({
             onFailure: (error) =>
               Effect.gen(function*() {

@@ -8,7 +8,7 @@ import type * as WorkflowEngine from "effect/unstable/workflow/WorkflowEngine"
 import { AgentConfig } from "../ai/AgentConfig.js"
 import { SessionMetricsPortTag, SessionTurnPortTag } from "../PortTags.js"
 import { SubroutineCatalog } from "../memory/SubroutineCatalog.js"
-import { SubroutineRunner, type SubroutineContext } from "../memory/SubroutineRunner.js"
+import { SubroutineControlPlane } from "../memory/SubroutineControlPlane.js"
 import { CompactionWorkflow } from "../memory/compaction/CompactionWorkflow.js"
 import { TranscriptProjector } from "../memory/TranscriptProjector.js"
 
@@ -27,7 +27,7 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
   {
     make: Effect.gen(function*() {
       const catalog = yield* SubroutineCatalog
-      const runner = yield* SubroutineRunner
+      const controlPlane = yield* SubroutineControlPlane
       const projector = yield* TranscriptProjector
       const agentConfig = yield* AgentConfig
       const sessionTurnPort = yield* SessionTurnPortTag
@@ -47,36 +47,21 @@ export class PostCommitExecutor extends ServiceMap.Service<PostCommitExecutor>()
           const subroutineOutcomes: Array<PostCommitSubroutineOutcome> = []
 
           for (const sub of postTurnSubs) {
-            const runId = `subrun:${payload.turnId}:${sub.config.id}`
-            const context: SubroutineContext = {
+            const outcome = yield* controlPlane.execute({
               agentId: payload.agentId,
               sessionId: payload.sessionId,
               conversationId: payload.conversationId,
+              subroutineId: sub.config.id,
               turnId: payload.turnId,
               triggerType: "PostTurn",
               triggerReason: `post-commit turn ${payload.turnId}`,
-              now,
-              runId
-            }
-            const result = yield* runner.execute(sub, context).pipe(
-              Effect.catchCause((cause) =>
-                Effect.succeed({
-                  subroutineId: sub.config.id,
-                  runId,
-                  success: false,
-                  iterationsUsed: 0,
-                  toolCallsTotal: 0,
-                  assistantContent: "",
-                  modelUsageJson: null,
-                  checkpointWritten: "skipped" as const,
-                  error: { tag: "unknown_error" as const, message: `cause: ${Cause.pretty(cause)}` }
-                })
-              )
-            )
+              enqueuedAt: now,
+              idempotencyKey: `post-commit:${payload.turnId}:${sub.config.id}`
+            })
             subroutineOutcomes.push({
               subroutineId: sub.config.id,
-              success: result.success,
-              errorTag: result.error?.tag ?? null
+              success: outcome.accepted && outcome.success,
+              errorTag: outcome.errorTag
             })
           }
 
